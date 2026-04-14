@@ -32,10 +32,37 @@ export class BaseKnowledgeController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Get all base knowledge entries' })
-  @ApiResponse({ status: 200, description: 'List of entries ordered by date desc' })
-  findAll() {
-    return this.baseKnowledgeService.findAll();
+  @ApiOperation({ summary: 'Get paginated base knowledge entries' })
+  @ApiQuery({ name: 'page', required: false, example: 1, description: 'Page number (default: 1)' })
+  @ApiQuery({ name: 'limit', required: false, example: 8, description: 'Items per page (default: 8)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Paginated list of entries ordered by date desc',
+    schema: {
+      properties: {
+        data: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id:          { type: 'string', example: 'uuid' },
+              title:       { type: 'string', example: 'Polite Decline Template' },
+              description: { type: 'string', example: 'Use this template to politely decline a client...' },
+              category:    { type: 'string', example: 'templates' },
+              createdAt:   { type: 'string', format: 'date-time' },
+              updatedAt:   { type: 'string', format: 'date-time' },
+            },
+          },
+        },
+        total: { type: 'number', example: 25, description: 'Total number of entries. Pages = Math.ceil(total / limit)' },
+      },
+    },
+  })
+  findAll(
+    @Query('page') page = 1,
+    @Query('limit') limit = 8,
+  ) {
+    return this.baseKnowledgeService.findAll(Number(page), Number(limit));
   }
 
   @Get('search')

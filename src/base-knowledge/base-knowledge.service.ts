@@ -10,7 +10,7 @@ import { EmbeddingService } from '../embedding/embedding.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateBaseKnowledgeDto } from './dto/create-base-knowledge.dto';
 import { UpdateBaseKnowledgeDto } from './dto/update-base-knowledge.dto';
-import { BaseKnowledge } from './base-knowledge.types';
+import { BaseKnowledge, PaginatedResult } from './base-knowledge.types';
 
 const RELEVANCE_THRESHOLD = 1.2;
 
@@ -47,12 +47,22 @@ export class BaseKnowledgeService {
     return rows[0];
   }
 
-  async findAll(): Promise<BaseKnowledge[]> {
-    return this.prisma.$queryRaw<BaseKnowledge[]>`
-      SELECT id, title, description, category, "createdAt", "updatedAt"
-      FROM "BaseKnowledge"
-      ORDER BY "createdAt" DESC
-    `;
+  async findAll(page: number, limit: number): Promise<PaginatedResult<BaseKnowledge>> {
+    const offset = (page - 1) * limit;
+
+    const [rows, countRows] = await Promise.all([
+      this.prisma.$queryRaw<BaseKnowledge[]>`
+        SELECT id, title, description, category, "createdAt", "updatedAt"
+        FROM "BaseKnowledge"
+        ORDER BY "createdAt" DESC
+        LIMIT ${limit} OFFSET ${offset}
+      `,
+      this.prisma.$queryRaw<[{ count: bigint }]>`
+        SELECT COUNT(*) FROM "BaseKnowledge"
+      `,
+    ]);
+
+    return { data: rows, total: Number(countRows[0].count) };
   }
 
   async findOne(id: string): Promise<BaseKnowledge> {

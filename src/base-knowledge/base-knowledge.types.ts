@@ -6,3 +6,8 @@ export interface BaseKnowledge {
   createdAt: Date;
   updatedAt: Date;
 }
+
+export interface PaginatedResult<T> {
+  data: T[];
+  total: number;
+}

@@ -94,6 +94,7 @@ GET    /proposals/:id/chat      — история чата с decision и reaso
 POST   /proposals/:id/analyze   — только анализ, без генерации текста
 
 POST   /base-knowledge          — добавить запись в базу знаний
+GET    /base-knowledge          — список с пагинацией (?page=1&limit=8)
 GET    /base-knowledge/search   — семантический поиск (?q=...)
 
 PUT    /settings                — обновить системный промпт

@@ -10,6 +10,11 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.useWebSocketAdapter(new IoAdapter(app));
 
+  app.enableCors({
+    origin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
+    credentials: true,
+  });
+
   app.useGlobalFilters(new GlobalExceptionFilter());
 
   app.useGlobalPipes(
