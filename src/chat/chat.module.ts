@@ -1,0 +1,13 @@
+import { Module } from '@nestjs/common';
+
+import { AuthModule } from '../auth/auth.module';
+import { BaseKnowledgeModule } from '../base-knowledge/base-knowledge.module';
+import { ChatGateway } from './chat.gateway';
+import { ChatService } from './chat.service';
+
+@Module({
+  imports: [BaseKnowledgeModule, AuthModule],
+  providers: [ChatService, ChatGateway],
+  exports: [ChatService],
+})
+export class ChatModule {}
