@@ -1,8 +1,6 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
+
+import { ProposalStatus } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProposalDto } from './dto/create-proposal.dto';
@@ -13,13 +11,16 @@ export class ProposalService {
   constructor(private readonly prisma: PrismaService) {}
 
   create(dto: CreateProposalDto, userId: string) {
-    if (!dto.title?.trim()) {
-      throw new BadRequestException('Title is required');
-    }
-
     return this.prisma.proposal.create({
       data: {
-        title: dto.title.trim(),
+        manager: dto.manager,
+        account: dto.account,
+        proposalType: dto.proposalType,
+        platform: dto.platform,
+        jobUrl: dto.jobUrl,
+        boosted: dto.boosted,
+        connects: dto.connects,
+        coverLetter: dto.coverLetter,
         vacancy: dto.vacancy,
         comment: dto.comment,
         context: dto.context,
@@ -44,15 +45,26 @@ export class ProposalService {
   }
 
   async update(id: string, dto: UpdateProposalDto, userId: string) {
-    if (!dto.title?.trim()) throw new BadRequestException('Title is required');
     await this.findOne(id, userId);
+
+    const sentAt = dto.status === ProposalStatus.Sent ? new Date() : undefined;
+
     return this.prisma.proposal.update({
       where: { id },
       data: {
-        title: dto.title.trim(),
+        manager: dto.manager,
+        account: dto.account,
+        proposalType: dto.proposalType,
+        status: dto.status,
+        platform: dto.platform,
+        jobUrl: dto.jobUrl,
+        boosted: dto.boosted,
+        connects: dto.connects,
+        coverLetter: dto.coverLetter,
         vacancy: dto.vacancy,
         comment: dto.comment,
         context: dto.context,
+        ...(sentAt !== undefined && { sentAt }),
       },
     });
   }

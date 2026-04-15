@@ -28,23 +28,51 @@ enum MessageRole {
   assistant
 }
 
+enum ProposalStatus {
+  Draft
+  Sent
+  Viewed
+  Replied
+}
+
+enum ProposalType {
+  Bid
+  Invite
+  DirectMessage
+}
+
+enum Platform {
+  Upwork
+  LinkedIn
+}
+
 // ─── Proposal / Chat ─────────────────────────────────────────────────────────
 
 model Proposal {
-  id        String   @id @default(uuid())
-  title     String
-  vacancy   String?
-  comment   String?
-  context   String?
-  userId    String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String         @id @default(uuid())
+  jobUrl       String?
+  status       ProposalStatus @default(Draft)
+  manager      String
+  account      String
+  platform     Platform       @default(Upwork)
+  proposalType ProposalType
+  boosted      Boolean        @default(false)
+  connects     Int            @default(0)
+  sentAt       DateTime?
+  coverLetter  String?
+  vacancy      String?
+  comment      String?
+  context      String?
+  userId       String
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
 
   user     User          @relation(fields: [userId], references: [id])
   messages ChatMessage[]
 
   @@index([createdAt])
   @@index([userId])
+  @@index([status])
 }
 
 model ChatMessage {

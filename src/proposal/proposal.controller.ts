@@ -56,9 +56,8 @@ export class ProposalController {
   }
 
   @Put(':id')
-  @ApiOperation({ summary: 'Update proposal title' })
+  @ApiOperation({ summary: 'Update proposal' })
   @ApiResponse({ status: 200, description: 'Proposal updated' })
-  @ApiResponse({ status: 400, description: 'Title is required' })
   @ApiResponse({ status: 404, description: 'Proposal not found' })
   update(@Param('id') id: string, @Body() dto: UpdateProposalDto, @Request() req) {
     return this.proposalService.update(id, dto, req.user.id);
