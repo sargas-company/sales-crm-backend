@@ -242,6 +242,30 @@ export class ChatService {
     });
   }
 
+  // ─── Admin: list all chats ────────────────────────────────────────────────────
+
+  async listAll(limit: number, cursor?: string) {
+    const items = await this.prisma.proposal.findMany({
+      take: limit + 1,
+      ...(cursor && { cursor: { id: cursor }, skip: 1 }),
+      orderBy: { updatedAt: 'desc' },
+      include: {
+        user: { select: { id: true, email: true } },
+        _count: { select: { messages: true } },
+        messages: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
+      },
+    });
+
+    const hasNextPage = items.length > limit;
+    const data = hasNextPage ? items.slice(0, limit) : items;
+    const nextCursor = hasNextPage ? data[data.length - 1].id : null;
+
+    return { data, nextCursor };
+  }
+
   // ─── Analyze only ─────────────────────────────────────────────────────────────
 
   async analyzeOnly(

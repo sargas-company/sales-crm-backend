@@ -93,6 +93,8 @@ GET    /proposals               — список своих proposals
 GET    /proposals/:id/chat      — история чата с decision и reasoning
 POST   /proposals/:id/analyze   — только анализ, без генерации текста
 
+GET    /chats                   — все чаты с пагинацией (?cursor=...&limit=20)
+
 POST   /base-knowledge          — добавить запись в базу знаний
 GET    /base-knowledge          — список с пагинацией (?page=1&limit=8)
 GET    /base-knowledge/search   — семантический поиск (?q=...)
