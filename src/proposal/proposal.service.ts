@@ -29,11 +29,20 @@ export class ProposalService {
     });
   }
 
-  findAll(userId: string) {
-    return this.prisma.proposal.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-    });
+  async findAll(userId: string, page: number, limit: number) {
+    const offset = (page - 1) * limit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.proposal.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+        skip: offset,
+        take: limit,
+      }),
+      this.prisma.proposal.count({ where: { userId } }),
+    ]);
+
+    return { data, total };
   }
 
   async findOne(id: string, userId: string) {

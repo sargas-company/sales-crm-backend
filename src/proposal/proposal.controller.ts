@@ -8,10 +8,11 @@ import {
   Param,
   Post,
   Put,
+  Query,
   Request,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
@@ -41,10 +42,16 @@ export class ProposalController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Get all proposals' })
-  @ApiResponse({ status: 200, description: 'List of proposals ordered by date desc' })
-  findAll(@Request() req) {
-    return this.proposalService.findAll(req.user.id);
+  @ApiOperation({ summary: 'Get paginated proposals' })
+  @ApiQuery({ name: 'page', required: false, example: 1, description: 'Page number (default: 1)' })
+  @ApiQuery({ name: 'limit', required: false, example: 10, description: 'Items per page (default: 10)' })
+  @ApiResponse({ status: 200, description: 'Paginated list of proposals ordered by date desc' })
+  findAll(
+    @Request() req,
+    @Query('page') page = 1,
+    @Query('limit') limit = 10,
+  ) {
+    return this.proposalService.findAll(req.user.id, Number(page), Number(limit));
   }
 
   @Get(':id')
