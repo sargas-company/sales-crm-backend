@@ -9,7 +9,7 @@ import {
   MinLength,
 } from 'class-validator';
 
-import { Platform, ProposalType } from '@prisma/client';
+import { ProposalType } from '@prisma/client';
 
 export class CreateProposalDto {
   @ApiProperty({ example: 'Full Stack Developer — MVP Project' })
@@ -17,18 +17,17 @@ export class CreateProposalDto {
   @MinLength(1)
   title: string;
 
-  @ApiProperty({ example: 'MyCompany' })
+  @ApiProperty({ example: 'uuid-of-account' })
   @IsString()
-  account: string;
+  accountId: string;
+
+  @ApiProperty({ example: 'uuid-of-platform' })
+  @IsString()
+  platformId: string;
 
   @ApiProperty({ enum: ProposalType, example: ProposalType.Bid })
   @IsEnum(ProposalType)
   proposalType: ProposalType;
-
-  @ApiProperty({ enum: Platform, example: Platform.Upwork, required: false })
-  @IsOptional()
-  @IsEnum(Platform)
-  platform?: Platform;
 
   @ApiProperty({ example: '~01abc1234567890def', required: false })
   @IsOptional()
@@ -64,5 +63,4 @@ export class CreateProposalDto {
   @IsOptional()
   @IsString()
   vacancy?: string;
-
 }

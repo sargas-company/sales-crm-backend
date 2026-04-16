@@ -6,18 +6,26 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateProposalDto } from './dto/create-proposal.dto';
 import { UpdateProposalDto } from './dto/update-proposal.dto';
 
+const USER_SELECT = { id: true, email: true, firstName: true, lastName: true };
+const PROPOSAL_INCLUDE = {
+  user: { select: USER_SELECT },
+  account: { include: { platform: true } },
+  platform: true,
+} as const;
+
 @Injectable()
 export class ProposalService {
   constructor(private readonly prisma: PrismaService) {}
 
   create(dto: CreateProposalDto, userId: string) {
     const isBid = dto.proposalType === ProposalType.Bid;
+
     return this.prisma.proposal.create({
       data: {
         title: dto.title,
-        account: dto.account,
+        accountId: dto.accountId,
+        platformId: dto.platformId,
         proposalType: dto.proposalType,
-        platform: dto.platform,
         jobUrl: dto.jobUrl,
         boosted: isBid ? (dto.boosted ?? false) : false,
         connects: isBid ? (dto.connects ?? 0) : 0,
@@ -26,7 +34,7 @@ export class ProposalService {
         vacancy: dto.vacancy,
         userId,
       },
-      include: { user: { select: { id: true, email: true, firstName: true, lastName: true } } },
+      include: PROPOSAL_INCLUDE,
     });
   }
 
@@ -39,7 +47,7 @@ export class ProposalService {
         orderBy: { createdAt: 'desc' },
         skip: offset,
         take: limit,
-        include: { user: { select: { id: true, email: true, firstName: true, lastName: true } } },
+        include: PROPOSAL_INCLUDE,
       }),
       this.prisma.proposal.count({ where: { userId } }),
     ]);
@@ -50,7 +58,7 @@ export class ProposalService {
   async findOne(id: string, userId: string) {
     const proposal = await this.prisma.proposal.findFirst({
       where: { id, userId },
-      include: { user: { select: { id: true, email: true, firstName: true, lastName: true } } },
+      include: PROPOSAL_INCLUDE,
     });
     if (!proposal) throw new NotFoundException('Proposal not found');
     return proposal;
@@ -74,13 +82,13 @@ export class ProposalService {
 
     return this.prisma.proposal.update({
       where: { id },
-      include: { user: { select: { id: true, email: true, firstName: true, lastName: true } } },
+      include: PROPOSAL_INCLUDE,
       data: {
         title: dto.title,
-        account: dto.account,
+        accountId: dto.accountId,
+        platformId: dto.platformId,
         proposalType: dto.proposalType,
         status: dto.status,
-        platform: dto.platform,
         jobUrl: dto.jobUrl,
         ...bidFields,
         coverLetter: dto.coverLetter,

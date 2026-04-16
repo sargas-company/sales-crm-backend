@@ -1,7 +1,9 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 
+import { AccountModule } from './account/account.module';
 import { AuthModule } from './auth/auth.module';
+import { PlatformModule } from './platform/platform.module';
 import { BaseKnowledgeModule } from './base-knowledge/base-knowledge.module';
 import { ChatModule } from './chat/chat.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -13,6 +15,8 @@ import { SettingsModule } from './settings/settings.module';
     ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
     AuthModule,
+    PlatformModule,
+    AccountModule,
     ProposalModule,
     BaseKnowledgeModule,
     ChatModule,
