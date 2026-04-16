@@ -13,6 +13,7 @@ export class ProposalService {
   create(dto: CreateProposalDto, userId: string) {
     return this.prisma.proposal.create({
       data: {
+        title: dto.title,
         manager: dto.manager,
         account: dto.account,
         proposalType: dto.proposalType,
@@ -61,6 +62,7 @@ export class ProposalService {
     return this.prisma.proposal.update({
       where: { id },
       data: {
+        title: dto.title,
         manager: dto.manager,
         account: dto.account,
         proposalType: dto.proposalType,

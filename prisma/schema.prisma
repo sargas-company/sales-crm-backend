@@ -50,6 +50,7 @@ enum Platform {
 
 model Proposal {
   id           String         @id @default(uuid())
+  title        String
   jobUrl       String?
   status       ProposalStatus @default(Draft)
   manager      String

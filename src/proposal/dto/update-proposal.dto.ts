@@ -6,11 +6,18 @@ import {
   IsOptional,
   IsString,
   Min,
+  MinLength,
 } from 'class-validator';
 
 import { Platform, ProposalStatus, ProposalType } from '@prisma/client';
 
 export class UpdateProposalDto {
+  @ApiProperty({ example: 'Full Stack Developer — MVP Project', required: false })
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  title?: string;
+
   @ApiProperty({ example: 'John Doe', required: false })
   @IsOptional()
   @IsString()
