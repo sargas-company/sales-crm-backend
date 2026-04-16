@@ -9,7 +9,7 @@ import {
   MinLength,
 } from 'class-validator';
 
-import { Platform, ProposalType } from '@prisma/client';
+import { ProposalType } from '@prisma/client';
 
 export class CreateProposalDto {
   @ApiProperty({ example: 'Full Stack Developer — MVP Project' })
@@ -17,22 +17,17 @@ export class CreateProposalDto {
   @MinLength(1)
   title: string;
 
-  @ApiProperty({ example: 'John Doe' })
+  @ApiProperty({ example: 'uuid-of-account' })
   @IsString()
-  manager: string;
+  accountId: string;
 
-  @ApiProperty({ example: 'MyCompany' })
+  @ApiProperty({ example: 'uuid-of-platform' })
   @IsString()
-  account: string;
+  platformId: string;
 
   @ApiProperty({ enum: ProposalType, example: ProposalType.Bid })
   @IsEnum(ProposalType)
   proposalType: ProposalType;
-
-  @ApiProperty({ enum: Platform, example: Platform.Upwork, required: false })
-  @IsOptional()
-  @IsEnum(Platform)
-  platform?: Platform;
 
   @ApiProperty({ example: '~01abc1234567890def', required: false })
   @IsOptional()
@@ -50,6 +45,12 @@ export class CreateProposalDto {
   @Min(0)
   connects?: number;
 
+  @ApiProperty({ example: 14, required: false })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  boostedConnects?: number;
+
   @ApiProperty({ example: 'Dear client, ...', required: false })
   @IsOptional()
   @IsString()
@@ -62,14 +63,4 @@ export class CreateProposalDto {
   @IsOptional()
   @IsString()
   vacancy?: string;
-
-  @ApiProperty({ example: 'Client prefers remote work', required: false })
-  @IsOptional()
-  @IsString()
-  comment?: string;
-
-  @ApiProperty({ example: 'Budget: $5000, Rating: 4.8', required: false })
-  @IsOptional()
-  @IsString()
-  context?: string;
 }

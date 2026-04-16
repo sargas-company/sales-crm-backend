@@ -9,7 +9,7 @@ import {
   MinLength,
 } from 'class-validator';
 
-import { Platform, ProposalStatus, ProposalType } from '@prisma/client';
+import { ProposalStatus, ProposalType } from '@prisma/client';
 
 export class UpdateProposalDto {
   @ApiProperty({ example: 'Full Stack Developer — MVP Project', required: false })
@@ -18,15 +18,15 @@ export class UpdateProposalDto {
   @MinLength(1)
   title?: string;
 
-  @ApiProperty({ example: 'John Doe', required: false })
+  @ApiProperty({ example: 'uuid-of-account', required: false })
   @IsOptional()
   @IsString()
-  manager?: string;
+  accountId?: string;
 
-  @ApiProperty({ example: 'MyCompany', required: false })
+  @ApiProperty({ example: 'uuid-of-platform', required: false })
   @IsOptional()
   @IsString()
-  account?: string;
+  platformId?: string;
 
   @ApiProperty({ enum: ProposalType, example: ProposalType.Bid, required: false })
   @IsOptional()
@@ -37,11 +37,6 @@ export class UpdateProposalDto {
   @IsOptional()
   @IsEnum(ProposalStatus)
   status?: ProposalStatus;
-
-  @ApiProperty({ enum: Platform, example: Platform.Upwork, required: false })
-  @IsOptional()
-  @IsEnum(Platform)
-  platform?: Platform;
 
   @ApiProperty({ example: '~01abc1234567890def', required: false })
   @IsOptional()
@@ -59,26 +54,19 @@ export class UpdateProposalDto {
   @Min(0)
   connects?: number;
 
+  @ApiProperty({ example: 14, required: false })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  boostedConnects?: number;
+
   @ApiProperty({ example: 'Dear client, ...', required: false })
   @IsOptional()
   @IsString()
   coverLetter?: string;
 
-  @ApiProperty({
-    example: 'We are looking for a React developer...',
-    required: false,
-  })
+  @ApiProperty({ example: 'We are looking for a React developer...', required: false })
   @IsOptional()
   @IsString()
   vacancy?: string;
-
-  @ApiProperty({ example: 'Client prefers remote work', required: false })
-  @IsOptional()
-  @IsString()
-  comment?: string;
-
-  @ApiProperty({ example: 'Budget: $5000, Rating: 4.8', required: false })
-  @IsOptional()
-  @IsString()
-  context?: string;
 }

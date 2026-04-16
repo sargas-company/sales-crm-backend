@@ -1,11 +1,18 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 
-import { ProposalStatus } from '@prisma/client';
+import { ProposalStatus, ProposalType } from '@prisma/client';
 
 import { LeadService } from '../lead/lead.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProposalDto } from './dto/create-proposal.dto';
 import { UpdateProposalDto } from './dto/update-proposal.dto';
+
+const USER_SELECT = { id: true, email: true, firstName: true, lastName: true };
+const PROPOSAL_INCLUDE = {
+  user: { select: USER_SELECT },
+  account: { include: { platform: true } },
+  platform: true,
+} as const;
 
 @Injectable()
 export class ProposalService {
@@ -15,22 +22,23 @@ export class ProposalService {
   ) {}
 
   create(dto: CreateProposalDto, userId: string) {
+    const isBid = dto.proposalType === ProposalType.Bid;
+
     return this.prisma.proposal.create({
       data: {
         title: dto.title,
-        manager: dto.manager,
-        account: dto.account,
+        accountId: dto.accountId,
+        platformId: dto.platformId,
         proposalType: dto.proposalType,
-        platform: dto.platform,
         jobUrl: dto.jobUrl,
-        boosted: dto.boosted,
-        connects: dto.connects,
+        boosted: isBid ? (dto.boosted ?? false) : false,
+        connects: isBid ? (dto.connects ?? 0) : 0,
+        boostedConnects: isBid && dto.boosted ? (dto.boostedConnects ?? 0) : 0,
         coverLetter: dto.coverLetter,
         vacancy: dto.vacancy,
-        comment: dto.comment,
-        context: dto.context,
         userId,
       },
+      include: PROPOSAL_INCLUDE,
     });
   }
 
@@ -42,6 +50,7 @@ export class ProposalService {
         orderBy: { createdAt: 'desc' },
         skip: offset,
         take: limit,
+        include: PROPOSAL_INCLUDE,
       }),
       this.prisma.proposal.count(),
     ]);
@@ -52,36 +61,45 @@ export class ProposalService {
   async findOne(id: string) {
     const proposal = await this.prisma.proposal.findUnique({
       where: { id },
+      include: PROPOSAL_INCLUDE,
     });
     if (!proposal) throw new NotFoundException('Proposal not found');
     return proposal;
   }
 
   async update(id: string, dto: UpdateProposalDto) {
-    const proposal = await this.findOne(id);
-
-    const now = new Date();
-    const sentAt = dto.status === ProposalStatus.Sent ? now : undefined;
+    const current = await this.findOne(id);
+    const effectiveType = dto.proposalType ?? current.proposalType;
+    const isBid = effectiveType === ProposalType.Bid;
+    const sentAt = dto.status === ProposalStatus.Sent ? new Date() : undefined;
     const isBecomingReplied =
-      dto.status === ProposalStatus.Replied && proposal.status !== ProposalStatus.Replied;
+      dto.status === ProposalStatus.Replied &&
+      current.status !== ProposalStatus.Replied;
+
+    const bidFields = isBid
+      ? {
+          boosted: dto.boosted,
+          connects: dto.connects,
+          ...(dto.boosted !== undefined && {
+            boostedConnects: dto.boosted ? (dto.boostedConnects ?? 0) : 0,
+          }),
+        }
+      : { boosted: false, connects: 0, boostedConnects: 0 };
 
     return this.prisma.$transaction(async (tx) => {
       const updated = await tx.proposal.update({
         where: { id },
+        include: PROPOSAL_INCLUDE,
         data: {
           title: dto.title,
-          manager: dto.manager,
-          account: dto.account,
+          accountId: dto.accountId,
+          platformId: dto.platformId,
           proposalType: dto.proposalType,
           status: dto.status,
-          platform: dto.platform,
           jobUrl: dto.jobUrl,
-          boosted: dto.boosted,
-          connects: dto.connects,
+          ...bidFields,
           coverLetter: dto.coverLetter,
           vacancy: dto.vacancy,
-          comment: dto.comment,
-          context: dto.context,
           ...(sentAt !== undefined && { sentAt }),
         },
       });

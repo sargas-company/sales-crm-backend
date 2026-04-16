@@ -77,7 +77,7 @@ export class ChatService {
       this.prisma.proposal.findUnique({ where: { id: proposalId } }),
     ]);
 
-    const searchQuery = [proposal?.vacancy, proposal?.comment, content]
+    const searchQuery = [proposal?.vacancy, content]
       .filter(Boolean)
       .join(' ');
     const knowledgeItems = await this.baseKnowledge.searchRelevant(searchQuery);
@@ -90,8 +90,6 @@ export class ChatService {
 
     const userMessage = [
       `VACANCY:\n${proposal?.vacancy || '(not specified)'}`,
-      `MANAGER'S COMMENT:\n${proposal?.comment || '(not specified)'}`,
-      `ADDITIONAL CONTEXT:\n${proposal?.context || '(not specified)'}`,
       `MESSAGE:\n${content}`,
     ].join('\n\n');
 
