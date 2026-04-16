@@ -15,7 +15,6 @@ export class ProposalService {
     return this.prisma.proposal.create({
       data: {
         title: dto.title,
-        manager: dto.manager,
         account: dto.account,
         proposalType: dto.proposalType,
         platform: dto.platform,
@@ -27,6 +26,7 @@ export class ProposalService {
         vacancy: dto.vacancy,
         userId,
       },
+      include: { user: { select: { id: true, email: true, firstName: true, lastName: true } } },
     });
   }
 
@@ -39,6 +39,7 @@ export class ProposalService {
         orderBy: { createdAt: 'desc' },
         skip: offset,
         take: limit,
+        include: { user: { select: { id: true, email: true, firstName: true, lastName: true } } },
       }),
       this.prisma.proposal.count({ where: { userId } }),
     ]);
@@ -49,6 +50,7 @@ export class ProposalService {
   async findOne(id: string, userId: string) {
     const proposal = await this.prisma.proposal.findFirst({
       where: { id, userId },
+      include: { user: { select: { id: true, email: true, firstName: true, lastName: true } } },
     });
     if (!proposal) throw new NotFoundException('Proposal not found');
     return proposal;
@@ -72,9 +74,9 @@ export class ProposalService {
 
     return this.prisma.proposal.update({
       where: { id },
+      include: { user: { select: { id: true, email: true, firstName: true, lastName: true } } },
       data: {
         title: dto.title,
-        manager: dto.manager,
         account: dto.account,
         proposalType: dto.proposalType,
         status: dto.status,

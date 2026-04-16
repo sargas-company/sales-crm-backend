@@ -16,6 +16,8 @@ model User {
   email              String     @unique
   passwordHash       String
   refreshTokenHash   String?
+  firstName          String
+  lastName           String
   createdAt          DateTime   @default(now())
 
   proposals Proposal[]
@@ -53,7 +55,6 @@ model Proposal {
   title        String
   jobUrl       String?
   status       ProposalStatus @default(Draft)
-  manager      String
   account      String
   platform     Platform       @default(Upwork)
   proposalType ProposalType

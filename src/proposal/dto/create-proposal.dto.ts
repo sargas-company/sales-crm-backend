@@ -17,10 +17,6 @@ export class CreateProposalDto {
   @MinLength(1)
   title: string;
 
-  @ApiProperty({ example: 'John Doe' })
-  @IsString()
-  manager: string;
-
   @ApiProperty({ example: 'MyCompany' })
   @IsString()
   account: string;

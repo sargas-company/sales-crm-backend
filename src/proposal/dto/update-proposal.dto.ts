@@ -18,11 +18,6 @@ export class UpdateProposalDto {
   @MinLength(1)
   title?: string;
 
-  @ApiProperty({ example: 'John Doe', required: false })
-  @IsOptional()
-  @IsString()
-  manager?: string;
-
   @ApiProperty({ example: 'MyCompany', required: false })
   @IsOptional()
   @IsString()
