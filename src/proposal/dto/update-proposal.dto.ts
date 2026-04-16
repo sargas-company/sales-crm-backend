@@ -59,6 +59,12 @@ export class UpdateProposalDto {
   @Min(0)
   connects?: number;
 
+  @ApiProperty({ example: 14, required: false })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  boostedConnects?: number;
+
   @ApiProperty({ example: 'Dear client, ...', required: false })
   @IsOptional()
   @IsString()
@@ -72,13 +78,4 @@ export class UpdateProposalDto {
   @IsString()
   vacancy?: string;
 
-  @ApiProperty({ example: 'Client prefers remote work', required: false })
-  @IsOptional()
-  @IsString()
-  comment?: string;
-
-  @ApiProperty({ example: 'Budget: $5000, Rating: 4.8', required: false })
-  @IsOptional()
-  @IsString()
-  context?: string;
 }

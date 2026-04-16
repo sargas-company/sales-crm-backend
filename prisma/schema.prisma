@@ -57,13 +57,12 @@ model Proposal {
   account      String
   platform     Platform       @default(Upwork)
   proposalType ProposalType
-  boosted      Boolean        @default(false)
-  connects     Int            @default(0)
+  boosted         Boolean        @default(false)
+  connects        Int            @default(0)
+  boostedConnects Int            @default(0)
   sentAt       DateTime?
   coverLetter  String?
   vacancy      String?
-  comment      String?
-  context      String?
   userId       String
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
