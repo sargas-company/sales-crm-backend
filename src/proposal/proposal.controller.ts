@@ -47,27 +47,26 @@ export class ProposalController {
   @ApiQuery({ name: 'limit', required: false, example: 10, description: 'Items per page (default: 10)' })
   @ApiResponse({ status: 200, description: 'Paginated list of proposals ordered by date desc' })
   findAll(
-    @Request() req,
     @Query('page') page = 1,
     @Query('limit') limit = 10,
   ) {
-    return this.proposalService.findAll(req.user.id, Number(page), Number(limit));
+    return this.proposalService.findAll(Number(page), Number(limit));
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Get a proposal by ID' })
   @ApiResponse({ status: 200, description: 'Proposal found' })
   @ApiResponse({ status: 404, description: 'Proposal not found' })
-  findOne(@Param('id') id: string, @Request() req) {
-    return this.proposalService.findOne(id, req.user.id);
+  findOne(@Param('id') id: string) {
+    return this.proposalService.findOne(id);
   }
 
   @Put(':id')
   @ApiOperation({ summary: 'Update proposal' })
   @ApiResponse({ status: 200, description: 'Proposal updated' })
   @ApiResponse({ status: 404, description: 'Proposal not found' })
-  update(@Param('id') id: string, @Body() dto: UpdateProposalDto, @Request() req) {
-    return this.proposalService.update(id, dto, req.user.id);
+  update(@Param('id') id: string, @Body() dto: UpdateProposalDto) {
+    return this.proposalService.update(id, dto);
   }
 
   @Delete(':id')
@@ -75,23 +74,23 @@ export class ProposalController {
   @ApiOperation({ summary: 'Delete a proposal' })
   @ApiResponse({ status: 204, description: 'Proposal deleted' })
   @ApiResponse({ status: 404, description: 'Proposal not found' })
-  remove(@Param('id') id: string, @Request() req) {
-    return this.proposalService.remove(id, req.user.id);
+  remove(@Param('id') id: string) {
+    return this.proposalService.remove(id);
   }
 
   @Get(':id/chat')
   @ApiOperation({ summary: 'Get chat history for a proposal' })
   @ApiResponse({ status: 200, description: 'List of messages ordered by date asc' })
   @ApiResponse({ status: 404, description: 'Proposal not found' })
-  getMessages(@Param('id') id: string, @Request() req) {
-    return this.proposalService.getMessages(id, req.user.id);
+  getMessages(@Param('id') id: string) {
+    return this.proposalService.getMessages(id);
   }
 
   @Post(':id/analyze')
   @ApiOperation({ summary: 'Analyze proposal intent without generating text' })
   @ApiResponse({ status: 200, description: 'Decision and reasoning' })
   @ApiResponse({ status: 404, description: 'Proposal not found' })
-  analyze(@Param('id') id: string, @Body() dto: AnalyzeProposalDto, @Request() req) {
-    return this.chatService.analyzeOnly(id, dto.content, req.user.id);
+  analyze(@Param('id') id: string, @Body() dto: AnalyzeProposalDto) {
+    return this.chatService.analyzeOnly(id, dto.content);
   }
 }

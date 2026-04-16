@@ -8,7 +8,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { BaseKnowledgeService } from '../base-knowledge/base-knowledge.service';
 import { PrismaService } from '../prisma/prisma.service';
 
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL ?? 'claude-sonnet-4-6';
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 
 const DEFAULT_SYSTEM_PROMPT =
   'You are an assistant that helps write professional proposals.';
@@ -271,10 +271,9 @@ export class ChatService {
   async analyzeOnly(
     proposalId: string,
     content: string,
-    userId: string,
   ): Promise<{ decision: string; reasoning: string }> {
-    const proposal = await this.prisma.proposal.findFirst({
-      where: { id: proposalId, userId },
+    const proposal = await this.prisma.proposal.findUnique({
+      where: { id: proposalId },
     });
     if (!proposal) throw new NotFoundException('Proposal not found');
 

@@ -46,6 +46,21 @@ enum Platform {
   LinkedIn
 }
 
+enum LeadStatus {
+  conversation_ongoing
+  trial
+  hold
+  contract_offer
+  accept_contract
+  start_contract
+  suspended
+}
+
+enum ClientType {
+  individual
+  company
+}
+
 // ─── Proposal / Chat ─────────────────────────────────────────────────────────
 
 model Proposal {
@@ -70,6 +85,7 @@ model Proposal {
 
   user     User          @relation(fields: [userId], references: [id])
   messages ChatMessage[]
+  lead     Lead?
 
   @@index([createdAt])
   @@index([userId])
@@ -100,6 +116,29 @@ model BaseKnowledge {
   updatedAt   DateTime               @updatedAt
 
   @@index([category])
+  @@index([createdAt])
+}
+
+// ─── Lead ────────────────────────────────────────────────────────────────────
+
+model Lead {
+  id         String     @id @default(uuid())
+  number     Int        @unique @default(autoincrement())
+  proposalId String?    @unique
+  leadName   String?
+  status     LeadStatus @default(conversation_ongoing)
+  clientType ClientType?
+  rate       Int?
+  location   String?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+  repliedAt  DateTime   @default(now())
+  acceptedAt DateTime?
+  holdAt     DateTime?
+
+  proposal Proposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+
+  @@index([status])
   @@index([createdAt])
 }
 

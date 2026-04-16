@@ -4,6 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import { AuthModule } from './auth/auth.module';
 import { BaseKnowledgeModule } from './base-knowledge/base-knowledge.module';
 import { ChatModule } from './chat/chat.module';
+import { LeadModule } from './lead/lead.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProposalModule } from './proposal/proposal.module';
 import { SettingsModule } from './settings/settings.module';
@@ -17,6 +18,7 @@ import { SettingsModule } from './settings/settings.module';
     BaseKnowledgeModule,
     ChatModule,
     SettingsModule,
+    LeadModule,
   ],
 })
 export class AppModule {}
