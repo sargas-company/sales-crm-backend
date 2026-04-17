@@ -12,6 +12,7 @@ const PROPOSAL_INCLUDE = {
   user: { select: USER_SELECT },
   account: { include: { platform: true } },
   platform: true,
+  chat: true,
 } as const;
 
 @Injectable()
@@ -37,6 +38,7 @@ export class ProposalService {
         coverLetter: dto.coverLetter,
         vacancy: dto.vacancy,
         userId,
+        chat: { create: {} },
       },
       include: PROPOSAL_INCLUDE,
     });
@@ -114,13 +116,28 @@ export class ProposalService {
 
   async remove(id: string) {
     await this.findOne(id);
-    return this.prisma.proposal.delete({ where: { id } });
+    return this.prisma.$transaction(async (tx) => {
+      const chat = await tx.chat.findUnique({ where: { proposalId: id } });
+      if (chat) {
+        if (!chat.leadId) {
+          await tx.chat.delete({ where: { id: chat.id } });
+        } else {
+          await tx.chat.update({
+            where: { id: chat.id },
+            data: { proposalId: null },
+          });
+        }
+      }
+      return tx.proposal.delete({ where: { id } });
+    });
   }
 
   async getMessages(proposalId: string) {
     await this.findOne(proposalId);
+    const chat = await this.prisma.chat.findUnique({ where: { proposalId } });
+    if (!chat) return [];
     return this.prisma.chatMessage.findMany({
-      where: { proposalId },
+      where: { chatId: chat.id },
       orderBy: { createdAt: 'asc' },
     });
   }

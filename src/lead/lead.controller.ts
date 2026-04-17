@@ -59,6 +59,17 @@ export class LeadController {
     return this.leadService.findOne(id);
   }
 
+  @Get(':id/chat')
+  @ApiOperation({ summary: 'Get chat message history for a lead' })
+  @ApiResponse({
+    status: 200,
+    description: 'Chat messages ordered by date asc',
+  })
+  @ApiResponse({ status: 404, description: 'Lead not found' })
+  getMessages(@Param('id') id: string) {
+    return this.leadService.getMessages(id);
+  }
+
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Delete lead' })

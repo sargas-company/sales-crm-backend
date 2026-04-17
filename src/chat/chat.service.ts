@@ -65,15 +65,19 @@ export class ChatService {
   }
 
   private async prepareContext(proposalId: string, content: string) {
+    const chat = await this.prisma.chat.findUnique({ where: { proposalId } });
+
     const [systemPrompt, recentMessages, proposal] = await Promise.all([
       this.getSystemPrompt(),
-      this.prisma.chatMessage
-        .findMany({
-          where: { proposalId },
-          orderBy: { createdAt: 'desc' },
-          take: HISTORY_LIMIT,
-        })
-        .then((msgs) => msgs.reverse()),
+      chat
+        ? this.prisma.chatMessage
+            .findMany({
+              where: { chatId: chat.id },
+              orderBy: { createdAt: 'desc' },
+              take: HISTORY_LIMIT,
+            })
+            .then((msgs) => msgs.reverse())
+        : Promise.resolve([]),
       this.prisma.proposal.findUnique({ where: { id: proposalId } }),
     ]);
 
@@ -108,7 +112,7 @@ export class ChatService {
     proposalId: string,
     content: string,
     userId: string,
-  ): Promise<string> {
+  ): Promise<{ trimmed: string; chatId: string }> {
     const trimmed = content.trim();
     if (!trimmed)
       throw new BadRequestException('Message content cannot be empty');
@@ -118,11 +122,14 @@ export class ChatService {
     });
     if (!proposal) throw new NotFoundException('Proposal not found');
 
+    const chat = await this.prisma.chat.findUnique({ where: { proposalId } });
+    if (!chat) throw new NotFoundException('Chat not found');
+
     await this.prisma.chatMessage.create({
-      data: { proposalId, role: 'user', content: trimmed },
+      data: { chatId: chat.id, role: 'user', content: trimmed },
     });
 
-    return trimmed;
+    return { trimmed, chatId: chat.id };
   }
 
   private async analyzeIntent(context: {
@@ -157,7 +164,7 @@ export class ChatService {
     content: string,
     userId: string,
   ): Promise<string> {
-    const trimmed = await this.validateAndSaveUserMessage(
+    const { trimmed, chatId } = await this.validateAndSaveUserMessage(
       proposalId,
       content,
       userId,
@@ -177,7 +184,7 @@ export class ChatService {
       .join('\n');
 
     await this.prisma.chatMessage.create({
-      data: { proposalId, role: 'assistant', content: assistantText },
+      data: { chatId, role: 'assistant', content: assistantText },
     });
 
     return assistantText;
@@ -193,7 +200,7 @@ export class ChatService {
     | { type: 'analysis'; decision: string; reasoning: string }
     | { type: 'chunk'; text: string }
   > {
-    const trimmed = await this.validateAndSaveUserMessage(
+    const { trimmed, chatId } = await this.validateAndSaveUserMessage(
       proposalId,
       content,
       userId,
@@ -231,7 +238,7 @@ export class ChatService {
 
     await this.prisma.chatMessage.create({
       data: {
-        proposalId,
+        chatId,
         role: 'assistant',
         content: fullText,
         decision,
@@ -242,13 +249,22 @@ export class ChatService {
 
   // ─── Admin: list all chats ────────────────────────────────────────────────────
 
-  async listAll(limit: number, cursor?: string) {
-    const items = await this.prisma.proposal.findMany({
+  async listAll(limit: number, cursor?: string, type?: 'proposal' | 'lead') {
+    const where =
+      type === 'proposal'
+        ? { proposalId: { not: null } }
+        : type === 'lead'
+          ? { leadId: { not: null } }
+          : undefined;
+
+    const items = await this.prisma.chat.findMany({
       take: limit + 1,
       ...(cursor && { cursor: { id: cursor }, skip: 1 }),
-      orderBy: { updatedAt: 'desc' },
+      orderBy: { createdAt: 'desc' },
+      ...(where && { where }),
       include: {
-        user: { select: { id: true, email: true } },
+        proposal: { include: { user: { select: { id: true, email: true } } } },
+        lead: true,
         _count: { select: { messages: true } },
         messages: {
           orderBy: { createdAt: 'desc' },

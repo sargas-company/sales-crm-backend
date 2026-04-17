@@ -115,7 +115,7 @@ model Proposal {
   user     User      @relation(fields: [userId], references: [id])
   account  Account?  @relation(fields: [accountId], references: [id])
   platform Platform? @relation(fields: [platformId], references: [id])
-  messages ChatMessage[]
+  chat     Chat?
   lead     Lead?
 
   @@index([createdAt])
@@ -123,18 +123,29 @@ model Proposal {
   @@index([status])
 }
 
+model Chat {
+  id         String   @id @default(uuid())
+  proposalId String?  @unique
+  leadId     String?  @unique
+  createdAt  DateTime @default(now())
+
+  proposal Proposal? @relation(fields: [proposalId], references: [id])
+  lead     Lead?     @relation(fields: [leadId], references: [id])
+  messages ChatMessage[]
+}
+
 model ChatMessage {
-  id         String      @id @default(uuid())
-  proposalId String
-  role       MessageRole
-  content    String
-  decision   String?
-  reasoning  String?
-  createdAt  DateTime    @default(now())
+  id        String      @id @default(uuid())
+  chatId    String
+  role      MessageRole
+  content   String
+  decision  String?
+  reasoning String?
+  createdAt DateTime    @default(now())
 
-  proposal Proposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
-  @@index([proposalId, createdAt])
+  @@index([chatId, createdAt])
 }
 
 model BaseKnowledge {
@@ -168,6 +179,7 @@ model Lead {
   holdAt     DateTime?
 
   proposal Proposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+  chat     Chat?
 
   @@index([status])
   @@index([createdAt])

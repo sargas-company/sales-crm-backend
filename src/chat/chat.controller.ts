@@ -18,13 +18,15 @@ export class ChatController {
   constructor(private readonly chatService: ChatService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Get all chats with pagination (any owner)' })
+  @ApiOperation({
+    summary: 'Get chats with cursor pagination, optional filter by type',
+  })
   @ApiResponse({
     status: 200,
     description:
-      'Paginated list of proposals with last message and message count',
+      'Paginated list of chats with proposal, lead, last message and message count',
   })
   listAll(@Query() query: ListChatsDto) {
-    return this.chatService.listAll(query.limit, query.cursor);
+    return this.chatService.listAll(query.limit, query.cursor, query.type);
   }
 }
