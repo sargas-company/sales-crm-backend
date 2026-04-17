@@ -13,6 +13,7 @@ const PROPOSAL_INCLUDE = {
   account: { include: { platform: true } },
   platform: true,
   chat: true,
+  lead: { select: { id: true } },
 } as const;
 
 @Injectable()
