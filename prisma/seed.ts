@@ -59,11 +59,14 @@ async function main() {
   console.log(`Seeded users: ${user.email}, ${user2.email}`);
 
   // Accounts
-  await prisma.account.upsert({
-    where: { userId_platformId: { userId: user.id, platformId: UPWORK_ID } },
-    update: { firstName: 'Dmytro', lastName: 'Sarafaniuk' },
-    create: { firstName: 'Dmytro', lastName: 'Sarafaniuk', platformId: UPWORK_ID, userId: user.id },
+  const existingAccount = await prisma.account.findFirst({
+    where: { userId: user.id, platformId: UPWORK_ID },
   });
+  if (!existingAccount) {
+    await prisma.account.create({
+      data: { firstName: 'Dmytro', lastName: 'Sarafaniuk', platformId: UPWORK_ID, userId: user.id },
+    });
+  }
 
   console.log('Seeded account: Dmytro Sarafaniuk (Upwork)');
 }

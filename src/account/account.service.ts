@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { PlatformService } from '../platform/platform.service';
@@ -16,11 +16,6 @@ export class AccountService {
 
   async create(dto: CreateAccountDto, userId: string) {
     await this.platformService.findOne(dto.platformId);
-
-    const existing = await this.prisma.account.findUnique({
-      where: { userId_platformId: { userId, platformId: dto.platformId } },
-    });
-    if (existing) throw new ConflictException('Account for this platform already exists');
 
     return this.prisma.account.create({
       data: { firstName: dto.firstName, lastName: dto.lastName, platformId: dto.platformId, userId },
@@ -50,12 +45,6 @@ export class AccountService {
 
     if (dto.platformId) {
       await this.platformService.findOne(dto.platformId);
-
-      const conflict = await this.prisma.account.findUnique({
-        where: { userId_platformId: { userId, platformId: dto.platformId } },
-      });
-      if (conflict && conflict.id !== id)
-        throw new ConflictException('Account for this platform already exists');
     }
 
     return this.prisma.account.update({

@@ -7,6 +7,7 @@ import {
   HttpStatus,
   Param,
   Patch,
+  Post,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -19,6 +20,7 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { CreateLeadDto } from './dto/create-lead.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
 import { LeadService } from './lead.service';
 
@@ -28,6 +30,13 @@ import { LeadService } from './lead.service';
 @Controller('leads')
 export class LeadController {
   constructor(private readonly leadService: LeadService) {}
+
+  @Post()
+  @ApiOperation({ summary: 'Create a standalone lead (without proposal)' })
+  @ApiResponse({ status: 201, description: 'Lead created with a chat' })
+  create(@Body() dto: CreateLeadDto) {
+    return this.leadService.create(dto);
+  }
 
   @Get()
   @ApiOperation({ summary: 'Get paginated leads' })

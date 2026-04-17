@@ -73,7 +73,6 @@ model Account {
   platform  Platform   @relation(fields: [platformId], references: [id])
   proposals Proposal[]
 
-  @@unique([userId, platformId])
   @@index([userId])
 }
 
@@ -166,10 +165,12 @@ model BaseKnowledge {
 model Lead {
   id         String     @id @default(uuid())
   number     Int        @unique @default(autoincrement())
-  proposalId String?    @unique
-  leadName   String?
-  status     LeadStatus @default(conversation_ongoing)
-  clientType ClientType?
+  proposalId  String?    @unique
+  firstName   String?
+  lastName    String?
+  companyName String?
+  status      LeadStatus @default(conversation_ongoing)
+  clientType  ClientType?
   rate       Int?
   location   String?
   createdAt  DateTime   @default(now())

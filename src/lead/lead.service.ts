@@ -3,11 +3,31 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { LeadStatus, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { CreateLeadDto } from './dto/create-lead.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
 
 @Injectable()
 export class LeadService {
   constructor(private readonly prisma: PrismaService) {}
+
+  async create(dto: CreateLeadDto) {
+    return this.prisma.$transaction(async (tx) => {
+      const lead = await tx.lead.create({
+        data: {
+          firstName: dto.firstName,
+          lastName: dto.lastName,
+          companyName: dto.companyName,
+          clientType: dto.clientType,
+          rate: dto.rate,
+          location: dto.location,
+        },
+      });
+
+      await tx.chat.create({ data: { leadId: lead.id } });
+
+      return lead;
+    });
+  }
 
   async createFromProposal(
     proposalId: string,
@@ -96,7 +116,9 @@ export class LeadService {
     return this.prisma.lead.update({
       where: { id },
       data: {
-        leadName: dto.leadName,
+        firstName: dto.firstName,
+        lastName: dto.lastName,
+        companyName: dto.companyName,
         status: dto.status,
         clientType: dto.clientType,
         rate: dto.rate,

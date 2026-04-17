@@ -1,9 +1,9 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsEnum, IsInt, IsOptional, IsString, Min, MinLength } from 'class-validator';
 
-import { ClientType, LeadStatus } from '@prisma/client';
+import { ClientType } from '@prisma/client';
 
-export class UpdateLeadDto {
+export class CreateLeadDto {
   @ApiPropertyOptional({ example: 'John' })
   @IsOptional()
   @IsString()
@@ -21,11 +21,6 @@ export class UpdateLeadDto {
   @IsString()
   @MinLength(1)
   companyName?: string;
-
-  @ApiPropertyOptional({ enum: LeadStatus, example: LeadStatus.trial })
-  @IsOptional()
-  @IsEnum(LeadStatus)
-  status?: LeadStatus;
 
   @ApiPropertyOptional({ enum: ClientType, example: ClientType.individual })
   @IsOptional()
