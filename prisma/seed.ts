@@ -5,12 +5,11 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 const UPWORK_ID = '00000000-0000-0000-0000-000000000001';
-const LINKEDIN_ID = '00000000-0000-0000-0000-000000000002';
 
 async function main() {
   // Platforms
   const upworkImageUrl =
-    'https://www.citypng.com/public/uploads/preview/upwork-round-logo-icon-png-7017516949686332n4bo69bd8.png';
+    'https://cdn.worldvectorlogo.com/logos/upwork-roundedsquare-1.svg';
 
   await prisma.platform.upsert({
     where: { id: UPWORK_ID },
@@ -21,12 +20,6 @@ async function main() {
       slug: 'upwork',
       imageUrl: upworkImageUrl,
     },
-  });
-
-  await prisma.platform.upsert({
-    where: { id: LINKEDIN_ID },
-    update: { title: 'LinkedIn', slug: 'linkedin' },
-    create: { id: LINKEDIN_ID, title: 'LinkedIn', slug: 'linkedin' },
   });
 
   console.log('Seeded platforms: Upwork, LinkedIn');

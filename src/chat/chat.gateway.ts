@@ -23,7 +23,10 @@ class SendMessagePayload {
   content: string;
 }
 
-@WebSocketGateway(3001, { cors: { origin: '*' }, allowEIO3: true })
+@WebSocketGateway(parseInt(process.env.SOCKET_IO_PORT ?? '3001') || 3001, {
+  cors: { origin: '*' },
+  allowEIO3: true,
+})
 export class ChatGateway implements OnGatewayConnection {
   @WebSocketServer()
   server: Server;
@@ -62,7 +65,9 @@ export class ChatGateway implements OnGatewayConnection {
       const payload = plainToInstance(SendMessagePayload, data);
       const errors = await validate(payload);
       if (errors.length > 0) {
-        client.emit('error', { message: 'proposalId and content are required' });
+        client.emit('error', {
+          message: 'proposalId and content are required',
+        });
         return;
       }
 
@@ -74,7 +79,10 @@ export class ChatGateway implements OnGatewayConnection {
 
       for await (const event of stream) {
         if (event.type === 'analysis') {
-          client.emit('analysis', { decision: event.decision, reasoning: event.reasoning });
+          client.emit('analysis', {
+            decision: event.decision,
+            reasoning: event.reasoning,
+          });
         } else if (event.type === 'chunk') {
           client.emit('chunk', { text: event.text });
         }
