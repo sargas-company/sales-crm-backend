@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 
 import { AccountModule } from './account/account.module';
 import { AuthModule } from './auth/auth.module';
+import { ClientRequestsModule } from './client-requests/client-requests.module';
 import { PlatformModule } from './platform/platform.module';
 import { BaseKnowledgeModule } from './base-knowledge/base-knowledge.module';
 import { ChatModule } from './chat/chat.module';
@@ -23,6 +24,7 @@ import { SettingsModule } from './settings/settings.module';
     ChatModule,
     SettingsModule,
     LeadModule,
+    ClientRequestsModule,
   ],
 })
 export class AppModule {}

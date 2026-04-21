@@ -190,3 +190,29 @@ model Settings {
   id           String @id @default("global")
   systemPrompt String
 }
+
+// ─── Client Requests ─────────────────────────────────────────────────────────
+
+enum ClientRequestStatus {
+  on_review
+  conversation_ongoing
+  archived
+}
+
+model ClientRequest {
+  id           String              @id @default(uuid())
+  name         String
+  company      String?
+  email        String
+  phone        String?
+  phoneCountry String?
+  message      String?
+  services     String[]
+  status       ClientRequestStatus @default(on_review)
+  files        Json                @default("[]")
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  @@index([createdAt])
+  @@index([status])
+}
