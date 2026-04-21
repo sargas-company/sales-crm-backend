@@ -14,8 +14,19 @@ async function bootstrap() {
   app.useStaticAssets(path.join(process.cwd(), 'uploads'), { prefix: '/uploads' });
   app.useWebSocketAdapter(new IoAdapter(app));
 
+  const allowedOrigins = (process.env.CORS_ORIGINS ?? 'http://localhost:5173')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
   app.enableCors({
-    origin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error(`Origin ${origin} not allowed by CORS`));
+      }
+    },
     credentials: true,
   });
 
