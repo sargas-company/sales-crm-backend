@@ -4,15 +4,19 @@ import * as path from 'path';
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
   Param,
+  Patch,
   Post,
   Query,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
+  BadRequestException,
+  PayloadTooLargeException,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import {
@@ -31,10 +35,43 @@ import {
   UploadedFileMetadata,
 } from './client-requests.service';
 import { CreateClientRequestDto } from './dto/create-client-request.dto';
+import { UpdateClientRequestDto } from './dto/update-client-request.dto';
 
 const UPLOAD_DIR = path.join(process.cwd(), 'uploads', 'client-requests');
 const MAX_FILES = 20;
-const MAX_TOTAL_SIZE = 100 * 1024 * 1024; // 100 MB
+const MAX_TOTAL_SIZE = 100 * 1024 * 1024;
+
+const ALLOWED_EXTENSIONS = new Set([
+  '.jpg', '.jpeg', '.png', '.webp', '.gif', '.heic', '.heif', '.bmp', '.tif', '.tiff',
+  '.pdf',
+  '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+  '.txt', '.rtf', '.csv', '.md',
+  '.odt', '.ods', '.odp',
+  '.pages', '.numbers', '.key',
+  '.fig', '.sketch', '.xd', '.psd', '.ai',
+  '.mp4', '.mov', '.webm', '.m4v',
+]);
+
+const BLOCKED_EXTENSIONS = new Set([
+  '.app', '.apk', '.bat', '.bin', '.cmd', '.com', '.cpl', '.dll', '.dmg', '.exe',
+  '.gadget', '.hta', '.iso', '.jar', '.js', '.jse', '.lnk', '.msi', '.msp',
+  '.pkg', '.ps1', '.reg', '.scr', '.sh', '.sys', '.vb', '.vbe', '.vbs',
+  '.ws', '.wsc', '.wsf',
+]);
+
+const BLOCKED_MIME_TYPES = new Set([
+  'application/javascript',
+  'application/x-apple-diskimage',
+  'application/x-bat',
+  'application/x-dosexec',
+  'application/x-executable',
+  'application/x-msdownload',
+  'application/x-msi',
+  'application/x-ms-shortcut',
+  'application/x-sh',
+  'text/html',
+  'text/javascript',
+]);
 
 function ensureUploadDir() {
   if (!fs.existsSync(UPLOAD_DIR)) {
@@ -86,6 +123,27 @@ export class ClientRequestsController {
     return this.service.findOne(id);
   }
 
+  @Patch('client-requests/:id')
+  @ApiBearerAuth('jwt')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Update a client request' })
+  @ApiResponse({ status: 200, description: 'Updated client request' })
+  @ApiResponse({ status: 404, description: 'Not found' })
+  update(@Param('id') id: string, @Body() dto: UpdateClientRequestDto) {
+    return this.service.update(id, dto);
+  }
+
+  @Delete('client-requests/:id')
+  @ApiBearerAuth('jwt')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Delete a client request' })
+  @ApiResponse({ status: 204, description: 'Deleted' })
+  @ApiResponse({ status: 404, description: 'Not found' })
+  remove(@Param('id') id: string) {
+    return this.service.remove(id);
+  }
+
   @Post('client-requests')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Submit a client request from the contact form' })
@@ -97,13 +155,34 @@ export class ClientRequestsController {
     @Body() dto: CreateClientRequestDto,
     @UploadedFiles() uploadedFiles: Express.Multer.File[] = [],
   ) {
+    const cleanup = () => uploadedFiles.forEach((f) => { try { fs.unlinkSync(f.path); } catch {} });
+
+    if (uploadedFiles.length > MAX_FILES) {
+      cleanup();
+      throw new BadRequestException(`You can upload up to ${MAX_FILES} files.`);
+    }
+
     const totalSize = uploadedFiles.reduce((sum, f) => sum + f.size, 0);
     if (totalSize > MAX_TOTAL_SIZE) {
-      uploadedFiles.forEach((f) => fs.unlinkSync(f.path));
-      return {
-        statusCode: HttpStatus.PAYLOAD_TOO_LARGE,
-        message: 'Total file size exceeds 100 MB',
-      };
+      cleanup();
+      throw new PayloadTooLargeException('Total file size must be less than 100 MB.');
+    }
+
+    const rejectedFiles: { name: string; reason: string }[] = [];
+    for (const file of uploadedFiles) {
+      const ext = path.extname(file.originalname).toLowerCase();
+      const mime = file.mimetype.toLowerCase();
+
+      if (BLOCKED_EXTENSIONS.has(ext) || BLOCKED_MIME_TYPES.has(mime)) {
+        rejectedFiles.push({ name: file.originalname, reason: 'Executable files are not allowed.' });
+      } else if (!ALLOWED_EXTENSIONS.has(ext)) {
+        rejectedFiles.push({ name: file.originalname, reason: `Unsupported file type: ${ext}` });
+      }
+    }
+
+    if (rejectedFiles.length > 0) {
+      cleanup();
+      throw new BadRequestException({ message: 'Some files are not allowed.', rejectedFiles });
     }
 
     const fileMeta: UploadedFileMetadata[] = uploadedFiles.map((f) => ({
