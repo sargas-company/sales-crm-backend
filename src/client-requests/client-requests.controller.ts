@@ -170,13 +170,14 @@ export class ClientRequestsController {
 
     const rejectedFiles: { name: string; reason: string }[] = [];
     for (const file of uploadedFiles) {
-      const ext = path.extname(file.originalname).toLowerCase();
+      const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
+      const ext = path.extname(originalName).toLowerCase();
       const mime = file.mimetype.toLowerCase();
 
       if (BLOCKED_EXTENSIONS.has(ext) || BLOCKED_MIME_TYPES.has(mime)) {
-        rejectedFiles.push({ name: file.originalname, reason: 'Executable files are not allowed.' });
+        rejectedFiles.push({ name: originalName, reason: 'Executable files are not allowed.' });
       } else if (!ALLOWED_EXTENSIONS.has(ext)) {
-        rejectedFiles.push({ name: file.originalname, reason: `Unsupported file type: ${ext}` });
+        rejectedFiles.push({ name: originalName, reason: `Unsupported file type: ${ext}` });
       }
     }
 
@@ -186,7 +187,7 @@ export class ClientRequestsController {
     }
 
     const fileMeta: UploadedFileMetadata[] = uploadedFiles.map((f) => ({
-      originalName: f.originalname,
+      originalName: Buffer.from(f.originalname, 'latin1').toString('utf8'),
       fileName: f.filename,
       path: path.relative(process.cwd(), f.path),
       mimetype: f.mimetype,
