@@ -253,6 +253,108 @@ model Settings {
   systemPrompt String
 }
 
+// ─── Counterparty ────────────────────────────────────────────────────────────
+
+enum CounterpartyType {
+  client
+  contractor
+}
+
+model Counterparty {
+  id        String          @id @default(uuid())
+  firstName String
+  lastName  String
+  type      CounterpartyType
+  info      String?
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  invoices Invoice[]
+
+  @@index([type])
+}
+
+// ─── Invoice ──────────────────────────────────────────────────────────────────
+
+enum InvoiceStatus {
+  draft
+  open
+  paid
+}
+
+model Invoice {
+  id               String        @id @default(uuid())
+  counterpartyId   String
+
+  status InvoiceStatus @default(draft)
+
+  // Header
+  header   String  @default("INVOICE")
+  logoUrl  String?
+  number   String?
+  currency String  @default("USD")
+
+  // Dates & meta
+  date         DateTime?
+  dueDate      DateTime?
+  paymentTerms String?
+  poNumber     String?
+
+  // Addresses & text content
+  fromValue String?  // sender info
+  toValue   String?  // bill to
+  shipTo    String?
+  notes     String?
+  terms     String?
+
+  // Financial
+  tax        Decimal? @db.Decimal(10, 2)
+  discounts  Decimal? @db.Decimal(10, 2)
+  shipping   Decimal? @db.Decimal(10, 2)
+  amountPaid Decimal? @db.Decimal(10, 2)
+
+  // Field visibility toggles
+  showTax       Boolean @default(false)
+  showDiscounts Boolean @default(false)
+  showShipping  Boolean @default(false)
+  showShipTo    Boolean @default(false)
+
+  // Generated PDF path (uploads/invoices/{id}.pdf), null until first generation
+  pdfUrl String?
+
+  // Customizable labels — overrides for API *_title / *_header fields
+  // e.g. { "to_title": "Billing Address", "unit_cost_header": "Price" }
+  labels Json @default("{}")
+
+  // Extra custom fields array
+  // e.g. [{ "name": "Project", "value": "Website Redesign" }]
+  customFields Json @default("[]")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  counterparty Counterparty    @relation(fields: [counterpartyId], references: [id])
+  lineItems    InvoiceLineItem[]
+
+  @@index([counterpartyId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model InvoiceLineItem {
+  id          String   @id @default(uuid())
+  invoiceId   String
+  name        String?
+  description String?
+  quantity    Decimal  @default(1) @db.Decimal(10, 3)
+  unitCost    Decimal  @default(0) @db.Decimal(10, 2)
+  sortOrder   Int      @default(0)
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+}
+
 // ─── Client Requests ─────────────────────────────────────────────────────────
 
 enum ClientRequestStatus {

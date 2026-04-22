@@ -31,6 +31,7 @@
     "@nestjs/swagger": "^11.2.7",
     "@nestjs/websockets": "^11.1.18",
     "@prisma/client": "^6.19.3",
+    "axios": "^1.15.2",
     "bcrypt": "^6.0.0",
     "bullmq": "^5.75.2",
     "class-transformer": "^0.5.1",
