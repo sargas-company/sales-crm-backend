@@ -5,6 +5,7 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 const UPWORK_ID = '00000000-0000-0000-0000-000000000001';
+const TG_BOT_USER_ID = '00000000-0000-0000-0000-000000000010';
 
 async function main() {
   // Platforms
@@ -49,7 +50,19 @@ async function main() {
     },
   });
 
-  console.log(`Seeded users: ${user.email}, ${user2.email}`);
+  await prisma.user.upsert({
+    where: { email: 'tg-bot@internal' },
+    update: {},
+    create: {
+      id: TG_BOT_USER_ID,
+      email: 'tg-bot@internal',
+      passwordHash: '',
+      firstName: 'Telegram',
+      lastName: 'Bot',
+    },
+  });
+
+  console.log(`Seeded users: ${user.email}, ${user2.email}, tg-bot@internal`);
 
   // Accounts
   const existingAccount = await prisma.account.findFirst({
@@ -57,7 +70,12 @@ async function main() {
   });
   if (!existingAccount) {
     await prisma.account.create({
-      data: { firstName: 'Dmytro', lastName: 'Sarafaniuk', platformId: UPWORK_ID, userId: user.id },
+      data: {
+        firstName: 'Dmytro',
+        lastName: 'Sarafaniuk',
+        platformId: UPWORK_ID,
+        userId: user.id,
+      },
     });
   }
 

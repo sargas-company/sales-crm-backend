@@ -4,9 +4,10 @@ AI-инструмент для менеджеров: вместо 10–15 мин
 
 ## Что делает система
 
-1. **Понимает ситуацию** — менеджер описывает вакансию, добавляет комментарий и контекст по клиенту
+1. **Понимает ситуацию** — менеджер вставляет текст вакансии и пишет своё сообщение
 2. **Принимает решение** — AI анализирует и выдаёт `bid / decline / clarify` с обоснованием
 3. **Формирует ответ** — готовый текст с учётом базы знаний компании и системного промпта
+4. **Сохраняет историю** — чат переходит из proposal в lead при получении ответа от клиента
 
 ## Стек
 
@@ -88,12 +89,26 @@ POST   /auth/login              — логин, возвращает accessToken
 POST   /auth/refresh            — обновить пару токенов
 POST   /auth/logout             — инвалидировать refresh token
 
-POST   /proposals               — создать proposal (vacancy, comment, context)
-GET    /proposals               — список своих proposals
+GET    /platforms               — список платформ
+POST   /platforms               — создать платформу
+
+GET    /accounts                — аккаунты текущего пользователя
+POST   /accounts                — создать аккаунт
+
+POST   /proposals               — создать proposal (title, accountId, platformId, ...)
+GET    /proposals               — все proposals с пагинацией
+PUT    /proposals/:id           — обновить (смена статуса → автоматически создаёт Lead)
+DELETE /proposals/:id           — удалить
 GET    /proposals/:id/chat      — история чата с decision и reasoning
 POST   /proposals/:id/analyze   — только анализ, без генерации текста
 
-GET    /chats                   — все чаты с пагинацией (?cursor=...&limit=20)
+GET    /leads                   — все leads с пагинацией
+GET    /leads/:id               — lead с вложенным proposal
+PATCH  /leads/:id               — обновить статус, имя, ставку и т.д.
+DELETE /leads/:id               — удалить
+GET    /leads/:id/chat          — история чата (сквозная с proposal)
+
+GET    /chats                   — все чаты (?type=proposal|lead&cursor=...&limit=20)
 
 POST   /base-knowledge          — добавить запись в базу знаний
 GET    /base-knowledge          — список с пагинацией (?page=1&limit=8)

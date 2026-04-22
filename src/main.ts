@@ -4,6 +4,8 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { IoAdapter } from '@nestjs/platform-socket.io';
+import * as dotenv from 'dotenv';
+dotenv.config({ override: true });
 
 import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/http/global-exception.filter';

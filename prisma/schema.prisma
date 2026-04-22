@@ -44,6 +44,30 @@ enum ProposalType {
   DirectMessage
 }
 
+enum ProposalSource {
+  telegram
+  manual
+}
+
+enum JobPostStatus {
+  NEW
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
+enum JobPostDecision {
+  approve
+  maybe
+  decline
+}
+
+enum JobPostPriority {
+  high
+  medium
+  low
+}
+
 // ─── Platform ────────────────────────────────────────────────────────────────
 
 model Platform {
@@ -108,6 +132,8 @@ model Proposal {
   vacancy         String?
   accountId       String?
   userId          String
+  source          ProposalSource @default(manual)
+  jobPostId       String?          @unique
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
@@ -116,10 +142,46 @@ model Proposal {
   platform Platform? @relation(fields: [platformId], references: [id])
   chat     Chat?
   lead     Lead?
+  jobPost  JobPost?  @relation(fields: [jobPostId], references: [id])
 
   @@index([createdAt])
   @@index([userId])
   @@index([status])
+}
+
+// ─── JobPost (Telegram staging) ──────────────────────────────────────────────
+
+model JobPost {
+  id               String           @id @default(uuid())
+  chatId           String
+  messageId        Int
+  rawText          String
+  rawPayload       Json
+  status           JobPostStatus    @default(NEW)
+  decision         JobPostDecision?
+  matchScore       Int?
+  priority         JobPostPriority?
+  aiResponse       Json?
+  createdAt        DateTime         @default(now())
+  processedAt      DateTime?
+
+  // parsed fields
+  title            String?
+  jobUrl           String?
+  scanner          String?
+  gigRadarScore    Int?
+  location         String?
+  budget           String?
+  totalSpent       Float?
+  avgRatePaid      Float?
+  hireRate         Float?
+  hSkillsKeywords  String[]
+
+  proposal Proposal?
+
+  @@unique([chatId, messageId])
+  @@index([status])
+  @@index([decision])
 }
 
 model Chat {

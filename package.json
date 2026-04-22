@@ -32,9 +32,12 @@
     "@nestjs/websockets": "^11.1.18",
     "@prisma/client": "^6.19.3",
     "bcrypt": "^6.0.0",
+    "bullmq": "^5.75.2",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "dotenv": "^17.4.1",
+    "input": "^1.0.1",
+    "ioredis": "^5.10.1",
     "openai": "^6.34.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
@@ -42,6 +45,7 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "socket.io": "^4.8.3",
+    "telegram": "^2.26.22",
     "uuid": "^13.0.0"
   },
   "devDependencies": {
