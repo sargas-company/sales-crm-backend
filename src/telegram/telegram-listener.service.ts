@@ -122,9 +122,12 @@ export class TelegramListenerService implements OnModuleInit {
   }
 
   private listenNewMessages() {
-    this.client.addEventHandler((event: NewMessageEvent) => {
-      void this.handleNewMessage(event);
-    }, new NewMessage({}));
+    this.client.addEventHandler(
+      (event: NewMessageEvent) => {
+        void this.handleNewMessage(event);
+      },
+      new NewMessage({ chats: [this.chatId] }),
+    );
 
     this.logger.log('Live listener started');
   }

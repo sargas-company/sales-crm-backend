@@ -132,12 +132,12 @@ export class ChatService {
     return { trimmed, chatId: chat.id };
   }
 
-  private async analyzeIntent(context: {
-    system: string;
-    messages: Anthropic.MessageParam[];
-  }): Promise<{ decision: string; reasoning: string }> {
+  private async analyzeIntent(
+    context: { system: string; messages: Anthropic.MessageParam[] },
+    model = CLAUDE_MODEL,
+  ): Promise<{ decision: string; reasoning: string }> {
     const response = await this.anthropic.messages.create({
-      model: CLAUDE_MODEL,
+      model,
       max_tokens: 256,
       system: context.system,
       messages: context.messages,
@@ -196,10 +196,14 @@ export class ChatService {
     proposalId: string,
     content: string,
     userId: string,
+    modelOverride?: string,
   ): AsyncGenerator<
     | { type: 'analysis'; decision: string; reasoning: string }
     | { type: 'chunk'; text: string }
   > {
+    const model = modelOverride || CLAUDE_MODEL;
+    console.log(`[Chat] model=${model} proposalId=${proposalId}`);
+
     const { trimmed, chatId } = await this.validateAndSaveUserMessage(
       proposalId,
       content,
@@ -207,10 +211,10 @@ export class ChatService {
     );
     const { system, messages } = await this.prepareContext(proposalId, trimmed);
 
-    const { decision, reasoning } = await this.analyzeIntent({
-      system,
-      messages,
-    });
+    const { decision, reasoning } = await this.analyzeIntent(
+      { system, messages },
+      model,
+    );
 
     const enrichedSystem =
       system + `\n\nDECISION: ${decision}\nREASONING: ${reasoning}`;
@@ -218,7 +222,7 @@ export class ChatService {
     yield { type: 'analysis', decision, reasoning };
 
     const stream = this.anthropic.messages.stream({
-      model: CLAUDE_MODEL,
+      model,
       max_tokens: 4096,
       system: enrichedSystem,
       messages,

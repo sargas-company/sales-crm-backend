@@ -1,8 +1,14 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 
-import { Prisma } from '@prisma/client';
+import { Prisma, ProposalSource, ProposalType } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { ConvertToProposalDto } from './dto/convert-to-proposal.dto';
 import { JobPostStatsDto } from './dto/job-post-stats.dto';
 import { JobPostSortBy, ListJobPostsDto } from './dto/list-job-posts.dto';
 
@@ -197,5 +203,43 @@ export class JobPostService {
     if (!jobPost) throw new NotFoundException(`JobPost ${id} not found`);
 
     return jobPost;
+  }
+
+  async convertToProposal(
+    id: string,
+    dto: ConvertToProposalDto,
+    userId: string,
+  ) {
+    const jobPost = await this.prisma.jobPost.findUnique({
+      where: { id },
+      include: { proposal: true },
+    });
+
+    if (!jobPost) throw new NotFoundException(`JobPost ${id} not found`);
+    if (jobPost.proposal)
+      throw new ConflictException('Proposal already exists for this job post');
+
+    const upwork = await this.prisma.platform.findUniqueOrThrow({
+      where: { slug: 'upwork' },
+    });
+
+    const isBid = dto.proposalType === ProposalType.Bid;
+
+    return this.prisma.proposal.create({
+      data: {
+        title: jobPost.title ?? jobPost.rawText.slice(0, 100),
+        jobUrl: jobPost.jobUrl,
+        vacancy: jobPost.rawText,
+        proposalType: dto.proposalType,
+        source: ProposalSource.telegram,
+        platformId: upwork.id,
+        boosted: isBid ? (dto.boosted ?? false) : false,
+        connects: isBid ? (dto.connects ?? 0) : 0,
+        boostedConnects: isBid && dto.boosted ? (dto.boostedConnects ?? 0) : 0,
+        userId,
+        jobPostId: jobPost.id,
+        chat: { create: {} },
+      },
+    });
   }
 }

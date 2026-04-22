@@ -7,11 +7,13 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import { JwtService } from '@nestjs/jwt';
-import { IsString, MinLength, validate } from 'class-validator';
+import { IsIn, IsOptional, IsString, MinLength, validate } from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 import { Server, Socket } from 'socket.io';
 
 import { ChatService } from './chat.service';
+
+const ALLOWED_MODELS = ['claude-sonnet-4-6', 'claude-opus-4-6'] as const;
 
 class SendMessagePayload {
   @IsString()
@@ -21,6 +23,11 @@ class SendMessagePayload {
   @IsString()
   @MinLength(1)
   content: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(ALLOWED_MODELS)
+  model?: string;
 }
 
 @WebSocketGateway(parseInt(process.env.SOCKET_IO_PORT ?? '3001') || 3001, {
@@ -59,7 +66,7 @@ export class ChatGateway implements OnGatewayConnection {
   @SubscribeMessage('send_message')
   async handleMessage(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { proposalId: string; content: string },
+    @MessageBody() data: { proposalId: string; content: string; model?: string },
   ): Promise<void> {
     try {
       const payload = plainToInstance(SendMessagePayload, data);
@@ -75,6 +82,7 @@ export class ChatGateway implements OnGatewayConnection {
         data.proposalId,
         data.content,
         client.data.user.id,
+        data.model,
       );
 
       for await (const event of stream) {
