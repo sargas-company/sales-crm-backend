@@ -16,10 +16,10 @@ async function bootstrap() {
   app.useStaticAssets(path.join(process.cwd(), 'uploads'), { prefix: '/uploads' });
   app.useWebSocketAdapter(new IoAdapter(app));
 
-  const allowedOrigins = (process.env.CORS_ORIGINS ?? 'http://localhost:5173')
-    .split(',')
-    .map((o) => o.trim())
-    .filter(Boolean);
+  const allowedOrigins = [
+    process.env.CORS_ORIGIN_1 ?? 'http://localhost:5173',
+    process.env.CORS_ORIGIN_2,
+  ].filter(Boolean) as string[];
 
   app.enableCors({
     origin: (origin, callback) => {
