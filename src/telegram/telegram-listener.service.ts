@@ -40,10 +40,10 @@ export class TelegramListenerService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    await this.connect();
+    //await this.connect();
     // await this.backfill();
-    this.listenNewMessages();
-    this.listenEditedMessages();
+    //this.listenNewMessages();
+    //this.listenEditedMessages();
   }
 
   private async connect() {
