@@ -205,6 +205,12 @@ export class JobPostService {
     return jobPost;
   }
 
+  async remove(id: string) {
+    const jobPost = await this.prisma.jobPost.findUnique({ where: { id } });
+    if (!jobPost) throw new NotFoundException(`JobPost ${id} not found`);
+    await this.prisma.jobPost.delete({ where: { id } });
+  }
+
   async convertToProposal(
     id: string,
     dto: ConvertToProposalDto,

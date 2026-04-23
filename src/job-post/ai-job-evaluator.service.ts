@@ -2,8 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 
 import Anthropic from '@anthropic-ai/sdk';
 
-import { JOB_EVALUATION_PROMPT } from '../ai/prompts/job-evaluation.prompt';
-import { JOB_GATEKEEPER_PROMPT } from '../ai/prompts/job-gatekeeper.prompt';
+import { PromptService } from '../prompt/prompt.service';
 
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 
@@ -27,11 +26,14 @@ export class AiJobEvaluatorService {
     apiKey: process.env.ANTHROPIC_API_KEY,
   });
 
+  constructor(private readonly promptService: PromptService) {}
+
   async evaluate(text: string): Promise<AiResult> {
+    const system = await this.promptService.getEvaluationPrompt();
     const response = await this.anthropic.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: 1024,
-      system: JOB_EVALUATION_PROMPT,
+      system,
       messages: [{ role: 'user', content: text }],
     });
 
@@ -102,10 +104,11 @@ export class AiJobEvaluatorService {
   }
 
   async gate(text: string): Promise<{ fit: boolean }> {
+    const system = await this.promptService.getGatekeeperPrompt();
     const response = await this.anthropic.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: 64,
-      system: JOB_GATEKEEPER_PROMPT,
+      system,
       messages: [{ role: 'user', content: text }],
     });
 

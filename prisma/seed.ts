@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import * as bcrypt from 'bcrypt';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, PromptType, UserRole } from '@prisma/client';
+import { JOB_GATEKEEPER_PROMPT } from '../src/ai/prompts/job-gatekeeper.prompt';
+import { JOB_EVALUATION_PROMPT } from '../src/ai/prompts/job-evaluation.prompt';
 
 const prisma = new PrismaClient();
 
@@ -30,23 +32,29 @@ async function main() {
 
   const user = await prisma.user.upsert({
     where: { email: 'admin@test.com' },
-    update: { firstName: 'Dmytro', lastName: 'Sarafaniuk' },
+    update: {
+      firstName: 'Dmytro',
+      lastName: 'Sarafaniuk',
+      role: UserRole.ADMIN,
+    },
     create: {
       email: 'admin@test.com',
       passwordHash,
       firstName: 'Dmytro',
       lastName: 'Sarafaniuk',
+      role: UserRole.ADMIN,
     },
   });
 
   const user2 = await prisma.user.upsert({
     where: { email: 'manager@test.com' },
-    update: { firstName: 'Test', lastName: 'Manager' },
+    update: { firstName: 'Test', lastName: 'Manager', role: UserRole.MANAGER },
     create: {
       email: 'manager@test.com',
       passwordHash,
       firstName: 'Test',
       lastName: 'Manager',
+      role: UserRole.MANAGER,
     },
   });
 
@@ -80,6 +88,47 @@ async function main() {
   }
 
   console.log('Seeded account: Dmytro Sarafaniuk (Upwork)');
+
+  // Prompts
+  const prompts: { type: PromptType; title: string; content: string }[] = [
+    {
+      type: PromptType.JOB_GATEKEEPER,
+      title: 'Job Gatekeeper',
+      content: JOB_GATEKEEPER_PROMPT,
+    },
+    {
+      type: PromptType.JOB_EVALUATION,
+      title: 'Job Evaluation',
+      content: JOB_EVALUATION_PROMPT,
+    },
+    {
+      type: PromptType.CHAT_FALLBACK,
+      title: 'Chat System (Fallback)',
+      content: 'You are an assistant that helps write professional proposals.',
+    },
+  ];
+
+  for (const { type, title, content } of prompts) {
+    await prisma.prompt.upsert({
+      where: {
+        // upsert by type where isActive = true isn't a unique constraint,
+        // so we use a dedicated unique seed id per type
+        id: `seed-prompt-${type.toLowerCase()}`,
+      },
+      update: { title, content },
+      create: {
+        id: `seed-prompt-${type.toLowerCase()}`,
+        type,
+        title,
+        content,
+        version: 1,
+        isActive: true,
+        createdBy: 'seed',
+      },
+    });
+  }
+
+  console.log('Seeded prompts: JOB_GATEKEEPER, JOB_EVALUATION, CHAT_SYSTEM');
 }
 
 main()

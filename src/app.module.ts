@@ -11,7 +11,7 @@ import { JobPostModule } from './job-post/job-post.module';
 import { LeadModule } from './lead/lead.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProposalModule } from './proposal/proposal.module';
-import { SettingsModule } from './settings/settings.module';
+import { PromptModule } from './prompt/prompt.module';
 import { TelegramModule } from './telegram/telegram.module';
 
 @Module({
@@ -24,7 +24,7 @@ import { TelegramModule } from './telegram/telegram.module';
     ProposalModule,
     BaseKnowledgeModule,
     ChatModule,
-    SettingsModule,
+    PromptModule,
     LeadModule,
     JobPostModule,
     TelegramModule,

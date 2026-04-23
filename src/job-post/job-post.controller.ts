@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -65,5 +66,14 @@ export class JobPostController {
     @Request() req,
   ) {
     return this.jobPostService.convertToProposal(id, dto, req.user.id);
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Delete job post by id' })
+  @ApiResponse({ status: 204, description: 'Job post deleted' })
+  @ApiResponse({ status: 404, description: 'Job post not found' })
+  remove(@Param('id') id: string) {
+    return this.jobPostService.remove(id);
   }
 }

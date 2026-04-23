@@ -7,14 +7,11 @@ import Anthropic from '@anthropic-ai/sdk';
 
 import { BaseKnowledgeService } from '../base-knowledge/base-knowledge.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { PromptService } from '../prompt/prompt.service';
 
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 
-const DEFAULT_SYSTEM_PROMPT =
-  'You are an assistant that helps write professional proposals.';
-
 const HISTORY_LIMIT = 10;
-const SETTINGS_CACHE_TTL = 60_000; // 1 minute
 
 const ANALYZE_TOOL: Anthropic.Tool = {
   name: 'analyze_intent',
@@ -43,25 +40,16 @@ export class ChatService {
     apiKey: process.env.ANTHROPIC_API_KEY,
   });
 
-  private settingsCache: { value: string; expiresAt: number } | null = null;
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly baseKnowledge: BaseKnowledgeService,
+    private readonly promptService: PromptService,
   ) {}
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
 
-  private async getSystemPrompt(): Promise<string> {
-    if (this.settingsCache && Date.now() < this.settingsCache.expiresAt) {
-      return this.settingsCache.value;
-    }
-    const settings = await this.prisma.settings.findUnique({
-      where: { id: 'global' },
-    });
-    const value = settings?.systemPrompt || DEFAULT_SYSTEM_PROMPT;
-    this.settingsCache = { value, expiresAt: Date.now() + SETTINGS_CACHE_TTL };
-    return value;
+  private getSystemPrompt(): Promise<string> {
+    return this.promptService.getChatPrompt();
   }
 
   private async prepareContext(proposalId: string, content: string) {

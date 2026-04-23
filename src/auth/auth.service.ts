@@ -1,5 +1,6 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 import { PrismaService } from '../prisma/prisma.service';
@@ -16,8 +17,8 @@ export class AuthService {
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
 
-  private generateTokens(userId: string, email: string) {
-    const payload = { sub: userId, email };
+  private generateTokens(userId: string, email: string, role: UserRole) {
+    const payload = { sub: userId, email, role };
 
     const accessToken = this.jwt.sign(payload);
 
@@ -49,7 +50,7 @@ export class AuthService {
     const isValid = await bcrypt.compare(dto.password, user.passwordHash);
     if (!isValid) throw new UnauthorizedException('Invalid credentials');
 
-    const tokens = this.generateTokens(user.id, user.email);
+    const tokens = this.generateTokens(user.id, user.email, user.role);
     await this.saveRefreshToken(user.id, tokens.refreshToken);
 
     return tokens;
@@ -77,7 +78,7 @@ export class AuthService {
     const tokenMatches = await bcrypt.compare(refreshToken, user.refreshTokenHash);
     if (!tokenMatches) throw new UnauthorizedException('Invalid refresh token');
 
-    const tokens = this.generateTokens(user.id, user.email);
+    const tokens = this.generateTokens(user.id, user.email, user.role);
     await this.saveRefreshToken(user.id, tokens.refreshToken);
 
     return tokens;

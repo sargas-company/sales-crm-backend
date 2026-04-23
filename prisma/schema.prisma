@@ -18,6 +18,7 @@ model User {
   refreshTokenHash String?
   firstName        String
   lastName         String
+  role             UserRole   @default(MANAGER)
   createdAt        DateTime   @default(now())
 
   proposals Proposal[]
@@ -25,6 +26,11 @@ model User {
 }
 
 // ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  ADMIN
+  MANAGER
+}
 
 enum MessageRole {
   user
@@ -66,6 +72,13 @@ enum JobPostPriority {
   high
   medium
   low
+}
+
+enum PromptType {
+  JOB_GATEKEEPER
+  JOB_EVALUATION
+  CHAT_SYSTEM
+  CHAT_FALLBACK
 }
 
 // ─── Platform ────────────────────────────────────────────────────────────────
@@ -248,9 +261,19 @@ model Lead {
   @@index([createdAt])
 }
 
-model Settings {
-  id           String @id @default("global")
-  systemPrompt String
+model Prompt {
+  id        String     @id @default(uuid())
+  type      PromptType
+  title     String
+  content   String
+  isActive  Boolean    @default(false)
+  version   Int?
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  createdBy String?
+  updatedBy String?
+
+  @@index([type])
 }
 
 // ─── Client Requests ─────────────────────────────────────────────────────────
