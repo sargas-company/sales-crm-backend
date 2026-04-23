@@ -4,6 +4,8 @@ import { ConfigModule } from '@nestjs/config';
 import { AccountModule } from './account/account.module';
 import { AuthModule } from './auth/auth.module';
 import { ClientRequestsModule } from './client-requests/client-requests.module';
+import { CounterpartyModule } from './counterparty/counterparty.module';
+import { InvoiceModule } from './invoice/invoice.module';
 import { PlatformModule } from './platform/platform.module';
 import { BaseKnowledgeModule } from './base-knowledge/base-knowledge.module';
 import { ChatModule } from './chat/chat.module';
@@ -29,6 +31,8 @@ import { TelegramModule } from './telegram/telegram.module';
     JobPostModule,
     TelegramModule,
     ClientRequestsModule,
+    InvoiceModule,
+    CounterpartyModule,
   ],
 })
 export class AppModule {}
