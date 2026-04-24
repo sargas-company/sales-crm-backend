@@ -103,23 +103,24 @@ export class InvoiceService {
   async generate(id: string) {
     const invoice = await this.findOne(id);
 
+    const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const formatDate = (d: Date | null) =>
-      d ? d.toISOString().split('T')[0] : undefined;
+      d ? `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}` : undefined;
 
     const payload = {
-      from: invoice.fromValue ?? undefined,
-      to: invoice.toValue ?? undefined,
-      ship_to: invoice.shipTo ?? undefined,
-      logo: invoice.logoUrl ?? 'https://sargas.io/logo.png',
-      number: invoice.number ?? undefined,
+      from: invoice.fromValue || undefined,
+      to: invoice.toValue || undefined,
+      ship_to: invoice.shipTo || undefined,
+      logo: 'https://sargas.io/logo.png',
+      number: invoice.number || undefined,
       currency: invoice.currency,
       header: invoice.header,
       date: formatDate(invoice.date),
       due_date: formatDate(invoice.dueDate),
-      payment_terms: invoice.paymentTerms ?? undefined,
-      purchase_order: invoice.poNumber ?? undefined,
-      notes: invoice.notes ?? undefined,
-      terms: invoice.terms ?? undefined,
+      payment_terms: invoice.paymentTerms || undefined,
+      purchase_order: invoice.poNumber || undefined,
+      notes: invoice.notes || undefined,
+      terms: invoice.terms || undefined,
       tax: invoice.tax != null ? Number(invoice.tax) : undefined,
       discounts:
         invoice.discounts != null ? Number(invoice.discounts) : undefined,
@@ -133,7 +134,7 @@ export class InvoiceService {
       },
       items: invoice.lineItems.map((item) => ({
         name: item.name,
-        description: item.description ?? undefined,
+        description: item.description || undefined,
         quantity: Number(item.quantity),
         unit_cost: Number(item.unitCost),
       })),
