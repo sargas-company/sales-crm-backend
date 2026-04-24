@@ -1,9 +1,11 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-import { Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
+
+import { InvoiceStatus } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
@@ -66,7 +68,11 @@ export class InvoiceService {
   }
 
   async update(id: string, dto: UpdateInvoiceDto) {
-    await this.findOne(id);
+    const existing = await this.findOne(id);
+
+    if (dto.status === 'paid' && !existing.pdfUrl) {
+      throw new BadRequestException('Cannot set status to paid: invoice PDF has not been generated yet');
+    }
 
     const { lineItems, ...invoiceData } = dto;
 
@@ -176,7 +182,7 @@ export class InvoiceService {
 
     return this.prisma.invoice.update({
       where: { id },
-      data: { pdfUrl },
+      data: { pdfUrl, status: InvoiceStatus.open },
       include: {
         lineItems: { orderBy: { sortOrder: 'asc' } },
         counterparty: true,
