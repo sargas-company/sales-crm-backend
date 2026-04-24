@@ -80,7 +80,9 @@ export class InvoiceService {
         data: {
           ...invoiceData,
           date: invoiceData.date ? new Date(invoiceData.date) : undefined,
-          dueDate: invoiceData.dueDate ? new Date(invoiceData.dueDate) : undefined,
+          dueDate: invoiceData.dueDate
+            ? new Date(invoiceData.dueDate)
+            : undefined,
           lineItems: lineItems?.length
             ? { create: lineItems }
             : undefined,
@@ -108,7 +110,7 @@ export class InvoiceService {
       from: invoice.fromValue ?? undefined,
       to: invoice.toValue ?? undefined,
       ship_to: invoice.shipTo ?? undefined,
-      logo: invoice.logoUrl ?? undefined,
+      logo: invoice.logoUrl ?? 'https://sargas.io/logo.png',
       number: invoice.number ?? undefined,
       currency: invoice.currency,
       header: invoice.header,
@@ -118,10 +120,12 @@ export class InvoiceService {
       purchase_order: invoice.poNumber ?? undefined,
       notes: invoice.notes ?? undefined,
       terms: invoice.terms ?? undefined,
-      tax: invoice.tax ? Number(invoice.tax) : undefined,
-      discounts: invoice.discounts ? Number(invoice.discounts) : undefined,
-      shipping: invoice.shipping ? Number(invoice.shipping) : undefined,
-      amount_paid: invoice.amountPaid ? Number(invoice.amountPaid) : undefined,
+      tax: invoice.tax != null ? Number(invoice.tax) : undefined,
+      discounts:
+        invoice.discounts != null ? Number(invoice.discounts) : undefined,
+      shipping: invoice.shipping != null ? Number(invoice.shipping) : undefined,
+      amount_paid:
+        invoice.amountPaid != null ? Number(invoice.amountPaid) : undefined,
       fields: {
         tax: invoice.showTax,
         discounts: invoice.showDiscounts,
@@ -137,6 +141,8 @@ export class InvoiceService {
       ...(invoice.labels as Record<string, string>),
     };
 
+    console.log('[generate] payload:', JSON.stringify(payload, null, 2));
+
     const apiKey = this.config.get<string>('INVOICE_GENERATOR_API_KEY');
 
     const response = await axios
@@ -144,6 +150,7 @@ export class InvoiceService {
         responseType: 'arraybuffer',
         headers: {
           'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0',
           ...(apiKey && { Authorization: `Bearer ${apiKey}` }),
         },
       })

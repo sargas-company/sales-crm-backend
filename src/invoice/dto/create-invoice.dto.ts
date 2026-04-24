@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   IsArray,
   IsBoolean,
@@ -46,6 +46,7 @@ export class CreateInvoiceDto {
 
   @ApiPropertyOptional({ example: '2026-05-22' })
   @IsOptional()
+  @Transform(({ value }) => value || undefined)
   @IsDateString()
   dueDate?: string;
 
@@ -86,24 +87,28 @@ export class CreateInvoiceDto {
 
   @ApiPropertyOptional({ example: 10 })
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(0)
   tax?: number;
 
   @ApiPropertyOptional({ example: 0 })
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(0)
   discounts?: number;
 
   @ApiPropertyOptional({ example: 0 })
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(0)
   shipping?: number;
 
   @ApiPropertyOptional({ example: 0 })
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(0)
   amountPaid?: number;

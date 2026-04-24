@@ -1,4 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import { IsNumber, IsOptional, IsString, Min } from 'class-validator';
 
 export class CreateInvoiceLineItemDto {
@@ -14,18 +15,21 @@ export class CreateInvoiceLineItemDto {
 
   @ApiPropertyOptional({ example: 1 })
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(0)
   quantity?: number;
 
   @ApiPropertyOptional({ example: 1500 })
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(0)
   unitCost?: number;
 
   @ApiPropertyOptional({ example: 0 })
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   @Min(0)
   sortOrder?: number;
