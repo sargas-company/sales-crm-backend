@@ -134,12 +134,64 @@ export class ProposalService {
   }
 
   async getMessages(proposalId: string) {
-    await this.findOne(proposalId);
-    const chat = await this.prisma.chat.findUnique({ where: { proposalId } });
-    if (!chat) return [];
-    return this.prisma.chatMessage.findMany({
-      where: { chatId: chat.id },
-      orderBy: { createdAt: 'asc' },
+    const proposal = await this.prisma.proposal.findUnique({
+      where: { id: proposalId },
+      include: {
+        jobPost: true,
+        lead: {
+          select: {
+            firstName: true,
+            lastName: true,
+            companyName: true,
+            status: true,
+            location: true,
+          },
+        },
+      },
     });
+    if (!proposal) throw new NotFoundException('Proposal not found');
+
+    const chat = await this.prisma.chat.findUnique({ where: { proposalId } });
+    const messages = chat
+      ? await this.prisma.chatMessage.findMany({
+          where: { chatId: chat.id },
+          orderBy: { createdAt: 'asc' },
+        })
+      : [];
+
+    const { jobPost, lead, ...proposalFields } = proposal;
+
+    return {
+      messages,
+      context: {
+        proposal: {
+          title: proposalFields.title,
+          status: proposalFields.status,
+          vacancy: proposalFields.vacancy,
+          coverLetter: proposalFields.coverLetter,
+        },
+        jobPost: jobPost
+          ? {
+              title: jobPost.title,
+              description: jobPost.rawText,
+              score: jobPost.matchScore,
+              budget: jobPost.budget,
+              source: jobPost.scanner,
+              totalSpent: jobPost.totalSpent,
+              avgRatePaid: jobPost.avgRatePaid,
+              hireRate: jobPost.hireRate,
+              location: jobPost.location,
+            }
+          : null,
+        lead: lead
+          ? {
+              name: [lead.firstName, lead.lastName].filter(Boolean).join(' '),
+              company: lead.companyName,
+              status: lead.status,
+              location: lead.location,
+            }
+          : null,
+      },
+    };
   }
 }

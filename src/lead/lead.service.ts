@@ -90,16 +90,59 @@ export class LeadService {
   }
 
   async getMessages(leadId: string) {
-    const lead = await this.prisma.lead.findUnique({ where: { id: leadId } });
+    const lead = await this.prisma.lead.findUnique({
+      where: { id: leadId },
+      include: {
+        proposal: {
+          include: { jobPost: true },
+        },
+      },
+    });
     if (!lead) throw new NotFoundException('Lead not found');
 
     const chat = await this.prisma.chat.findUnique({ where: { leadId } });
-    if (!chat) return [];
+    const messages = chat
+      ? await this.prisma.chatMessage.findMany({
+          where: { chatId: chat.id },
+          orderBy: { createdAt: 'asc' },
+        })
+      : [];
 
-    return this.prisma.chatMessage.findMany({
-      where: { chatId: chat.id },
-      orderBy: { createdAt: 'asc' },
-    });
+    const { proposal, ...leadFields } = lead;
+    const jobPost = proposal?.jobPost ?? null;
+
+    return {
+      messages,
+      context: {
+        lead: {
+          name: [leadFields.firstName, leadFields.lastName].filter(Boolean).join(' '),
+          company: leadFields.companyName,
+          status: leadFields.status,
+          location: leadFields.location,
+        },
+        proposal: proposal
+          ? {
+              title: proposal.title,
+              status: proposal.status,
+              vacancy: proposal.vacancy,
+              coverLetter: proposal.coverLetter,
+            }
+          : null,
+        jobPost: jobPost
+          ? {
+              title: jobPost.title,
+              description: jobPost.rawText,
+              score: jobPost.matchScore,
+              budget: jobPost.budget,
+              source: jobPost.scanner,
+              totalSpent: jobPost.totalSpent,
+              avgRatePaid: jobPost.avgRatePaid,
+              hireRate: jobPost.hireRate,
+              location: jobPost.location,
+            }
+          : null,
+      },
+    };
   }
 
   async update(id: string, dto: UpdateLeadDto) {
