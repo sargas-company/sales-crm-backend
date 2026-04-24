@@ -53,31 +53,31 @@ export class NotificationProcessorService
   ) {}
 
   onModuleInit() {
-    const webhookUrl = this.config.get<string>('DISCORD_WEBHOOK_URL');
-
-    if (!webhookUrl) {
-      this.logger.warn(
-        'DISCORD_WEBHOOK_URL is not configured — notification worker disabled',
-      );
-      return;
-    }
-
-    this.connection = new IORedis({
-      host: this.config.get('REDIS_HOST', 'localhost'),
-      port: Number(this.config.get('REDIS_PORT', 6379)),
-      maxRetriesPerRequest: null,
-    });
-
-    this.worker = new Worker(NOTIFICATION_QUEUE, (job) => this.process(job), {
-      connection: this.connection,
-      concurrency: 2,
-    });
-
-    this.worker.on('failed', (job, err) => {
-      this.logger.error(`Job ${job?.id} failed: ${err.message}`);
-    });
-
-    this.logger.log(`Worker for "${NOTIFICATION_QUEUE}" started`);
+    // const webhookUrl = this.config.get<string>('DISCORD_WEBHOOK_URL');
+    //
+    // if (!webhookUrl) {
+    //   this.logger.warn(
+    //     'DISCORD_WEBHOOK_URL is not configured — notification worker disabled',
+    //   );
+    //   return;
+    // }
+    //
+    // this.connection = new IORedis({
+    //   host: this.config.get('REDIS_HOST', 'localhost'),
+    //   port: Number(this.config.get('REDIS_PORT', 6379)),
+    //   maxRetriesPerRequest: null,
+    // });
+    //
+    // this.worker = new Worker(NOTIFICATION_QUEUE, (job) => this.process(job), {
+    //   connection: this.connection,
+    //   concurrency: 2,
+    // });
+    //
+    // this.worker.on('failed', (job, err) => {
+    //   this.logger.error(`Job ${job?.id} failed: ${err.message}`);
+    // });
+    //
+    // this.logger.log(`Worker for "${NOTIFICATION_QUEUE}" started`);
   }
 
   async onModuleDestroy() {
