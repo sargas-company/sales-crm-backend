@@ -86,14 +86,7 @@ export class ChatGateway implements OnGatewayConnection {
       );
 
       for await (const event of stream) {
-        if (event.type === 'analysis') {
-          client.emit('analysis', {
-            decision: event.decision,
-            reasoning: event.reasoning,
-          });
-        } else if (event.type === 'chunk') {
-          client.emit('chunk', { text: event.text });
-        }
+        client.emit('chunk', { text: event.text });
       }
 
       client.emit('done');

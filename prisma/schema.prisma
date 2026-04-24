@@ -378,6 +378,54 @@ model InvoiceLineItem {
   @@index([invoiceId])
 }
 
+// ─── Notifications ───────────────────────────────────────────────────────────
+
+enum NotificationType {
+  JOB_POST_MATCH
+  CLIENT_REQUEST
+  CALL_REMINDER
+}
+
+enum NotificationDeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+enum NotificationChannel {
+  DISCORD
+}
+
+model NotificationEvent {
+  id        String           @id @default(uuid())
+  type      NotificationType
+  payload   Json
+  createdAt DateTime         @default(now())
+
+  deliveries NotificationDelivery[]
+
+  @@index([type, createdAt(sort: Desc)])
+}
+
+model NotificationDelivery {
+  id        String                     @id @default(uuid())
+  eventId   String
+  channel   NotificationChannel
+  status    NotificationDeliveryStatus @default(PENDING)
+  failedAttempts Int                   @default(0)
+  sentAt    DateTime?
+  error     String?
+  createdAt DateTime                   @default(now())
+  updatedAt DateTime                   @updatedAt
+
+  event NotificationEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, channel])
+  @@index([status, createdAt(sort: Desc)])
+  @@index([eventId])
+  @@index([channel, status])
+}
+
 // ─── Client Requests ─────────────────────────────────────────────────────────
 
 enum ClientRequestStatus {

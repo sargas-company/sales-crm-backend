@@ -9,6 +9,9 @@ import { ConfigService } from '@nestjs/config';
 import { Job, Worker } from 'bullmq';
 import IORedis from 'ioredis';
 
+import { NotificationService } from '../notification/notification.service';
+import { NotificationType } from '@prisma/client';
+
 import { PrismaService } from '../prisma/prisma.service';
 import { AiJobEvaluatorService } from './ai-job-evaluator.service';
 import { JOB_POST_PROCESS, JOB_POST_QUEUE } from './job-post.constants';
@@ -23,6 +26,7 @@ export class JobPostProcessorService implements OnModuleInit, OnModuleDestroy {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly aiEvaluator: AiJobEvaluatorService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   onModuleInit() {
@@ -36,6 +40,7 @@ export class JobPostProcessorService implements OnModuleInit, OnModuleDestroy {
       connection: this.connection,
       concurrency: 2,
       limiter: { max: 2, duration: 5000 },
+      lockDuration: 120000, // 2 min — AI calls can be slow
     });
 
     this.worker.on('failed', (job, err) => {
@@ -75,7 +80,7 @@ export class JobPostProcessorService implements OnModuleInit, OnModuleDestroy {
 
       const result = await this.aiEvaluator.evaluate(jobPost!.rawText);
 
-      await this.prisma.jobPost.update({
+      const processed = await this.prisma.jobPost.update({
         where: { id: jobPostId },
         data: {
           decision: result.decision,
@@ -86,6 +91,30 @@ export class JobPostProcessorService implements OnModuleInit, OnModuleDestroy {
           processedAt: new Date(),
         },
       });
+
+      if (
+        processed.matchScore != null &&
+        (processed.decision === 'approve' || processed.decision === 'maybe')
+      ) {
+        try {
+          await this.notificationService.createEvent(
+            NotificationType.JOB_POST_MATCH,
+            {
+              jobPostId: processed.id,
+              score: processed.matchScore,
+              title: processed.title ?? null,
+              url: processed.jobUrl ?? null,
+              decision: processed.decision ?? null,
+              priority: processed.priority ?? null,
+              rawText: processed.rawText.slice(0, 4096),
+            },
+          );
+        } catch (err) {
+          this.logger.error(
+            `Failed to create NotificationEvent for jobPost ${jobPostId}: ${(err as Error).message}`,
+          );
+        }
+      }
 
       this.logger.log(
         `Processed jobPost: ${jobPostId} → ${result.decision} (${result.matchScore})`,
