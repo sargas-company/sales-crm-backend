@@ -138,12 +138,14 @@ export class ProposalService {
       where: { id: proposalId },
       include: {
         jobPost: true,
+        platform: true,
         lead: {
           select: {
             firstName: true,
             lastName: true,
             companyName: true,
             status: true,
+            clientType: true,
             location: true,
           },
         },
@@ -159,7 +161,7 @@ export class ProposalService {
         })
       : [];
 
-    const { jobPost, lead, ...proposalFields } = proposal;
+    const { jobPost, platform, lead, ...proposalFields } = proposal;
 
     return {
       messages,
@@ -167,6 +169,11 @@ export class ProposalService {
         proposal: {
           title: proposalFields.title,
           status: proposalFields.status,
+          proposalType: proposalFields.proposalType,
+          boosted: proposalFields.boosted,
+          connects: proposalFields.connects,
+          boostedConnects: proposalFields.boostedConnects,
+          platform: platform ? { id: platform.id, name: platform.title } : null,
           vacancy: proposalFields.vacancy,
           coverLetter: proposalFields.coverLetter,
         },
@@ -175,6 +182,7 @@ export class ProposalService {
               title: jobPost.title,
               description: jobPost.rawText,
               score: jobPost.matchScore,
+              gigRadarScore: jobPost.gigRadarScore,
               budget: jobPost.budget,
               source: jobPost.scanner,
               totalSpent: jobPost.totalSpent,
@@ -186,8 +194,9 @@ export class ProposalService {
         lead: lead
           ? {
               name: [lead.firstName, lead.lastName].filter(Boolean).join(' '),
-              company: lead.companyName,
+              companyName: lead.companyName,
               status: lead.status,
+              clientType: lead.clientType,
               location: lead.location,
             }
           : null,

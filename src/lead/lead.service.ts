@@ -94,7 +94,7 @@ export class LeadService {
       where: { id: leadId },
       include: {
         proposal: {
-          include: { jobPost: true },
+          include: { jobPost: true, platform: true },
         },
       },
     });
@@ -110,20 +110,29 @@ export class LeadService {
 
     const { proposal, ...leadFields } = lead;
     const jobPost = proposal?.jobPost ?? null;
+    const platform = proposal?.platform ?? null;
 
     return {
       messages,
       context: {
         lead: {
-          name: [leadFields.firstName, leadFields.lastName].filter(Boolean).join(' '),
-          company: leadFields.companyName,
+          name: [leadFields.firstName, leadFields.lastName]
+            .filter(Boolean)
+            .join(' '),
+          companyName: leadFields.companyName,
           status: leadFields.status,
+          clientType: leadFields.clientType,
           location: leadFields.location,
         },
         proposal: proposal
           ? {
               title: proposal.title,
               status: proposal.status,
+              proposalType: proposal.proposalType,
+              boosted: proposal.boosted,
+              connects: proposal.connects,
+              boostedConnects: proposal.boostedConnects,
+              platform: platform ? { id: platform.id, name: platform.title } : null,
               vacancy: proposal.vacancy,
               coverLetter: proposal.coverLetter,
             }
@@ -133,6 +142,7 @@ export class LeadService {
               title: jobPost.title,
               description: jobPost.rawText,
               score: jobPost.matchScore,
+              gigRadarScore: jobPost.gigRadarScore,
               budget: jobPost.budget,
               source: jobPost.scanner,
               totalSpent: jobPost.totalSpent,
