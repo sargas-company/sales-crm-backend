@@ -189,6 +189,7 @@ export class ProposalService {
               avgRatePaid: jobPost.avgRatePaid,
               hireRate: jobPost.hireRate,
               location: jobPost.location,
+              aiResponse: jobPost.aiResponse,
             }
           : null,
         lead: lead
