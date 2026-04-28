@@ -496,10 +496,27 @@ model ClientCall {
   lead          Lead?          @relation(fields: [leadId], references: [id], onDelete: Cascade)
   clientRequest ClientRequest? @relation(fields: [clientRequestId], references: [id], onDelete: Cascade)
   createdBy     User           @relation(fields: [createdById], references: [id])
+  reminders     CallReminderSent[]
 
   @@index([createdById])
   @@index([status])
   @@index([scheduledAt(sort: Desc)])
   @@index([leadId])
   @@index([clientRequestId])
+}
+
+enum CallReminderType {
+  min60
+  min10
+}
+
+model CallReminderSent {
+  id     String           @id @default(uuid())
+  callId String
+  type   CallReminderType
+  sentAt DateTime         @default(now())
+
+  call ClientCall @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@unique([callId, type])
 }
