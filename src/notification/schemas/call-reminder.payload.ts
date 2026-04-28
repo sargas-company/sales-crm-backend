@@ -6,6 +6,7 @@ export interface CallReminderPayload {
   clientType: 'lead' | 'client_request';
   clientDateTime: string;
   clientTimezone: string;
+  clientTimezoneAbbr: string;
   kyivDateTime: string;
   durationMin: number;
   meetingUrl?: string | null;
@@ -29,6 +30,7 @@ export function parseCallReminderPayload(
   if (p.clientType !== 'lead' && p.clientType !== 'client_request') return null;
   if (typeof p.clientDateTime !== 'string') return null;
   if (typeof p.clientTimezone !== 'string') return null;
+  if (typeof p.clientTimezoneAbbr !== 'string') return null;
   if (typeof p.kyivDateTime !== 'string') return null;
   if (typeof p.durationMin !== 'number') return null;
   if (!isNullableString(p.meetingUrl)) return null;

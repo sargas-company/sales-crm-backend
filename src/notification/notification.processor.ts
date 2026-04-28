@@ -187,21 +187,24 @@ export class NotificationProcessorService
 
     const is60min = p.reminderType === '60min';
     const color = is60min ? 0xffa500 : 0xff0000;
-    const reminderLabel = is60min ? '⏰ 60 minutes before' : '🔴 10 minutes before';
-    const clientTypeLabel =
-      p.clientType === 'lead' ? '🧑 Lead' : '📋 Client Request';
+    const reminderLabel = is60min
+      ? '🟢 60 minutes before'
+      : '🟢 10 minutes before';
+    const clientTypeLabel = p.clientType === 'lead' ? 'Lead' : 'Client Request';
 
     const fields = [
       { name: 'Client', value: p.clientName, inline: false },
       { name: 'Type', value: clientTypeLabel, inline: false },
       {
         name: 'Client time',
-        value: `${p.clientDateTime} (${p.clientTimezone})`,
+        value: `${p.clientDateTime} (${p.clientTimezoneAbbr})`,
         inline: false,
       },
       { name: 'Kyiv time', value: p.kyivDateTime, inline: false },
       { name: 'Duration', value: `${p.durationMin} min`, inline: false },
-      ...(p.meetingUrl ? [{ name: 'Meeting', value: p.meetingUrl, inline: false }] : []),
+      ...(p.meetingUrl
+        ? [{ name: 'Meeting', value: p.meetingUrl, inline: false }]
+        : []),
     ];
 
     return {

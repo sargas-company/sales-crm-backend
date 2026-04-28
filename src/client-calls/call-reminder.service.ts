@@ -12,6 +12,14 @@ import { PrismaService } from '../prisma/prisma.service';
 const CRON_INTERVAL_MS = 5 * 60 * 1000;
 const KYIV_TZ = 'Europe/Kiev';
 
+function getTimezoneAbbr(date: Date, tz: string): string {
+  return (
+    new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' })
+      .formatToParts(date)
+      .find((p) => p.type === 'timeZoneName')?.value ?? tz
+  );
+}
+
 function formatInTimezone(date: Date, tz: string): string {
   return new Intl.DateTimeFormat('sv-SE', {
     timeZone: tz,
@@ -42,17 +50,26 @@ export class CallReminderService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
-    this.interval = setInterval(() => {
-      if (this.running) {
-        this.logger.warn('Call reminder tick already running, skipping');
-        return;
-      }
-      this.tick().catch((err: Error) =>
-        this.logger.error(`Call reminder tick failed: ${err.message}`),
-      );
-    }, CRON_INTERVAL_MS);
+    const msUntilBoundary = CRON_INTERVAL_MS - (Date.now() % CRON_INTERVAL_MS);
 
-    this.logger.log('Call reminder cron started (interval: 5m)');
+    setTimeout(() => {
+      this.runTick();
+      this.interval = setInterval(() => this.runTick(), CRON_INTERVAL_MS);
+    }, msUntilBoundary);
+
+    this.logger.log(
+      `Call reminder cron aligned to 5-min boundary, first tick in ${Math.round(msUntilBoundary / 1000)}s`,
+    );
+  }
+
+  private runTick() {
+    if (this.running) {
+      this.logger.warn('Call reminder tick already running, skipping');
+      return;
+    }
+    this.tick().catch((err: Error) =>
+      this.logger.error(`Call reminder tick failed: ${err.message}`),
+    );
   }
 
   onModuleDestroy() {
@@ -139,6 +156,7 @@ export class CallReminderService implements OnModuleInit, OnModuleDestroy {
       clientType,
       clientDateTime: formatInTimezone(scheduledAt, clientTimezone),
       clientTimezone,
+      clientTimezoneAbbr: getTimezoneAbbr(scheduledAt, clientTimezone),
       kyivDateTime: formatInTimezone(scheduledAt, KYIV_TZ),
       durationMin,
       meetingUrl,
