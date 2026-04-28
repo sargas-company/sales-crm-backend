@@ -9,6 +9,7 @@ import {
   NotificationChannel,
   NotificationDelivery,
   NotificationDeliveryStatus,
+  NotificationType,
 } from '@prisma/client';
 import { Job, Worker } from 'bullmq';
 import IORedis from 'ioredis';
@@ -20,6 +21,7 @@ import {
   NOTIFICATION_SEND,
   SCORE_THRESHOLDS,
 } from './notification.constants';
+import { parseClientRequestPayload } from './schemas/client-request.payload';
 import { parseJobPostMatchPayload } from './schemas/job-post-match.payload';
 
 const DECISION_COLOR: Record<string, number> = {
@@ -53,31 +55,31 @@ export class NotificationProcessorService
   ) {}
 
   onModuleInit() {
-    // const webhookUrl = this.config.get<string>('DISCORD_WEBHOOK_URL');
-    //
-    // if (!webhookUrl) {
-    //   this.logger.warn(
-    //     'DISCORD_WEBHOOK_URL is not configured — notification worker disabled',
-    //   );
-    //   return;
-    // }
-    //
-    // this.connection = new IORedis({
-    //   host: this.config.get('REDIS_HOST', 'localhost'),
-    //   port: Number(this.config.get('REDIS_PORT', 6379)),
-    //   maxRetriesPerRequest: null,
-    // });
-    //
-    // this.worker = new Worker(NOTIFICATION_QUEUE, (job) => this.process(job), {
-    //   connection: this.connection,
-    //   concurrency: 2,
-    // });
-    //
-    // this.worker.on('failed', (job, err) => {
-    //   this.logger.error(`Job ${job?.id} failed: ${err.message}`);
-    // });
-    //
-    // this.logger.log(`Worker for "${NOTIFICATION_QUEUE}" started`);
+    const webhookUrl = this.config.get<string>('DISCORD_WEBHOOK_URL');
+
+    if (!webhookUrl) {
+      this.logger.warn(
+        'DISCORD_WEBHOOK_URL is not configured — notification worker disabled',
+      );
+      return;
+    }
+
+    this.connection = new IORedis({
+      host: this.config.get('REDIS_HOST', 'localhost'),
+      port: Number(this.config.get('REDIS_PORT', 6379)),
+      maxRetriesPerRequest: null,
+    });
+
+    this.worker = new Worker(NOTIFICATION_QUEUE, (job) => this.process(job), {
+      connection: this.connection,
+      concurrency: 2,
+    });
+
+    this.worker.on('failed', (job, err) => {
+      this.logger.error(`Job ${job?.id} failed: ${err.message}`);
+    });
+
+    this.logger.log(`Worker for "${NOTIFICATION_QUEUE}" started`);
   }
 
   async onModuleDestroy() {
@@ -110,49 +112,105 @@ export class NotificationProcessorService
 
     this.logger.log(`Event loaded: ${eventId} [${event.type}]`);
 
-    const payload = parseJobPostMatchPayload(event.payload);
+    const discordBody = this.buildDiscordBody(event.type, event.payload);
 
-    if (!payload) {
-      this.logger.warn(`Invalid payload for event ${eventId}, skipping`);
+    if (!discordBody) {
+      this.logger.warn(
+        `Could not build Discord body for event ${eventId}, skipping`,
+      );
       return;
     }
 
-    const isGreen = payload.score >= SCORE_THRESHOLDS.GREEN;
-    const isYellow = payload.score >= SCORE_THRESHOLDS.YELLOW;
+    await this.sendToDiscord(eventId, discordBody);
+  }
 
+  private buildDiscordBody(
+    type: NotificationType,
+    payload: unknown,
+  ): Record<string, unknown> | null {
+    if (type === NotificationType.JOB_POST_MATCH) {
+      return this.buildJobPostMatchBody(payload);
+    }
+
+    if (type === NotificationType.CLIENT_REQUEST) {
+      return this.buildClientRequestBody(payload);
+    }
+
+    return null;
+  }
+
+  private buildJobPostMatchBody(
+    payload: unknown,
+  ): Record<string, unknown> | null {
+    const p = parseJobPostMatchPayload(payload);
+    if (!p) return null;
+
+    const isGreen = p.score >= SCORE_THRESHOLDS.GREEN;
+    const isYellow = p.score >= SCORE_THRESHOLDS.YELLOW;
     const scoreEmoji = isGreen ? '🟢' : isYellow ? '🟡' : '🔴';
-    const scoreChip = `${scoreEmoji} ${payload.score}%`;
 
     const fields = [
-      { name: 'Score', value: scoreChip, inline: true },
-      payload.decision
+      { name: 'Score', value: `${scoreEmoji} ${p.score}%`, inline: true },
+      p.decision
         ? {
             name: 'Decision',
-            value: DECISION_LABEL[payload.decision] ?? payload.decision,
+            value: DECISION_LABEL[p.decision] ?? p.decision,
             inline: true,
           }
         : null,
-      payload.priority
+      p.priority
         ? {
             name: 'Priority',
-            value: PRIORITY_LABEL[payload.priority] ?? payload.priority,
+            value: PRIORITY_LABEL[p.priority] ?? p.priority,
             inline: true,
           }
         : null,
     ].filter(Boolean);
 
-    const discordBody = {
+    return {
       embeds: [
         {
-          title: `🔥 ${payload.title ?? 'No title'}`,
-          url: payload.url ?? undefined,
-          color: DECISION_COLOR[payload.decision ?? ''] ?? 0x5865f2,
-          description: payload.rawText ?? undefined,
+          title: `🔥 ${p.title ?? 'No title'}`,
+          url: p.url ?? undefined,
+          color: DECISION_COLOR[p.decision ?? ''] ?? 0x5865f2,
+          description: p.rawText ?? undefined,
           fields,
         },
       ],
     };
+  }
 
+  private buildClientRequestBody(
+    payload: unknown,
+  ): Record<string, unknown> | null {
+    const p = parseClientRequestPayload(payload);
+    if (!p) return null;
+
+    const fields = [
+      { name: 'Name', value: p.name, inline: false },
+      { name: 'Email', value: p.email, inline: false },
+      p.company ? { name: 'Company', value: p.company, inline: false } : null,
+      p.services?.length
+        ? { name: 'Services', value: p.services.join(', '), inline: false }
+        : null,
+    ].filter(Boolean);
+
+    return {
+      embeds: [
+        {
+          title: '📥 New client request',
+          color: 0x5865f2,
+          description: p.message ?? undefined,
+          fields,
+        },
+      ],
+    };
+  }
+
+  private async sendToDiscord(
+    eventId: string,
+    discordBody: Record<string, unknown>,
+  ): Promise<void> {
     const existing = await this.prisma.notificationDelivery.findFirst({
       where: { eventId, channel: NotificationChannel.DISCORD },
     });
