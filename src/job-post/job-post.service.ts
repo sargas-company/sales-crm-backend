@@ -32,6 +32,7 @@ const JOB_POST_SELECT = {
   avgRatePaid: true,
   hireRate: true,
   hSkillsKeywords: true,
+  proposal: { select: { id: true } },
 } satisfies Prisma.JobPostSelect;
 
 @Injectable()
@@ -198,6 +199,7 @@ export class JobPostService {
   async findOne(id: string) {
     const jobPost = await this.prisma.jobPost.findUnique({
       where: { id },
+      include: { proposal: { select: { id: true } } },
     });
 
     if (!jobPost) throw new NotFoundException(`JobPost ${id} not found`);
