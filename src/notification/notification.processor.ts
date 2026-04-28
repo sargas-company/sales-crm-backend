@@ -186,7 +186,7 @@ export class NotificationProcessorService
     }
 
     const is60min = p.reminderType === '60min';
-    const color = is60min ? 0xffa500 : 0xff0000;
+    const color = 0x57f287;
     const reminderLabel = is60min
       ? '🟢 60 minutes before'
       : '🟢 10 minutes before';
