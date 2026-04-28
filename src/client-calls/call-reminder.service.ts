@@ -12,14 +12,9 @@ import { PrismaService } from '../prisma/prisma.service';
 const CRON_INTERVAL_MS = 5 * 60 * 1000;
 const KYIV_TZ = 'Europe/Kiev';
 
-const REMINDER_WINDOWS = [
-  { offsetMin: 60, type: CallReminderType.min60, label: '60min' as const },
-  { offsetMin: 10, type: CallReminderType.min10, label: '10min' as const },
-];
-
-function formatKyivTime(date: Date): string {
+function formatInTimezone(date: Date, tz: string): string {
   return new Intl.DateTimeFormat('sv-SE', {
-    timeZone: KYIV_TZ,
+    timeZone: tz,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -28,6 +23,12 @@ function formatKyivTime(date: Date): string {
     hour12: false,
   }).format(date);
 }
+
+const REMINDER_WINDOWS = [
+  { offsetMin: 60, type: CallReminderType.min60, label: '60min' as const },
+  { offsetMin: 10, type: CallReminderType.min10, label: '10min' as const },
+];
+
 
 @Injectable()
 export class CallReminderService implements OnModuleInit, OnModuleDestroy {
@@ -73,13 +74,26 @@ export class CallReminderService implements OnModuleInit, OnModuleDestroy {
             status: ClientCallStatus.scheduled,
             scheduledAt: { gte: windowStart, lte: windowEnd },
           },
+          include: {
+            lead: { select: { firstName: true, lastName: true } },
+            clientRequest: { select: { name: true } },
+          },
         });
 
         for (const call of calls) {
+          const clientName =
+            call.clientType === 'lead'
+              ? `${call.lead?.firstName ?? ''} ${call.lead?.lastName ?? ''}`.trim()
+              : (call.clientRequest?.name ?? '—');
+
           await this.sendReminderIdempotent(
             call.id,
             call.callTitle,
             call.scheduledAt,
+            call.clientType,
+            clientName,
+            call.clientTimezone,
+            call.duration,
             call.meetingUrl,
             window.type,
             window.label,
@@ -95,6 +109,10 @@ export class CallReminderService implements OnModuleInit, OnModuleDestroy {
     callId: string,
     callTitle: string,
     scheduledAt: Date,
+    clientType: string,
+    clientName: string,
+    clientTimezone: string,
+    durationMin: number,
     meetingUrl: string | null,
     type: CallReminderType,
     label: '60min' | '10min',
@@ -116,10 +134,14 @@ export class CallReminderService implements OnModuleInit, OnModuleDestroy {
     await this.notifications.createEvent('CALL_REMINDER', {
       callId,
       callTitle,
-      scheduledAt: scheduledAt.toISOString(),
       reminderType: label,
+      clientName,
+      clientType,
+      clientDateTime: formatInTimezone(scheduledAt, clientTimezone),
+      clientTimezone,
+      kyivDateTime: formatInTimezone(scheduledAt, KYIV_TZ),
+      durationMin,
       meetingUrl,
-      kyivDateTime: formatKyivTime(scheduledAt),
     });
 
     this.logger.log(
