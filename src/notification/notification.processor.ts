@@ -21,6 +21,7 @@ import {
   SCORE_THRESHOLDS,
 } from './notification.constants';
 import { parseCallReminderPayload } from './schemas/call-reminder.payload';
+import { parseClientRequestPayload } from './schemas/client-request.payload';
 import { parseJobPostMatchPayload } from './schemas/job-post-match.payload';
 
 const DECISION_COLOR: Record<string, number> = {
@@ -132,6 +133,10 @@ export class NotificationProcessorService
       return this.buildCallReminderEmbed(payload, eventId);
     }
 
+    if (type === 'CLIENT_REQUEST') {
+      return this.buildClientRequestEmbed(payload, eventId);
+    }
+
     this.logger.warn(`No Discord builder for event type ${type}, skipping`);
     return null;
   }
@@ -154,10 +159,18 @@ export class NotificationProcessorService
     const fields = [
       { name: 'Score', value: `${scoreEmoji} ${p.score}%`, inline: true },
       p.decision
-        ? { name: 'Decision', value: DECISION_LABEL[p.decision] ?? p.decision, inline: true }
+        ? {
+            name: 'Decision',
+            value: DECISION_LABEL[p.decision] ?? p.decision,
+            inline: true,
+          }
         : null,
       p.priority
-        ? { name: 'Priority', value: PRIORITY_LABEL[p.priority] ?? p.priority, inline: true }
+        ? {
+            name: 'Priority',
+            value: PRIORITY_LABEL[p.priority] ?? p.priority,
+            inline: true,
+          }
         : null,
     ].filter(Boolean);
 
@@ -219,6 +232,38 @@ export class NotificationProcessorService
     };
   }
 
+  private buildClientRequestEmbed(
+    payload: unknown,
+    eventId: string,
+  ): Record<string, unknown> | null {
+    const p = parseClientRequestPayload(payload);
+
+    if (!p) {
+      this.logger.warn(`Invalid CLIENT_REQUEST payload for event ${eventId}`);
+      return null;
+    }
+
+    const fields = [
+      { name: 'Name', value: p.name, inline: false },
+      { name: 'Email', value: p.email, inline: false },
+      p.company ? { name: 'Company', value: p.company, inline: false } : null,
+      p.services?.length
+        ? { name: 'Services', value: p.services.join(', '), inline: false }
+        : null,
+    ].filter(Boolean);
+
+    return {
+      embeds: [
+        {
+          title: '📥 New client request',
+          color: 0x5865f2,
+          description: p.message ?? undefined,
+          fields,
+        },
+      ],
+    };
+  }
+
   private async sendToDiscord(
     eventId: string,
     discordBody: Record<string, unknown>,
@@ -228,7 +273,9 @@ export class NotificationProcessorService
     });
 
     if (existing?.status === NotificationDeliveryStatus.SENT) {
-      this.logger.log(`Duplicate skipped: delivery already SENT for event ${eventId}`);
+      this.logger.log(
+        `Duplicate skipped: delivery already SENT for event ${eventId}`,
+      );
       return;
     }
 
@@ -249,7 +296,9 @@ export class NotificationProcessorService
           });
     } catch (err) {
       if ((err as { code?: string }).code === 'P2002') {
-        this.logger.warn(`Duplicate delivery blocked by DB constraint for event ${eventId}`);
+        this.logger.warn(
+          `Duplicate delivery blocked by DB constraint for event ${eventId}`,
+        );
         return;
       }
       throw err;
@@ -276,7 +325,9 @@ export class NotificationProcessorService
         },
       });
 
-      this.logger.error(`Delivery ${delivery.id} failed for event ${eventId}: ${(sendErr as Error).message}`);
+      this.logger.error(
+        `Delivery ${delivery.id} failed for event ${eventId}: ${(sendErr as Error).message}`,
+      );
       throw sendErr;
     }
   }

@@ -1,8 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { NotificationType } from '@prisma/client';
 
+import { NotificationService } from '../notification/notification.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateClientRequestDto } from './dto/create-client-request.dto';
 import { UpdateClientRequestDto } from './dto/update-client-request.dto';
@@ -17,7 +19,12 @@ export interface UploadedFileMetadata {
 
 @Injectable()
 export class ClientRequestsService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(ClientRequestsService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notificationService: NotificationService,
+  ) {}
 
   async findAll(page: number, limit: number) {
     const offset = (page - 1) * limit;
@@ -73,7 +80,7 @@ export class ClientRequestsService {
   }
 
   async create(dto: CreateClientRequestDto, files: UploadedFileMetadata[]) {
-    return this.prisma.clientRequest.create({
+    const request = await this.prisma.clientRequest.create({
       data: {
         name: dto.name,
         company: dto.company,
@@ -85,5 +92,24 @@ export class ClientRequestsService {
         files: files as object[],
       },
     });
+
+    try {
+      await this.notificationService.createEvent(NotificationType.CLIENT_REQUEST, {
+        clientRequestId: request.id,
+        name: request.name,
+        email: request.email,
+        company: request.company ?? null,
+        phone: request.phone ?? null,
+        phoneCountry: request.phoneCountry ?? null,
+        services: request.services,
+        message: request.message ?? null,
+      });
+    } catch (err) {
+      this.logger.error(
+        `Failed to create NotificationEvent for clientRequest ${request.id}: ${(err as Error).message}`,
+      );
+    }
+
+    return request;
   }
 }

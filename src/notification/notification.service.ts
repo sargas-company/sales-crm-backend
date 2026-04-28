@@ -15,6 +15,7 @@ import {
   NOTIFICATION_SEND,
 } from './notification.constants';
 import { parseCallReminderPayload } from './schemas/call-reminder.payload';
+import { parseClientRequestPayload } from './schemas/client-request.payload';
 import { parseJobPostMatchPayload } from './schemas/job-post-match.payload';
 
 const ORPHAN_INTERVAL_MS = 5 * 60 * 1000; // 5 min
@@ -106,6 +107,9 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       case NotificationType.CALL_REMINDER:
         await this.handleCallReminder(event);
         break;
+      case NotificationType.CLIENT_REQUEST:
+        await this.handleClientRequest(event);
+        break;
       default:
         this.logger.log(`No rule for event type ${event.type}, skipping`);
     }
@@ -180,6 +184,36 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     );
 
     this.logger.log(`Call reminder event ${event.id} enqueued`);
+  }
+
+  private async handleClientRequest(event: NotificationEvent): Promise<void> {
+    const payload = parseClientRequestPayload(event.payload);
+
+    if (!payload) {
+      this.logger.warn(`Invalid payload for event ${event.id}`);
+      return;
+    }
+
+    if (!this.config.get<string>('DISCORD_WEBHOOK_URL')) {
+      this.logger.warn(
+        `Event ${event.id} skipped: DISCORD_WEBHOOK_URL not configured`,
+      );
+      return;
+    }
+
+    await this.queue.add(
+      NOTIFICATION_SEND,
+      { eventId: event.id },
+      {
+        jobId: event.id,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 3000 },
+        removeOnComplete: true,
+        removeOnFail: false,
+      },
+    );
+
+    this.logger.log(`Event ${event.id} enqueued for notification`);
   }
 
   private async recoverOrphans(): Promise<void> {
