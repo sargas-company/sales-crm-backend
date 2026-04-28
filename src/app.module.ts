@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 
 import { AccountModule } from './account/account.module';
+import { ClientCallsModule } from './client-calls/client-calls.module';
 import { AuthModule } from './auth/auth.module';
 import { ClientRequestsModule } from './client-requests/client-requests.module';
 import { CounterpartyModule } from './counterparty/counterparty.module';
@@ -33,6 +34,7 @@ import { TelegramModule } from './telegram/telegram.module';
     ClientRequestsModule,
     InvoiceModule,
     CounterpartyModule,
+    ClientCallsModule,
   ],
 })
 export class AppModule {}

@@ -21,8 +21,9 @@ model User {
   role             UserRole   @default(MANAGER)
   createdAt        DateTime   @default(now())
 
-  proposals Proposal[]
-  accounts  Account[]
+  proposals    Proposal[]
+  accounts     Account[]
+  clientCalls  ClientCall[]
 }
 
 // ─── Enums ───────────────────────────────────────────────────────────────────
@@ -254,8 +255,9 @@ model Lead {
   acceptedAt DateTime?
   holdAt     DateTime?
 
-  proposal Proposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
-  chat     Chat?
+  proposal    Proposal?    @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+  chat        Chat?
+  clientCalls ClientCall[]
 
   @@index([status])
   @@index([createdAt])
@@ -448,6 +450,56 @@ model ClientRequest {
   createdAt    DateTime            @default(now())
   updatedAt    DateTime            @updatedAt
 
+  clientCalls ClientCall[]
+
   @@index([createdAt])
   @@index([status])
+}
+
+// ─── Client Calls ─────────────────────────────────────────────────────────────
+
+enum ClientCallClientType {
+  lead
+  client_request
+}
+
+enum ClientCallStatus {
+  scheduled
+  cancelled
+  completed
+}
+
+model ClientCall {
+  id              String               @id @default(uuid())
+  clientType      ClientCallClientType
+  leadId          String?
+  clientRequestId String?
+  createdById     String
+
+  callTitle       String
+  meetingUrl      String?
+
+  scheduledAt     DateTime
+  clientTimezone  String
+  duration        Int
+
+  status          ClientCallStatus     @default(scheduled)
+
+  notes           String?
+  summary         String?
+  transcriptUrl   String?
+  aiSummary       String?
+
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  lead          Lead?          @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  clientRequest ClientRequest? @relation(fields: [clientRequestId], references: [id], onDelete: Cascade)
+  createdBy     User           @relation(fields: [createdById], references: [id])
+
+  @@index([createdById])
+  @@index([status])
+  @@index([scheduledAt(sort: Desc)])
+  @@index([leadId])
+  @@index([clientRequestId])
 }

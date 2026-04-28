@@ -53,6 +53,7 @@ export class LeadService {
         orderBy: { createdAt: 'desc' },
         skip: offset,
         take: limit,
+        include: { proposal: { select: { id: true, title: true } } },
       }),
       this.prisma.lead.count(),
     ]);

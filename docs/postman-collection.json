@@ -39,6 +39,11 @@
       "key": "invoiceId",
       "value": "",
       "description": "Invoice ID. Set automatically after Create Invoice."
+    },
+    {
+      "key": "clientCallId",
+      "value": "",
+      "description": "Client Call ID. Set automatically after Create Client Call."
     }
   ],
   "item": [
@@ -552,6 +557,93 @@
             "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
             "url": "{{baseUrl}}/invoices/{{invoiceId}}",
             "description": "Delete an invoice by ID. Returns 204 No Content.\n\nAll associated line items are deleted automatically (cascade)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Client Calls",
+      "description": "Client Call management. Allows scheduling calls with leads or client requests.\n\n**Flow:**\n1. Get a Lead ID from `GET /leads` or a ClientRequest ID from `GET /client-requests`\n2. Create a Client Call — `{{clientCallId}}` saved automatically\n3. After the call — PATCH to update status, notes, summary, transcriptUrl\n\n**clientType:** `lead` | `client_request`\n**status:** `scheduled` | `cancelled` | `completed`\n\n**clientTimezone** accepts IANA (`America/New_York`) or fixed offset (`+05:00`).\n`clientDateTime` and `kyivDateTime` are computed by the server on every response.",
+      "item": [
+        {
+          "name": "Create Client Call",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.id) {",
+                  "  pm.collectionVariables.set('clientCallId', json.id);",
+                  "  console.log('Client Call ID saved:', json.id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": "{{baseUrl}}/client-calls",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"clientType\": \"lead\",\n  \"leadId\": \"REPLACE_WITH_LEAD_ID\",\n  \"callTitle\": \"Discovery Call\",\n  \"meetingUrl\": \"https://meet.google.com/abc-xyz\",\n  \"scheduledAt\": \"2026-05-01T12:00:00.000Z\",\n  \"clientTimezone\": \"America/New_York\",\n  \"duration\": 60\n}"
+            },
+            "description": "Create a new client call.\n\n**Required:** `clientType`, `callTitle`, `scheduledAt`, `clientTimezone`, `duration`\n**Conditional:** `leadId` (required if `clientType: \"lead\"`) or `clientRequestId` (required if `clientType: \"client_request\"`)\n**Optional:** `meetingUrl`\n\n**clientTimezone** — IANA timezone (`America/New_York`, `Europe/London`) or fixed offset (`+05:00`, `-03:00`).\n\n`scheduledAt` must be UTC ISO 8601. Server returns computed `clientDateTime` and `kyivDateTime`.\n\nClient Call ID is saved automatically to `{{clientCallId}}`."
+          }
+        },
+        {
+          "name": "Get All Client Calls (paginated)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/client-calls?page=1&limit=10",
+              "host": ["{{baseUrl}}"],
+              "path": ["client-calls"],
+              "query": [
+                { "key": "page", "value": "1", "description": "Page number (default: 1)" },
+                { "key": "limit", "value": "10", "description": "Items per page (default: 10)" }
+              ]
+            },
+            "description": "Get paginated list of client calls ordered by `scheduledAt` descending.\n\n**Response:**\n```json\n{\n  \"data\": [\n    {\n      \"id\": \"uuid\",\n      \"clientType\": \"lead\",\n      \"callTitle\": \"Discovery Call\",\n      \"scheduledAt\": \"2026-05-01T12:00:00.000Z\",\n      \"clientTimezone\": \"America/New_York\",\n      \"duration\": 60,\n      \"status\": \"scheduled\",\n      \"clientDateTime\": \"2026-05-01 08:00\",\n      \"kyivDateTime\": \"2026-05-01 15:00\",\n      \"lead\": { \"id\": \"...\", \"firstName\": \"John\", \"lastName\": \"Doe\", \"companyName\": null },\n      \"clientRequest\": null,\n      \"createdBy\": { \"id\": \"...\", \"firstName\": \"Dmytro\", \"lastName\": \"Sarafaniuk\" }\n    }\n  ],\n  \"total\": 5\n}\n```"
+          }
+        },
+        {
+          "name": "Get Client Call by ID",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": "{{baseUrl}}/client-calls/{{clientCallId}}",
+            "description": "Get a single client call by ID. Includes nested `lead` or `clientRequest` and `createdBy`. Also returns computed `clientDateTime` and `kyivDateTime`."
+          }
+        },
+        {
+          "name": "Update Client Call",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "url": "{{baseUrl}}/client-calls/{{clientCallId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"completed\",\n  \"notes\": \"Client is interested, follow up next week.\",\n  \"summary\": \"Discussed project scope and timeline.\",\n  \"transcriptUrl\": \"https://f003.backblazeb2.com/file/bucket/transcript-uuid.txt\",\n  \"aiSummary\": \"Key points: budget ~$5k, timeline 2 months, React + Node stack preferred.\"\n}"
+            },
+            "description": "Update any client call fields. All fields optional — send only what needs to change.\n\n**status:** `scheduled` | `cancelled` | `completed`\n\n**Post-call fields:** `notes`, `summary`, `transcriptUrl`, `aiSummary`\n\n**Reschedule example:**\n```json\n{\n  \"scheduledAt\": \"2026-05-05T14:00:00.000Z\",\n  \"clientTimezone\": \"+03:00\"\n}\n```\n\nReturns updated call with recomputed `clientDateTime` and `kyivDateTime`."
+          }
+        },
+        {
+          "name": "Delete Client Call",
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": "{{baseUrl}}/client-calls/{{clientCallId}}",
+            "description": "Delete a client call by ID. Returns 204 No Content."
           }
         }
       ]
