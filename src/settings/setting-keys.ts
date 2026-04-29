@@ -5,6 +5,7 @@ export const SettingKey = {
   JOB_SCANNER_NOTIFICATIONS_MIN_SCORE: 'job_scanner.notifications.min_score',
   JOB_SCANNER_TELEGRAM_SESSION: 'job_scanner.telegram.session',
   JOB_SCANNER_TELEGRAM_CONNECTED: 'job_scanner.telegram.connected',
+  JOB_SCANNER_TELEGRAM_AUTH_HASH: 'job_scanner.telegram.auth_hash',
   INVOICE_CLIENT_DETAILS: 'invoice.client.details',
   INVOICE_CONTRACTOR_DETAILS: 'invoice.contractor.details',
 } as const;

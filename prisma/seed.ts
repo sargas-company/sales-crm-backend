@@ -215,6 +215,16 @@ async function main() {
       defaultValue: false,
       order: 5,
     },
+    {
+      key: 'job_scanner.telegram.auth_hash',
+      title: 'Telegram Auth Hash',
+      description: 'Temporary phoneCodeHash during Telegram auth flow',
+      type: 'string' as const,
+      uiType: 'input' as const,
+      isSecret: true,
+      defaultValue: '',
+      order: 6,
+    },
   ];
 
   for (const setting of jobScannerSettings) {

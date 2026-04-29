@@ -30,7 +30,11 @@ export class TelegramAuthService {
       await this.authClient.disconnect();
     }
 
-    this.authClient = createTelegramClient(new StringSession(''), apiId, apiHash);
+    this.authClient = createTelegramClient(
+      new StringSession(''),
+      apiId,
+      apiHash,
+    );
 
     await this.authClient.connect();
 
@@ -48,12 +52,30 @@ export class TelegramAuthService {
     }
 
     this.phoneCodeHash = result.phoneCodeHash;
+    await this.settings.setSetting(
+      SettingKey.JOB_SCANNER_TELEGRAM_AUTH_HASH,
+      this.phoneCodeHash,
+    );
     this.logger.log('Auth code sent');
   }
 
   async verifyCode(code: string): Promise<void> {
     if (!this.authClient || !this.phoneCodeHash) {
-      throw new Error('Call startAuth() first');
+      const storedHash = await this.settings.getString(
+        SettingKey.JOB_SCANNER_TELEGRAM_AUTH_HASH,
+        '',
+      );
+      if (!storedHash) {
+        throw new Error('Call startAuth() first');
+      }
+      const { apiId, apiHash } = this.getCredentials();
+      this.authClient = createTelegramClient(
+        new StringSession(''),
+        apiId,
+        apiHash,
+      );
+      await this.authClient.connect();
+      this.phoneCodeHash = storedHash;
     }
 
     const phone = this.config.getOrThrow<string>('TG_PHONE');
@@ -68,8 +90,18 @@ export class TelegramAuthService {
 
     const sessionString = this.authClient.session.save() as unknown as string;
 
-    await this.settings.setSetting(SettingKey.JOB_SCANNER_TELEGRAM_SESSION, sessionString);
-    await this.settings.setSetting(SettingKey.JOB_SCANNER_TELEGRAM_CONNECTED, true);
+    await this.settings.setSetting(
+      SettingKey.JOB_SCANNER_TELEGRAM_SESSION,
+      sessionString,
+    );
+    await this.settings.setSetting(
+      SettingKey.JOB_SCANNER_TELEGRAM_CONNECTED,
+      true,
+    );
+    await this.settings.setSetting(
+      SettingKey.JOB_SCANNER_TELEGRAM_AUTH_HASH,
+      '',
+    );
 
     this.logger.log('Telegram authorized, session saved');
 
@@ -88,7 +120,10 @@ export class TelegramAuthService {
     await this.listener.disconnect();
 
     await this.settings.setSetting(SettingKey.JOB_SCANNER_TELEGRAM_SESSION, '');
-    await this.settings.setSetting(SettingKey.JOB_SCANNER_TELEGRAM_CONNECTED, false);
+    await this.settings.setSetting(
+      SettingKey.JOB_SCANNER_TELEGRAM_CONNECTED,
+      false,
+    );
 
     if (this.authClient?.connected) {
       try {
