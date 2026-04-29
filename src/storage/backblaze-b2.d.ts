@@ -48,6 +48,11 @@ declare module 'backblaze-b2' {
       fileId: string;
       fileName: string;
     }): Promise<B2Response<{ fileId: string; fileName: string }>>;
+    getDownloadAuthorization(args: {
+      bucketId: string;
+      fileNamePrefix: string;
+      validDurationInSeconds: number;
+    }): Promise<B2Response<{ authorizationToken: string; bucketId: string; fileNamePrefix: string }>>;
   }
 
   export = B2;

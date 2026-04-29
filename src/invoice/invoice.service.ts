@@ -110,6 +110,16 @@ export class InvoiceService {
     return this.prisma.invoice.delete({ where: { id } });
   }
 
+  async getPdfDownloadUrl(id: string): Promise<string> {
+    const invoice = await this.findOne(id);
+    if (!invoice.pdfUrl) throw new NotFoundException('Invoice PDF has not been generated yet');
+    // pdfUrl can be a full URL (old records) or plain filename (new records)
+    const fileName = invoice.pdfUrl.startsWith('http')
+      ? decodeURIComponent(invoice.pdfUrl.split('/').pop()!)
+      : invoice.pdfUrl;
+    return this.storage.getDownloadUrl(StorageBucket.INVOICES, fileName);
+  }
+
   async generate(id: string) {
     const invoice = await this.findOne(id);
 
@@ -167,7 +177,6 @@ export class InvoiceService {
       ...(invoice.labels as Record<string, string>),
     };
 
-    console.log('[generate] payload:', JSON.stringify(payload, null, 2));
 
     const apiKey = this.config.get<string>('INVOICE_GENERATOR_API_KEY');
 
@@ -189,16 +198,27 @@ export class InvoiceService {
         );
       });
 
-    const { url: pdfUrl } = await this.storage.upload({
+    const cp = invoice.counterparty;
+    const FULL_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    const type = cp.type.charAt(0).toUpperCase() + cp.type.slice(1);
+    const day = invoice.createdAt.getUTCDate();
+    const month = FULL_MONTHS[invoice.createdAt.getUTCMonth()];
+    const year = invoice.createdAt.getUTCFullYear();
+    const rawName = `${type} - ${cp.firstName} ${cp.lastName} - ${month} ${day}, ${year}`;
+    const safeFileName = rawName.replace(/[^a-zA-Z0-9 \-_.,]/g, '').trim();
+
+    const pdfFileName = `${safeFileName}.pdf`;
+
+    await this.storage.upload({
       bucket: StorageBucket.INVOICES,
-      fileName: `${id}.pdf`,
+      fileName: pdfFileName,
       buffer: Buffer.from(response.data),
       mimeType: 'application/pdf',
     });
 
     return this.prisma.invoice.update({
       where: { id },
-      data: { pdfUrl, status: InvoiceStatus.open },
+      data: { pdfUrl: pdfFileName, status: InvoiceStatus.open },
       include: {
         lineItems: { orderBy: { sortOrder: 'asc' } },
         counterparty: true,

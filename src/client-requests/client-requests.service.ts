@@ -1,6 +1,6 @@
 import * as path from 'path';
 
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { NotificationType } from '@prisma/client';
 
 import { NotificationService } from '../notification/notification.service';
@@ -68,6 +68,16 @@ export class ClientRequestsService {
     );
 
     await this.prisma.clientRequest.delete({ where: { id } });
+  }
+
+  async getFileDownloadUrl(id: string, fileName: string): Promise<string> {
+    const request = await this.findOne(id);
+    const storedFiles = (request.files as unknown) as StoredFileMetadata[];
+    const file = storedFiles.find((f) => f.fileName === fileName);
+
+    if (!file) throw new BadRequestException(`File "${fileName}" not found in this request`);
+
+    return this.storage.getDownloadUrl(StorageBucket.CLIENT_REQUESTS, fileName);
   }
 
   async create(dto: CreateClientRequestDto, files: IncomingFileData[]) {

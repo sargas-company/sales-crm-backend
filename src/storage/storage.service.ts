@@ -1,6 +1,6 @@
 import { Injectable, InternalServerErrorException, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import B2 from 'backblaze-b2';
+import B2 = require('backblaze-b2');
 
 import { StorageBucket, StorageUploadOptions, StorageUploadResult } from './storage.types';
 
@@ -54,7 +54,7 @@ export class StorageService implements OnModuleInit {
 
         return {
           fileId: data.fileId,
-          url: `${this.downloadUrl}/file/${bucket.name}/${options.fileName}`,
+          url: `${this.downloadUrl}/file/${bucket.name}/${encodeURIComponent(options.fileName)}`,
         };
       } catch (err: any) {
         lastError = err;
@@ -75,6 +75,22 @@ export class StorageService implements OnModuleInit {
 
   async delete(fileId: string, fileName: string): Promise<void> {
     await this.b2.deleteFileVersion({ fileId, fileName });
+  }
+
+  async getDownloadUrl(
+    bucket: StorageBucket,
+    fileName: string,
+    expiresInSeconds = 3600,
+  ): Promise<string> {
+    const { id: bucketId, name: bucketName } = this.getBucketConfig(bucket);
+
+    const { data } = await this.b2.getDownloadAuthorization({
+      bucketId,
+      fileNamePrefix: fileName,
+      validDurationInSeconds: expiresInSeconds,
+    });
+
+    return `${this.downloadUrl}/file/${bucketName}/${encodeURIComponent(fileName)}?Authorization=${data.authorizationToken}`;
   }
 
   private async authorize(): Promise<void> {

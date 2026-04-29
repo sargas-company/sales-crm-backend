@@ -71,6 +71,15 @@ export class InvoiceController {
     return this.invoiceService.generate(id);
   }
 
+  @Get(':id/pdf')
+  @ApiOperation({ summary: 'Get a temporary download URL for the invoice PDF (1h expiry)' })
+  @ApiResponse({ status: 200, description: '{ url: string }' })
+  @ApiResponse({ status: 404, description: 'Invoice not found or PDF not generated yet' })
+  async getPdfUrl(@Param('id') id: string) {
+    const url = await this.invoiceService.getPdfDownloadUrl(id);
+    return { url };
+  }
+
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Delete invoice' })
