@@ -164,7 +164,7 @@ async function main() {
       description: 'Enable real-time processing of new job posts',
       type: 'boolean' as const,
       uiType: 'toggle' as const,
-      defaultValue: true,
+      defaultValue: false,
       order: 0,
     },
     {
@@ -222,6 +222,7 @@ async function main() {
       type: 'string' as const,
       uiType: 'input' as const,
       isSecret: true,
+      isActive: false, // TODO: replace with isInternal field on Setting model
       defaultValue: '',
       order: 6,
     },
@@ -236,6 +237,7 @@ async function main() {
         defaultValue: setting.defaultValue,
         validationSchema: setting.validationSchema,
         order: setting.order,
+        isActive: setting.isActive ?? true,
       },
       create: {
         ...setting,
