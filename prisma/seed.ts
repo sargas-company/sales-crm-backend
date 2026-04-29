@@ -109,23 +109,22 @@ async function main() {
   ];
 
   for (const { type, title, content } of prompts) {
-    await prisma.prompt.upsert({
-      where: {
-        // upsert by type where isActive = true isn't a unique constraint,
-        // so we use a dedicated unique seed id per type
-        id: `seed-prompt-${type.toLowerCase()}`,
-      },
-      update: { title, content },
-      create: {
-        id: `seed-prompt-${type.toLowerCase()}`,
-        type,
-        title,
-        content,
-        version: 1,
-        isActive: true,
-        createdBy: 'seed',
-      },
-    });
+    const existing = await prisma.prompt.findFirst({ where: { type, isActive: true } });
+    if (existing) {
+      await prisma.prompt.update({ where: { id: existing.id }, data: { title, content } });
+    } else {
+      await prisma.prompt.create({
+        data: {
+          id: `seed-prompt-${type.toLowerCase()}`,
+          type,
+          title,
+          content,
+          version: 1,
+          isActive: true,
+          createdBy: 'seed',
+        },
+      });
+    }
   }
 
   console.log('Seeded prompts: JOB_GATEKEEPER, JOB_EVALUATION, CHAT_SYSTEM');
