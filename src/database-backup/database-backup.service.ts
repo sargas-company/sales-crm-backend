@@ -52,8 +52,9 @@ export class DatabaseBackupService {
 
     const env = { ...process.env, PGPASSWORD: password };
 
+    const bin = this.config.get<string>('PG_DUMP_BIN') || 'pg_dump';
     // -Fc = custom compressed format, best for pg_restore
-    const cmd = `pg_dump -h ${host} -p ${port} -U ${user} -Fc ${database}`;
+    const cmd = `${bin} -h ${host} -p ${port} -U ${user} -Fc ${database}`;
 
     const { stdout } = await execAsync(cmd, { env, encoding: 'buffer', maxBuffer: 512 * 1024 * 1024 });
 
@@ -62,7 +63,9 @@ export class DatabaseBackupService {
 
   private buildFileName(): string {
     const now = new Date();
-    const ts = now.toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
-    return `backups/${ts}.dump`;
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    return `${dd}-${mm}-${yyyy}.dump`;
   }
 }
