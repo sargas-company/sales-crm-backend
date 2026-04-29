@@ -5,6 +5,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as Sentry from '@sentry/nestjs';
 
 import { Job, Worker } from 'bullmq';
 import IORedis from 'ioredis';
@@ -45,6 +46,10 @@ export class JobPostProcessorService implements OnModuleInit, OnModuleDestroy {
 
     this.worker.on('failed', (job, err) => {
       this.logger.error(`Job ${job?.id} failed: ${err.message}`);
+      Sentry.captureException(err, {
+        tags: { service: 'llm-analyzer' },
+        extra: { jobPostId: (job?.data as { jobPostId?: string })?.jobPostId },
+      });
     });
 
     this.logger.log(`Worker for "${JOB_POST_QUEUE}" started`);

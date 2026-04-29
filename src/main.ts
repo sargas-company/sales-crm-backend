@@ -1,3 +1,4 @@
+import './instrument';
 import * as path from 'path';
 
 import { ValidationPipe } from '@nestjs/common';

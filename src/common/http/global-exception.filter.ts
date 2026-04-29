@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Logger,
 } from '@nestjs/common';
+import * as Sentry from '@sentry/nestjs';
 import { Request, Response } from 'express';
 
 @Catch()
@@ -41,6 +42,19 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     } else {
       status = HttpStatus.INTERNAL_SERVER_ERROR;
       message = 'Internal server error';
+    }
+
+    if (status >= 500) {
+      Sentry.withScope((scope) => {
+        scope.setTag('service', 'crm-api');
+        scope.setExtra('endpoint', req.url);
+        scope.setExtra('method', req.method);
+        const requestId = req.headers['x-request-id'];
+        if (requestId) scope.setExtra('requestId', requestId);
+        const userId = (req as Request & { user?: { id?: string } }).user?.id;
+        if (userId) scope.setTag('userId', userId);
+        Sentry.captureException(exception);
+      });
     }
 
     res.status(status).json({

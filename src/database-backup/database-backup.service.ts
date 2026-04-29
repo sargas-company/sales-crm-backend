@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import * as Sentry from '@sentry/nestjs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 
@@ -36,6 +37,7 @@ export class DatabaseBackupService {
       this.logger.log(`Database backup uploaded: ${fileName} (${buffer.length} bytes)`);
     } catch (err: any) {
       this.logger.error(`Database backup failed: ${err.message}`, err.stack);
+      Sentry.captureException(err, { tags: { service: 'crm-api', job: 'database-backup' } });
       throw err;
     }
   }

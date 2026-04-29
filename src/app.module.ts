@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ScheduleModule } from '@nestjs/schedule';
 
+import { HealthController } from './common/http/health.controller';
+
 import { DatabaseBackupModule } from './database-backup/database-backup.module';
 
 import { StorageModule } from './storage/storage.module';
@@ -24,6 +26,7 @@ import { PromptModule } from './prompt/prompt.module';
 import { TelegramModule } from './telegram/telegram.module';
 
 @Module({
+  controllers: [HealthController],
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ScheduleModule.forRoot(),

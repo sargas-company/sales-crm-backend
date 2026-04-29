@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as Sentry from '@sentry/nestjs';
 
 import { Api, TelegramClient } from 'telegram';
 import { NewMessage, NewMessageEvent } from 'telegram/events';
@@ -84,6 +85,7 @@ export class TelegramListenerService implements OnModuleInit {
       this.scheduleReconnect();
     } catch (err) {
       this.logger.error('Failed to connect Telegram client', err);
+      Sentry.captureException(err, { tags: { service: 'telegram-parser', event: 'connect' } });
       this.client = null;
     }
   }
@@ -376,6 +378,10 @@ export class TelegramListenerService implements OnModuleInit {
       await this.queue.enqueue(created.id);
     } catch (err) {
       this.logger.error(`Failed to save message ${chatId}:${messageId}`, err);
+      Sentry.captureException(err, {
+        tags: { service: 'telegram-parser', event: 'upsert-job-post' },
+        extra: { chatId, messageId },
+      });
     }
   }
 }
