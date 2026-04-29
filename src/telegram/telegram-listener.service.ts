@@ -1,6 +1,3 @@
-import * as fs from 'fs';
-import * as path from 'path';
-
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
@@ -17,19 +14,23 @@ import { AiJobEvaluatorService } from '../job-post/ai-job-evaluator.service';
 import { JobPostQueueService } from '../job-post/job-post-queue.service';
 import { parseJobPostFields } from '../job-post/job-post-parser';
 import { PrismaService } from '../prisma/prisma.service';
+import { SettingKey } from '../settings/setting-keys';
+import { SettingsService } from '../settings/settings.service';
+import { createTelegramClient } from './telegram-client.factory';
 
-const SESSION_FILE = path.resolve(process.cwd(), '.session.txt');
 const READ_MORE_TEXT = 'Read more';
 const READ_MORE_TIMEOUT_MS = 10_000;
+const RECONNECT_INTERVAL_MS = 30_000;
 
 @Injectable()
 export class TelegramListenerService implements OnModuleInit {
   private readonly logger = new Logger(TelegramListenerService.name);
-  private client: TelegramClient;
-  private entity: Entity;
-  private chatId: string;
 
-  // msgId -> resolve(fullText)
+  private client: TelegramClient | null = null;
+  private entity: Entity | null = null;
+  private chatId: string | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+
   private readonly pendingFullText = new Map<number, (text: string) => void>();
 
   constructor(
@@ -37,63 +38,140 @@ export class TelegramListenerService implements OnModuleInit {
     private readonly config: ConfigService,
     private readonly queue: JobPostQueueService,
     private readonly aiEvaluator: AiJobEvaluatorService,
+    private readonly settings: SettingsService,
   ) {}
 
   async onModuleInit() {
-    //await this.connect();
-    // await this.backfill();
-    //this.listenNewMessages();
-    //this.listenEditedMessages();
+    await this.tryConnect();
   }
 
-  private async connect() {
+  async reconnect(): Promise<void> {
+    await this.stopClient();
+    await this.tryConnect();
+  }
+
+  async disconnect(): Promise<void> {
+    await this.stopClient();
+  }
+
+  // ─── Connection ──────────────────────────────────────────────────────────────
+
+  private async tryConnect(): Promise<void> {
+    const session = await this.settings.getRawValue(
+      SettingKey.JOB_SCANNER_TELEGRAM_SESSION,
+    );
+
+    if (!session || typeof session !== 'string' || !session.trim()) {
+      this.logger.warn(
+        'No Telegram session in Settings — listener inactive. Authorize via POST /telegram/auth/start',
+      );
+      return;
+    }
+
     const apiId = Number(this.config.getOrThrow<string>('TG_API_ID'));
     const apiHash = this.config.getOrThrow<string>('TG_API_HASH');
+
+    this.client = createTelegramClient(
+      new StringSession(session),
+      apiId,
+      apiHash,
+    );
+
+    try {
+      await this.client.connect();
+      this.logger.log('Telegram client connected');
+      await this.setupEntityAndListeners();
+      this.scheduleReconnect();
+    } catch (err) {
+      this.logger.error('Failed to connect Telegram client', err);
+      this.client = null;
+    }
+  }
+
+  private async setupEntityAndListeners(): Promise<void> {
     const group = this.config.getOrThrow<string>('TG_GROUP');
 
-    const savedSession = fs.existsSync(SESSION_FILE)
-      ? fs.readFileSync(SESSION_FILE, 'utf-8').trim()
-      : '';
-
-    const session = new StringSession(savedSession);
-
-    this.client = new TelegramClient(session, apiId, apiHash, {
-      connectionRetries: 5,
-    });
-
-    await this.client.start({
-      phoneNumber: async () => {
-        const { default: input } = await import('input');
-        return input.text('Phone number: ');
-      },
-      phoneCode: async () => {
-        const { default: input } = await import('input');
-        return input.text('Code: ');
-      },
-      onError: (err) => this.logger.error('Telegram auth error', err),
-    });
-
-    const sessionString = this.client.session.save() as unknown as string;
-    fs.writeFileSync(SESSION_FILE, sessionString, 'utf-8');
-
-    this.entity = await this.client.getEntity(group);
+    this.entity = await this.client!.getEntity(group);
     this.chatId = String(
       (this.entity as unknown as { id: bigint | number }).id,
     );
-    this.logger.log(`Telegram client connected | entity chatId=${this.chatId}`);
+
+    this.logger.log(`Listener ready | chatId=${this.chatId}`);
+
+    await this.backfill();
+    this.listenNewMessages();
+    this.listenEditedMessages();
   }
 
-  private async backfill() {
-    const limit = Number(this.config.get('TG_BACKFILL_LIMIT', 200));
+  private async stopClient(): Promise<void> {
+    this.clearReconnectTimer();
+
+    if (this.client?.connected) {
+      try {
+        await this.client.disconnect();
+      } catch {
+        // ignored
+      }
+    }
+
+    this.client = null;
+    this.entity = null;
+    this.chatId = null;
+  }
+
+  // ─── Reconnect ───────────────────────────────────────────────────────────────
+
+  private scheduleReconnect(): void {
+    this.clearReconnectTimer();
+
+    this.reconnectTimer = setInterval(() => {
+      void this.checkAndReconnect();
+    }, RECONNECT_INTERVAL_MS);
+  }
+
+  private async checkAndReconnect(): Promise<void> {
+    if (!this.client || this.client.connected) return;
+
+    this.logger.warn('Telegram client disconnected, reconnecting...');
+    try {
+      await this.client.connect();
+      this.logger.log('Telegram client reconnected');
+    } catch (err) {
+      this.logger.error('Reconnect failed', err);
+    }
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer) {
+      clearInterval(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  // ─── Backfill ────────────────────────────────────────────────────────────────
+
+  private async backfill(): Promise<void> {
+    const enabled = await this.settings.getBoolean(
+      SettingKey.JOB_SCANNER_BACKFILL_ENABLED,
+      false,
+    );
+    if (!enabled) {
+      this.logger.log('Backfill disabled — skipped');
+      return;
+    }
+
+    const limit = await this.settings.getNumber(
+      SettingKey.JOB_SCANNER_BACKFILL_LIMIT,
+      50,
+    );
     const batchSize = Number(this.config.get('TG_BACKFILL_BATCH_SIZE', 5));
     const batchDelayMs = Number(
       this.config.get('TG_BACKFILL_BATCH_DELAY_MS', 60_000),
     );
 
-    const messages = await this.client.getMessages(this.entity as never, {
+    const messages = await this.client!.getMessages(this.entity as never, {
       limit,
     });
-
     const filtered = messages.filter((msg) => msg.message?.trim());
 
     this.logger.log(
@@ -121,12 +199,14 @@ export class TelegramListenerService implements OnModuleInit {
     this.logger.log(`Backfill: done, saved ${saved} new records`);
   }
 
-  private listenNewMessages() {
-    this.client.addEventHandler(
+  // ─── Event handlers ──────────────────────────────────────────────────────────
+
+  private listenNewMessages(): void {
+    this.client!.addEventHandler(
       (event: NewMessageEvent) => {
         void this.handleNewMessage(event);
       },
-      new NewMessage({ chats: [this.chatId] }),
+      new NewMessage({ chats: [this.chatId!] }),
     );
 
     this.logger.log('Live listener started');
@@ -144,28 +224,13 @@ export class TelegramListenerService implements OnModuleInit {
 
     if (!msg?.chatId) return;
     if (!msg?.message) return;
-
     if (String(msg.chatId).replace('-', '') !== this.chatId) return;
 
     await this.processMessage(msg);
   }
 
-  private async processMessage(msg: Api.Message): Promise<boolean> {
-    const fullText = await this.getFullText(msg);
-
-    this.logger.debug(`Full text msgId=${msg.id}:\n${fullText}`);
-
-    const { fit } = await this.aiEvaluator.gate(fullText);
-    this.logger.log(`Gatekeeper result: fit=${fit} | msgId=${msg.id}`);
-
-    if (!fit) return false;
-
-    await this.upsertJobPost(this.chatId, msg.id, fullText, msg);
-    return true;
-  }
-
-  private listenEditedMessages() {
-    this.client.addEventHandler((event: EditedMessageEvent) => {
+  private listenEditedMessages(): void {
+    this.client!.addEventHandler((event: EditedMessageEvent) => {
       const msg = event.message;
       const resolve = this.pendingFullText.get(msg.id);
       if (!resolve) return;
@@ -178,6 +243,31 @@ export class TelegramListenerService implements OnModuleInit {
     }, new EditedMessage({}));
 
     this.logger.log('Edited message listener started');
+  }
+
+  // ─── Message processing ──────────────────────────────────────────────────────
+
+  private async processMessage(msg: Api.Message): Promise<boolean> {
+    const enabled = await this.settings.getBoolean(
+      SettingKey.JOB_SCANNER_ENABLED,
+      true,
+    );
+    if (!enabled) {
+      this.logger.log('Job scanner disabled — message skipped');
+      return false;
+    }
+
+    const fullText = await this.getFullText(msg);
+
+    this.logger.debug(`Full text msgId=${msg.id}:\n${fullText}`);
+
+    const { fit } = await this.aiEvaluator.gate(fullText);
+    this.logger.log(`Gatekeeper result: fit=${fit} | msgId=${msg.id}`);
+
+    if (!fit) return false;
+
+    await this.upsertJobPost(this.chatId!, msg.id, fullText, msg);
+    return true;
   }
 
   private async getFullText(msg: Api.Message): Promise<string> {
@@ -200,14 +290,13 @@ export class TelegramListenerService implements OnModuleInit {
         resolve(msg.message);
       }, READ_MORE_TIMEOUT_MS);
 
-      this.client
-        .invoke(
-          new Api.messages.GetBotCallbackAnswer({
-            peer: this.entity,
-            msgId: msg.id,
-            data: button.data,
-          }),
-        )
+      this.client!.invoke(
+        new Api.messages.GetBotCallbackAnswer({
+          peer: this.entity!,
+          msgId: msg.id,
+          data: button.data,
+        }),
+      )
         .then(() => {
           this.logger.debug(`GetBotCallbackAnswer sent for msgId=${msg.id}`);
         })

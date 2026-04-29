@@ -520,3 +520,67 @@ model CallReminderSent {
 
   @@unique([callId, type])
 }
+
+// ─── App Settings ─────────────────────────────────────────────────────────────
+
+enum SettingType {
+  string
+  number
+  boolean
+  json
+}
+
+enum SettingUIType {
+  input
+  textarea
+  select
+  toggle
+  password
+}
+
+model SettingSection {
+  id        String    @id @default(uuid())
+  key       String    @unique
+  title     String
+  order     Int       @default(0)
+  createdAt DateTime  @default(now())
+
+  settings Setting[]
+
+  @@index([order])
+}
+
+model Setting {
+  id               String        @id @default(uuid())
+  key              String        @unique
+  sectionId        String
+  type             SettingType
+  title            String
+  description      String?
+  isSecret         Boolean       @default(false)
+  isRequired       Boolean       @default(false)
+  isActive         Boolean       @default(true)
+  order            Int           @default(0)
+  defaultValue     Json?
+  uiType           SettingUIType
+  options          Json?
+  validationSchema Json?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  section SettingSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  value   SettingValue?
+
+  @@index([sectionId])
+  @@index([isActive])
+}
+
+model SettingValue {
+  id        String   @id @default(uuid())
+  settingId String   @unique
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  setting Setting @relation(fields: [settingId], references: [id], onDelete: Cascade)
+}

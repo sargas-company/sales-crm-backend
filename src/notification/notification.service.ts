@@ -9,6 +9,8 @@ import { NotificationEvent, NotificationType, Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 
+import { SettingKey } from '../settings/setting-keys';
+import { SettingsService } from '../settings/settings.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   NOTIFICATION_QUEUE,
@@ -32,6 +34,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly settings: SettingsService,
   ) {}
 
   onModuleInit() {
@@ -123,9 +126,14 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    if (payload.decision !== 'approve' && payload.decision !== 'maybe') {
+    const minScore = await this.settings.getNumber(
+      SettingKey.JOB_SCANNER_NOTIFICATIONS_MIN_SCORE,
+      70,
+    );
+
+    if (payload.score < minScore) {
       this.logger.log(
-        `Event ${event.id} filtered: decision "${payload.decision}" is not approve/maybe`,
+        `Event ${event.id} filtered: score ${payload.score} < minScore ${minScore}`,
       );
       return;
     }
