@@ -1,13 +1,16 @@
-import * as fs from 'fs/promises';
-import * as path from 'path';
-
-import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  InternalServerErrorException,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 
 import { InvoiceStatus } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { StorageBucket, StorageService } from '../storage';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { UpdateInvoiceDto } from './dto/update-invoice.dto';
 
@@ -16,6 +19,7 @@ export class InvoiceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly storage: StorageService,
   ) {}
 
   async create(dto: CreateInvoiceDto) {
@@ -25,12 +29,12 @@ export class InvoiceService {
       data: {
         ...invoiceData,
         date: invoiceData.date ? new Date(invoiceData.date) : undefined,
-        dueDate: invoiceData.dueDate ? new Date(invoiceData.dueDate) : undefined,
+        dueDate: invoiceData.dueDate
+          ? new Date(invoiceData.dueDate)
+          : undefined,
         labels: invoiceData.labels ?? {},
         customFields: invoiceData.customFields ?? [],
-        lineItems: lineItems?.length
-          ? { create: lineItems }
-          : undefined,
+        lineItems: lineItems?.length ? { create: lineItems } : undefined,
       },
       include: {
         lineItems: { orderBy: { sortOrder: 'asc' } },
@@ -71,7 +75,9 @@ export class InvoiceService {
     const existing = await this.findOne(id);
 
     if (dto.status === 'paid' && !existing.pdfUrl) {
-      throw new BadRequestException('Cannot set status to paid: invoice PDF has not been generated yet');
+      throw new BadRequestException(
+        'Cannot set status to paid: invoice PDF has not been generated yet',
+      );
     }
 
     const { lineItems, ...invoiceData } = dto;
@@ -89,9 +95,7 @@ export class InvoiceService {
           dueDate: invoiceData.dueDate
             ? new Date(invoiceData.dueDate)
             : undefined,
-          lineItems: lineItems?.length
-            ? { create: lineItems }
-            : undefined,
+          lineItems: lineItems?.length ? { create: lineItems } : undefined,
         },
         include: {
           lineItems: { orderBy: { sortOrder: 'asc' } },
@@ -109,9 +113,24 @@ export class InvoiceService {
   async generate(id: string) {
     const invoice = await this.findOne(id);
 
-    const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const MONTHS = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
     const formatDate = (d: Date | null) =>
-      d ? `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}` : undefined;
+      d
+        ? `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`
+        : undefined;
 
     const payload = {
       from: invoice.fromValue || undefined,
@@ -170,15 +189,12 @@ export class InvoiceService {
         );
       });
 
-    const filePath = path.join(
-      process.cwd(),
-      'uploads',
-      'invoices',
-      `${id}.pdf`,
-    );
-    await fs.writeFile(filePath, Buffer.from(response.data));
-
-    const pdfUrl = `/uploads/invoices/${id}.pdf`;
+    const { url: pdfUrl } = await this.storage.upload({
+      bucket: StorageBucket.INVOICES,
+      fileName: `${id}.pdf`,
+      buffer: Buffer.from(response.data),
+      mimeType: 'application/pdf',
+    });
 
     return this.prisma.invoice.update({
       where: { id },

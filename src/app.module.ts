@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 
+import { StorageModule } from './storage/storage.module';
+
 import { AccountModule } from './account/account.module';
 import { ClientCallsModule } from './client-calls/client-calls.module';
 import { AuthModule } from './auth/auth.module';
@@ -20,6 +22,7 @@ import { TelegramModule } from './telegram/telegram.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    StorageModule,
     PrismaModule,
     AuthModule,
     PlatformModule,

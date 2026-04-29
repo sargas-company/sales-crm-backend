@@ -1,4 +1,3 @@
-import * as fs from 'fs';
 import * as path from 'path';
 
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
@@ -6,16 +5,9 @@ import { NotificationType } from '@prisma/client';
 
 import { NotificationService } from '../notification/notification.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { IncomingFileData, StorageBucket, StorageService, StoredFileMetadata } from '../storage';
 import { CreateClientRequestDto } from './dto/create-client-request.dto';
 import { UpdateClientRequestDto } from './dto/update-client-request.dto';
-
-export interface UploadedFileMetadata {
-  originalName: string;
-  fileName: string;
-  path: string;
-  mimetype: string;
-  size: number;
-}
 
 @Injectable()
 export class ClientRequestsService {
@@ -24,6 +16,7 @@ export class ClientRequestsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notificationService: NotificationService,
+    private readonly storage: StorageService,
   ) {}
 
   async findAll(page: number, limit: number) {
@@ -67,19 +60,46 @@ export class ClientRequestsService {
   }
 
   async remove(id: string) {
-    const request = await this.prisma.clientRequest.findUnique({ where: { id } });
-    if (!request) throw new NotFoundException('Client request not found');
+    const request = await this.findOne(id);
+
+    const storedFiles = (request.files as unknown) as StoredFileMetadata[];
+    await Promise.allSettled(
+      storedFiles.map((f) => this.storage.delete(f.fileId, f.fileName)),
+    );
 
     await this.prisma.clientRequest.delete({ where: { id } });
-
-    const files = (request.files as unknown) as UploadedFileMetadata[];
-    for (const file of files) {
-      const fullPath = path.join(process.cwd(), file.path);
-      if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
-    }
   }
 
-  async create(dto: CreateClientRequestDto, files: UploadedFileMetadata[]) {
+  async create(dto: CreateClientRequestDto, files: IncomingFileData[]) {
+    const storedFiles: StoredFileMetadata[] = await Promise.all(
+      files.map(async (file) => {
+        const ext = path.extname(file.originalName);
+        const baseName = path
+          .basename(file.originalName, ext)
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .slice(0, 60);
+        const fileName = `${new Date().toISOString().slice(0, 10)}-${baseName}${ext}`;
+
+        const { fileId, url } = await this.storage.upload({
+          bucket: StorageBucket.CLIENT_REQUESTS,
+          fileName,
+          buffer: file.buffer,
+          mimeType: file.mimetype,
+        });
+
+        return {
+          originalName: file.originalName,
+          fileName,
+          fileId,
+          url,
+          mimetype: file.mimetype,
+          size: file.size,
+        };
+      }),
+    );
+
     const request = await this.prisma.clientRequest.create({
       data: {
         name: dto.name,
@@ -89,7 +109,7 @@ export class ClientRequestsService {
         phoneCountry: dto.phoneCountry,
         message: dto.message,
         services: dto.services ?? [],
-        files: files as object[],
+        files: storedFiles as object[],
       },
     });
 
