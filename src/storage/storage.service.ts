@@ -54,7 +54,7 @@ export class StorageService implements OnModuleInit {
 
         return {
           fileId: data.fileId,
-          url: `${this.downloadUrl}/file/${bucket.name}/${encodeURIComponent(options.fileName)}`,
+          url: `${this.downloadUrl}/file/${bucket.name}/${this.encodePath(options.fileName)}`,
         };
       } catch (err: any) {
         lastError = err;
@@ -89,6 +89,21 @@ export class StorageService implements OnModuleInit {
     await Promise.allSettled(versions.map((f) => this.b2.deleteFileVersion({ fileId: f.fileId, fileName: f.fileName })));
   }
 
+  async deleteFolder(bucket: StorageBucket, prefix: string): Promise<void> {
+    const { id: bucketId } = this.getBucketConfig(bucket);
+    let startFileName: string | undefined;
+    let startFileId: string | undefined;
+
+    do {
+      const { data } = await this.b2.listFileVersions({ bucketId, prefix, startFileName, startFileId, maxFileCount: 1000 });
+      await Promise.allSettled(
+        data.files.map((f) => this.b2.deleteFileVersion({ fileId: f.fileId, fileName: f.fileName })),
+      );
+      startFileName = data.nextFileName ?? undefined;
+      startFileId = data.nextFileId ?? undefined;
+    } while (startFileName);
+  }
+
   async getDownloadUrl(
     bucket: StorageBucket,
     fileName: string,
@@ -102,7 +117,7 @@ export class StorageService implements OnModuleInit {
       validDurationInSeconds: expiresInSeconds,
     });
 
-    return `${this.downloadUrl}/file/${bucketName}/${encodeURIComponent(fileName)}?Authorization=${data.authorizationToken}`;
+    return `${this.downloadUrl}/file/${bucketName}/${this.encodePath(fileName)}?Authorization=${data.authorizationToken}`;
   }
 
   private async authorize(): Promise<void> {
@@ -115,17 +130,17 @@ export class StorageService implements OnModuleInit {
   private async getUploadUrl(bucketId: string): Promise<{ uploadUrl: string; authToken: string }> {
     const cached = this.uploadUrlCache.get(bucketId);
     if (cached && cached.expiresAt > Date.now()) {
+      // consume the entry so concurrent uploads each get their own URL
+      this.uploadUrlCache.delete(bucketId);
       return { uploadUrl: cached.uploadUrl, authToken: cached.authToken };
     }
 
     const { data } = await this.b2.getUploadUrl({ bucketId });
-    this.uploadUrlCache.set(bucketId, {
-      uploadUrl: data.uploadUrl,
-      authToken: data.authorizationToken,
-      expiresAt: Date.now() + UPLOAD_URL_TTL_MS,
-    });
-
     return { uploadUrl: data.uploadUrl, authToken: data.authorizationToken };
+  }
+
+  private encodePath(filePath: string): string {
+    return filePath.split('/').map(encodeURIComponent).join('/');
   }
 
   private getBucketConfig(bucket: StorageBucket): BucketConfig {

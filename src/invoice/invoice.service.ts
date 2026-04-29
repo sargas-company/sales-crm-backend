@@ -214,7 +214,7 @@ export class InvoiceService {
     const year = invoice.createdAt.getUTCFullYear();
     const shortId = id.slice(0, 8);
     const rawName = `${type} - ${cp.firstName} ${cp.lastName} - ${month} ${day}, ${year} (${shortId})`;
-    const safeFileName = rawName.replace(/[^a-zA-Z0-9 \-_.,()']/g, '').trim();
+    const safeFileName = rawName.replace(/[^\p{L}\p{N} \-_.,()']/gu, '').trim();
 
     const pdfFileName = `${safeFileName}.pdf`;
 

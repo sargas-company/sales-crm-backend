@@ -51,8 +51,10 @@ declare module 'backblaze-b2' {
     listFileVersions(args: {
       bucketId: string;
       startFileName?: string;
+      startFileId?: string;
       maxFileCount?: number;
-    }): Promise<B2Response<{ files: Array<{ fileId: string; fileName: string }> }>>;
+      prefix?: string;
+    }): Promise<B2Response<{ files: Array<{ fileId: string; fileName: string }>; nextFileName: string | null; nextFileId: string | null }>>;
     getDownloadAuthorization(args: {
       bucketId: string;
       fileNamePrefix: string;

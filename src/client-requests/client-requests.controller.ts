@@ -116,16 +116,14 @@ export class ClientRequestsController {
     return this.service.remove(id);
   }
 
-  @Get('client-requests/:id/files/:fileName')
+  @Get('client-requests/:id/files')
   @ApiBearerAuth('jwt')
   @UseGuards(JwtAuthGuard)
-  @ApiOperation({ summary: 'Get a temporary download URL for an attached file (1h expiry)' })
-  @ApiResponse({ status: 200, description: '{ url: string }' })
-  @ApiResponse({ status: 400, description: 'File not found in this request' })
+  @ApiOperation({ summary: 'Get temporary download URLs for all attached files (1h expiry)' })
+  @ApiResponse({ status: 200, description: 'Array of { originalName, url, mimetype, size }' })
   @ApiResponse({ status: 404, description: 'Client request not found' })
-  async getFileUrl(@Param('id') id: string, @Param('fileName') fileName: string) {
-    const url = await this.service.getFileDownloadUrl(id, fileName);
-    return { url };
+  getFilesUrls(@Param('id') id: string) {
+    return this.service.getFilesDownloadUrls(id);
   }
 
   @Post('client-requests')
