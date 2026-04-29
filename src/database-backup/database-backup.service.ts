@@ -18,7 +18,7 @@ export class DatabaseBackupService {
     private readonly storage: StorageService,
   ) {}
 
-  @Cron(CronExpression.EVERY_MINUTE)
+  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
   async runBackup(): Promise<void> {
     this.logger.log('Starting database backup...');
 
