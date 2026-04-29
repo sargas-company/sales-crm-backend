@@ -106,7 +106,15 @@ export class InvoiceService {
   }
 
   async remove(id: string) {
-    await this.findOne(id);
+    const invoice = await this.findOne(id);
+
+    if (invoice.pdfUrl) {
+      const fileName = invoice.pdfUrl.startsWith('http')
+        ? decodeURIComponent(invoice.pdfUrl.split('/').pop()!)
+        : invoice.pdfUrl;
+      await this.storage.deleteByName(StorageBucket.INVOICES, fileName);
+    }
+
     return this.prisma.invoice.delete({ where: { id } });
   }
 
@@ -204,12 +212,13 @@ export class InvoiceService {
     const day = invoice.createdAt.getUTCDate();
     const month = FULL_MONTHS[invoice.createdAt.getUTCMonth()];
     const year = invoice.createdAt.getUTCFullYear();
-    const rawName = `${type} - ${cp.firstName} ${cp.lastName} - ${month} ${day}, ${year}`;
-    const safeFileName = rawName.replace(/[^a-zA-Z0-9 \-_.,]/g, '').trim();
+    const shortId = id.slice(0, 8);
+    const rawName = `${type} - ${cp.firstName} ${cp.lastName} - ${month} ${day}, ${year} (${shortId})`;
+    const safeFileName = rawName.replace(/[^a-zA-Z0-9 \-_.,()']/g, '').trim();
 
     const pdfFileName = `${safeFileName}.pdf`;
 
-    await this.storage.upload({
+    await this.storage.replace({
       bucket: StorageBucket.INVOICES,
       fileName: pdfFileName,
       buffer: Buffer.from(response.data),

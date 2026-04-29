@@ -73,8 +73,20 @@ export class StorageService implements OnModuleInit {
     throw new InternalServerErrorException(`B2 upload failed for "${options.fileName}": ${msg}`);
   }
 
+  async replace(options: StorageUploadOptions): Promise<StorageUploadResult> {
+    await this.deleteByName(options.bucket, options.fileName);
+    return this.upload(options);
+  }
+
   async delete(fileId: string, fileName: string): Promise<void> {
     await this.b2.deleteFileVersion({ fileId, fileName });
+  }
+
+  async deleteByName(bucket: StorageBucket, fileName: string): Promise<void> {
+    const { id: bucketId } = this.getBucketConfig(bucket);
+    const { data } = await this.b2.listFileVersions({ bucketId, startFileName: fileName, maxFileCount: 10 });
+    const versions = data.files.filter((f) => f.fileName === fileName);
+    await Promise.allSettled(versions.map((f) => this.b2.deleteFileVersion({ fileId: f.fileId, fileName: f.fileName })));
   }
 
   async getDownloadUrl(
