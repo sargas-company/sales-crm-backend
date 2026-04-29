@@ -1,5 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
+
+import { DatabaseBackupModule } from './database-backup/database-backup.module';
 
 import { StorageModule } from './storage/storage.module';
 
@@ -22,7 +25,9 @@ import { TelegramModule } from './telegram/telegram.module';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    ScheduleModule.forRoot(),
     StorageModule,
+    DatabaseBackupModule,
     PrismaModule,
     AuthModule,
     PlatformModule,
