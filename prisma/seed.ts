@@ -129,6 +129,172 @@ async function main() {
   }
 
   console.log('Seeded prompts: JOB_GATEKEEPER, JOB_EVALUATION, CHAT_SYSTEM');
+
+  // Setting Sections
+  const sections = [
+    { key: 'general', title: 'General', order: 0 },
+    { key: 'ai', title: 'AI Settings', order: 1 },
+    { key: 'job_scanner', title: 'Job Scanner', order: 2 },
+    { key: 'integrations', title: 'Integrations', order: 3 },
+    { key: 'notifications', title: 'Notifications', order: 4 },
+    { key: 'api_keys', title: 'API Keys', order: 5 },
+    { key: 'invoice', title: 'Invoice', order: 6 },
+  ];
+
+  for (const section of sections) {
+    await prisma.settingSection.upsert({
+      where: { key: section.key },
+      update: { title: section.title, order: section.order },
+      create: section,
+    });
+  }
+
+  console.log(
+    `Seeded setting sections: ${sections.map((s) => s.key).join(', ')}`,
+  );
+
+  // Job Scanner Settings
+  const jobScannerSection = await prisma.settingSection.findUniqueOrThrow({
+    where: { key: 'job_scanner' },
+  });
+
+  const jobScannerSettings = [
+    {
+      key: 'job_scanner.enabled',
+      title: 'Enable Job Scanner',
+      description: 'Enable real-time processing of new job posts',
+      type: 'boolean' as const,
+      uiType: 'toggle' as const,
+      defaultValue: true,
+      order: 0,
+    },
+    {
+      key: 'job_scanner.backfill.enabled',
+      title: 'Enable Backfill',
+      description: 'Enable backfill processing of historical posts',
+      type: 'boolean' as const,
+      uiType: 'toggle' as const,
+      defaultValue: false,
+      order: 1,
+    },
+    {
+      key: 'job_scanner.backfill.limit',
+      title: 'Backfill Limit',
+      description: 'Number of posts to fetch per backfill run',
+      type: 'number' as const,
+      uiType: 'input' as const,
+      defaultValue: 50,
+      validationSchema: { min: 1, max: 1000 },
+      order: 2,
+    },
+    {
+      key: 'job_scanner.notifications.min_score',
+      title: 'Minimum Score for Notification',
+      description: 'Minimum score required to send Discord notification',
+      type: 'number' as const,
+      uiType: 'input' as const,
+      defaultValue: 70,
+      validationSchema: { min: 0, max: 100 },
+      order: 3,
+    },
+    {
+      key: 'job_scanner.telegram.session',
+      title: 'Telegram Session',
+      description: 'Gramjs StringSession — set via POST /telegram/auth/verify',
+      type: 'string' as const,
+      uiType: 'password' as const,
+      isSecret: true,
+      defaultValue: '',
+      order: 4,
+    },
+    {
+      key: 'job_scanner.telegram.connected',
+      title: 'Telegram Connected',
+      description: 'Whether the Telegram client has an active session',
+      type: 'boolean' as const,
+      uiType: 'toggle' as const,
+      defaultValue: false,
+      order: 5,
+    },
+  ];
+
+  for (const setting of jobScannerSettings) {
+    await prisma.setting.upsert({
+      where: { key: setting.key },
+      update: {
+        title: setting.title,
+        description: setting.description,
+        defaultValue: setting.defaultValue,
+        validationSchema: setting.validationSchema,
+        order: setting.order,
+      },
+      create: {
+        ...setting,
+        sectionId: jobScannerSection.id,
+      },
+    });
+  }
+
+  console.log(
+    `Seeded job_scanner settings: ${jobScannerSettings.map((s) => s.key).join(', ')}`,
+  );
+
+  // Invoice Settings
+  const invoiceSection = await prisma.settingSection.findUniqueOrThrow({
+    where: { key: 'invoice' },
+  });
+
+  const invoiceDetails = {
+    companyName: 'Sargas Agency OÜ',
+    addressLine1: 'Narva mnt 7',
+    city: 'Tallinn',
+    region: 'Harju maakond',
+    postalCode: '10117',
+    country: 'Estonia',
+    companyId: '17146771',
+    vat: 'EE102840485',
+  };
+
+  const invoiceSettings = [
+    {
+      key: 'invoice.client.details',
+      title: 'Client Details',
+      description: 'Default client company details for invoices',
+      type: 'json' as const,
+      uiType: 'textarea' as const,
+      defaultValue: invoiceDetails,
+      order: 0,
+    },
+    {
+      key: 'invoice.contractor.details',
+      title: 'Contractor Details',
+      description: 'Default contractor company details for invoices',
+      type: 'json' as const,
+      uiType: 'textarea' as const,
+      defaultValue: { ...invoiceDetails, vat: undefined },
+      order: 1,
+    },
+  ];
+
+  for (const setting of invoiceSettings) {
+    await prisma.setting.upsert({
+      where: { key: setting.key },
+      update: {
+        title: setting.title,
+        description: setting.description,
+        defaultValue: setting.defaultValue,
+        order: setting.order,
+      },
+      create: {
+        ...setting,
+        sectionId: invoiceSection.id,
+      },
+    });
+  }
+
+  console.log(
+    `Seeded invoice settings: ${invoiceSettings.map((s) => s.key).join(', ')}`,
+  );
 }
 
 main()
