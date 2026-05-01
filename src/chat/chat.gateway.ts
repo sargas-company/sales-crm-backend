@@ -7,11 +7,17 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import { JwtService } from '@nestjs/jwt';
-import { IsIn, IsOptional, IsString, MinLength, validate } from 'class-validator';
+import {
+  IsIn,
+  IsOptional,
+  IsString,
+  MinLength,
+  validate,
+} from 'class-validator';
 import { plainToInstance } from 'class-transformer';
 import { Server, Socket } from 'socket.io';
 
-import { ChatService } from './chat.service';
+import { ChatMessageOrchestratorService } from './orchestrator/chat-message-orchestrator.service';
 
 const ALLOWED_MODELS = ['claude-sonnet-4-6', 'claude-opus-4-6'] as const;
 
@@ -39,7 +45,7 @@ export class ChatGateway implements OnGatewayConnection {
   server: Server;
 
   constructor(
-    private readonly chatService: ChatService,
+    private readonly orchestrator: ChatMessageOrchestratorService,
     private readonly jwtService: JwtService,
   ) {}
 
@@ -66,7 +72,8 @@ export class ChatGateway implements OnGatewayConnection {
   @SubscribeMessage('send_message')
   async handleMessage(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { proposalId: string; content: string; model?: string },
+    @MessageBody()
+    data: { proposalId: string; content: string; model?: string },
   ): Promise<void> {
     try {
       const payload = plainToInstance(SendMessagePayload, data);
@@ -78,11 +85,10 @@ export class ChatGateway implements OnGatewayConnection {
         return;
       }
 
-      const stream = this.chatService.streamMessage(
+      const stream = this.orchestrator.streamMessage(
         data.proposalId,
         data.content,
         client.data.user.id,
-        data.model,
       );
 
       for await (const event of stream) {

@@ -1,11 +1,7 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import Anthropic from '@anthropic-ai/sdk';
 
-import { BaseKnowledgeService } from '../base-knowledge/base-knowledge.service';
+import { AnthropicService } from '../anthropic/anthropic.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { PromptService } from '../prompt/prompt.service';
 
@@ -36,14 +32,10 @@ const ANALYZE_TOOL: Anthropic.Tool = {
 
 @Injectable()
 export class ChatService {
-  private readonly anthropic = new Anthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY,
-  });
-
   constructor(
     private readonly prisma: PrismaService,
-    private readonly baseKnowledge: BaseKnowledgeService,
     private readonly promptService: PromptService,
+    private readonly anthropicService: AnthropicService,
   ) {}
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
@@ -69,14 +61,7 @@ export class ChatService {
       this.prisma.proposal.findUnique({ where: { id: proposalId } }),
     ]);
 
-    const searchQuery = [proposal?.vacancy, content]
-      .filter(Boolean)
-      .join(' ');
-    const knowledgeItems = await this.baseKnowledge.searchRelevant(searchQuery);
-
-    const knowledgeBlock = knowledgeItems.length
-      ? `\n\nRELEVANT KNOWLEDGE:\n${knowledgeItems.map((k) => `- ${k.title}: ${k.description}`).join('\n')}`
-      : '';
+    const knowledgeBlock = '';
 
     const system = [systemPrompt, knowledgeBlock].join('');
 
@@ -96,35 +81,11 @@ export class ChatService {
     return { system, messages };
   }
 
-  private async validateAndSaveUserMessage(
-    proposalId: string,
-    content: string,
-    userId: string,
-  ): Promise<{ trimmed: string; chatId: string }> {
-    const trimmed = content.trim();
-    if (!trimmed)
-      throw new BadRequestException('Message content cannot be empty');
-
-    const proposal = await this.prisma.proposal.findFirst({
-      where: { id: proposalId, userId },
-    });
-    if (!proposal) throw new NotFoundException('Proposal not found');
-
-    const chat = await this.prisma.chat.findUnique({ where: { proposalId } });
-    if (!chat) throw new NotFoundException('Chat not found');
-
-    await this.prisma.chatMessage.create({
-      data: { chatId: chat.id, role: 'user', content: trimmed },
-    });
-
-    return { trimmed, chatId: chat.id };
-  }
-
   private async analyzeIntent(
     context: { system: string; messages: Anthropic.MessageParam[] },
     model = CLAUDE_MODEL,
   ): Promise<{ decision: string; reasoning: string }> {
-    const response = await this.anthropic.messages.create({
+    const response = await this.anthropicService.client.messages.create({
       model,
       max_tokens: 256,
       system: context.system,
@@ -143,83 +104,6 @@ export class ChatService {
 
     const input = toolBlock.input as { decision: string; reasoning: string };
     return { decision: input.decision, reasoning: input.reasoning };
-  }
-
-  // ─── REST ─────────────────────────────────────────────────────────────────────
-
-  async sendMessage(
-    proposalId: string,
-    content: string,
-    userId: string,
-  ): Promise<string> {
-    const { trimmed, chatId } = await this.validateAndSaveUserMessage(
-      proposalId,
-      content,
-      userId,
-    );
-    const { system, messages } = await this.prepareContext(proposalId, trimmed);
-
-    const response = await this.anthropic.messages.create({
-      model: CLAUDE_MODEL,
-      max_tokens: 4096,
-      system,
-      messages,
-    });
-
-    const assistantText = response.content
-      .filter((c) => c.type === 'text')
-      .map((c) => c.text)
-      .join('\n');
-
-    await this.prisma.chatMessage.create({
-      data: { chatId, role: 'assistant', content: assistantText },
-    });
-
-    return assistantText;
-  }
-
-  // ─── WebSocket streaming ──────────────────────────────────────────────────────
-
-  async *streamMessage(
-    proposalId: string,
-    content: string,
-    userId: string,
-    modelOverride?: string,
-  ): AsyncGenerator<{ type: 'chunk'; text: string }> {
-    const model = modelOverride || CLAUDE_MODEL;
-    const { trimmed, chatId } = await this.validateAndSaveUserMessage(
-      proposalId,
-      content,
-      userId,
-    );
-    const { system, messages } = await this.prepareContext(proposalId, trimmed);
-
-    const stream = this.anthropic.messages.stream({
-      model,
-      max_tokens: 4096,
-      system,
-      messages,
-    });
-
-    let fullText = '';
-
-    for await (const chunk of stream) {
-      if (
-        chunk.type === 'content_block_delta' &&
-        chunk.delta.type === 'text_delta'
-      ) {
-        fullText += chunk.delta.text;
-        yield { type: 'chunk', text: chunk.delta.text };
-      }
-    }
-
-    await this.prisma.chatMessage.create({
-      data: {
-        chatId,
-        role: 'assistant',
-        content: fullText,
-      },
-    });
   }
 
   // ─── Admin: list all chats ────────────────────────────────────────────────────

@@ -49,4 +49,10 @@ async function bootstrap() {
   await app.listen(process.env.API_PORT ?? 3000);
 }
 
+// gramjs throws TIMEOUT as an unhandled rejection during MTProto keepalive — safe to ignore
+process.on('unhandledRejection', (reason) => {
+  if (reason instanceof Error && reason.message === 'TIMEOUT') return;
+  throw reason;
+});
+
 void bootstrap();

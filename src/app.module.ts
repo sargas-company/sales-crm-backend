@@ -14,8 +14,9 @@ import { CounterpartyModule } from './counterparty/counterparty.module';
 import { InvoiceModule } from './invoice/invoice.module';
 import { SettingsModule } from './settings/settings.module';
 import { PlatformModule } from './platform/platform.module';
-import { BaseKnowledgeModule } from './base-knowledge/base-knowledge.module';
+import { AnthropicModule } from './anthropic/anthropic.module';
 import { ChatModule } from './chat/chat.module';
+import { KnowledgeModule } from './knowledge/knowledge.module';
 import { JobPostModule } from './job-post/job-post.module';
 import { LeadModule } from './lead/lead.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -27,6 +28,7 @@ import { TelegramModule } from './telegram/telegram.module';
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ScheduleModule.forRoot(),
+    AnthropicModule,
     StorageModule,
     DatabaseBackupModule,
     PrismaModule,
@@ -34,8 +36,8 @@ import { TelegramModule } from './telegram/telegram.module';
     PlatformModule,
     AccountModule,
     ProposalModule,
-    BaseKnowledgeModule,
     ChatModule,
+    KnowledgeModule,
     PromptModule,
     LeadModule,
     JobPostModule,
