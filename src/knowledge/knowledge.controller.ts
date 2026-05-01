@@ -1,8 +1,12 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -17,6 +21,7 @@ import {
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { IngestTextDto } from './dto/ingest-text.dto';
 import { ListKnowledgeDto } from './dto/list-knowledge.dto';
+import { UpdateKnowledgeDto } from './dto/update-knowledge.dto';
 import { KnowledgeIngestionService } from './knowledge-ingestion.service';
 import { KnowledgeQueryService } from './knowledge-query.service';
 
@@ -60,5 +65,22 @@ export class KnowledgeController {
   @ApiResponse({ status: 404, description: 'Not found' })
   findById(@Param('id') id: string) {
     return this.queryService.findById(id);
+  }
+
+  @Patch(':id')
+  @ApiOperation({ summary: 'Update a knowledge document' })
+  @ApiResponse({ status: 200, description: 'Returns updated document' })
+  @ApiResponse({ status: 404, description: 'Not found' })
+  update(@Param('id') id: string, @Body() dto: UpdateKnowledgeDto) {
+    return this.queryService.update(id, dto);
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Delete a knowledge document' })
+  @ApiResponse({ status: 204, description: 'Document deleted' })
+  @ApiResponse({ status: 404, description: 'Not found' })
+  remove(@Param('id') id: string) {
+    return this.queryService.remove(id);
   }
 }

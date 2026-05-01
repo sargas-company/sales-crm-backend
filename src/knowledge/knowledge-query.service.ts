@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { ListKnowledgeDto } from './dto/list-knowledge.dto';
+import { UpdateKnowledgeDto } from './dto/update-knowledge.dto';
 
 @Injectable()
 export class KnowledgeQueryService {
@@ -40,5 +41,22 @@ export class KnowledgeQueryService {
     });
     if (!doc) throw new NotFoundException('Knowledge document not found');
     return doc;
+  }
+
+  async update(id: string, dto: UpdateKnowledgeDto) {
+    const doc = await this.prisma.knowledgeDocument.findUnique({ where: { id } });
+    if (!doc) throw new NotFoundException('Knowledge document not found');
+
+    return this.prisma.knowledgeDocument.update({
+      where: { id },
+      data: dto,
+    });
+  }
+
+  async remove(id: string) {
+    const doc = await this.prisma.knowledgeDocument.findUnique({ where: { id } });
+    if (!doc) throw new NotFoundException('Knowledge document not found');
+
+    await this.prisma.knowledgeDocument.delete({ where: { id } });
   }
 }
