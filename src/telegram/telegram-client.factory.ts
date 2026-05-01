@@ -17,9 +17,10 @@ class FilteredGramjsLogger extends GramjsLogger {
 
   debug(_msg: string) {}
 
-  error(msg: string) {
+  error(msg: unknown) {
     // TIMEOUT is an expected MTProto keepalive interrupt — gramjs retries automatically
-    if (typeof msg === 'string' && msg.includes('TIMEOUT')) return;
+    const text = msg instanceof Error ? msg.message : String(msg);
+    if (text.includes('TIMEOUT')) return;
     nestLogger.error(msg);
   }
 }

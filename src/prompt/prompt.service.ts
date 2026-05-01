@@ -6,9 +6,13 @@ import {
 } from '@nestjs/common';
 import { PromptType } from '@prisma/client';
 
+import { CHAT_CLASSIFIER_PROMPT } from '../ai/prompts/chat-classifier.prompt';
 import { CHAT_FALLBACK_PROMPT } from '../ai/prompts/chat-fallback.prompt';
+import { CHAT_SUMMARY_PROMPT } from '../ai/prompts/chat-summary.prompt';
 import { JOB_EVALUATION_PROMPT } from '../ai/prompts/job-evaluation.prompt';
 import { JOB_GATEKEEPER_PROMPT } from '../ai/prompts/job-gatekeeper.prompt';
+import { KNOWLEDGE_CONTENT_FILTER_PROMPT } from '../ai/prompts/knowledge-content-filter.prompt';
+import { KNOWLEDGE_TITLE_FILTER_PROMPT } from '../ai/prompts/knowledge-title-filter.prompt';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePromptDto } from './dto/create-prompt.dto';
 import { QueryPromptsDto } from './dto/query-prompts.dto';
@@ -78,6 +82,34 @@ export class PromptService {
     return this.getActiveOrFallback(
       PromptType.JOB_EVALUATION,
       JOB_EVALUATION_PROMPT,
+    );
+  }
+
+  getClassifierPrompt(): Promise<string> {
+    return this.getActiveOrFallback(
+      PromptType.CHAT_CLASSIFIER,
+      CHAT_CLASSIFIER_PROMPT,
+    );
+  }
+
+  getSummaryPrompt(): Promise<string> {
+    return this.getActiveOrFallback(
+      PromptType.CHAT_SUMMARY,
+      CHAT_SUMMARY_PROMPT,
+    );
+  }
+
+  getTitleFilterPrompt(): Promise<string> {
+    return this.getActiveOrFallback(
+      PromptType.KNOWLEDGE_TITLE_FILTER,
+      KNOWLEDGE_TITLE_FILTER_PROMPT,
+    );
+  }
+
+  getContentFilterPrompt(): Promise<string> {
+    return this.getActiveOrFallback(
+      PromptType.KNOWLEDGE_CONTENT_FILTER,
+      KNOWLEDGE_CONTENT_FILTER_PROMPT,
     );
   }
 
