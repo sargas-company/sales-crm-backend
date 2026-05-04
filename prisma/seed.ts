@@ -36,11 +36,7 @@ async function main() {
 
   const user = await prisma.user.upsert({
     where: { email: 'admin@test.com' },
-    update: {
-      firstName: 'Dmytro',
-      lastName: 'Sarafaniuk',
-      role: UserRole.ADMIN,
-    },
+    update: {},
     create: {
       email: 'admin@test.com',
       passwordHash,
@@ -52,7 +48,7 @@ async function main() {
 
   const user2 = await prisma.user.upsert({
     where: { email: 'manager@test.com' },
-    update: { firstName: 'Test', lastName: 'Manager', role: UserRole.MANAGER },
+    update: {},
     create: {
       email: 'manager@test.com',
       passwordHash,
@@ -158,9 +154,7 @@ SCREENING QUESTIONS: Answer in 2-4 sentences. Conversational, not formal. One co
 
   for (const { type, title, content } of prompts) {
     const existing = await prisma.prompt.findFirst({ where: { type, isActive: true } });
-    if (existing) {
-      await prisma.prompt.update({ where: { id: existing.id }, data: { title, content } });
-    } else {
+    if (!existing) {
       await prisma.prompt.create({
         data: {
           id: `seed-prompt-${type.toLowerCase()}`,
@@ -384,11 +378,7 @@ SCREENING QUESTIONS: Answer in 2-4 sentences. Conversational, not formal. One co
   for (const doc of knowledgeDocs) {
     await prisma.knowledgeDocument.upsert({
       where: { id: doc.id },
-      update: {
-        title: doc.title,
-        category: doc.category,
-        content: doc.content,
-      },
+      update: {},
       create: doc,
     });
   }
