@@ -122,8 +122,7 @@ export class StorageService implements OnModuleInit {
 
   private async authorize(): Promise<void> {
     const response = await this.b2.authorize();
-    this.downloadUrl =
-      this.config.get<string>('B2_DOWNLOAD_URL') || response.data.downloadUrl;
+    this.downloadUrl = response.data.downloadUrl;
     this.logger.log('Backblaze B2 authorized');
   }
 
