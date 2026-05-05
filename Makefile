@@ -19,3 +19,21 @@ init:
 	npx prisma db seed --config=./prisma.config.ts
 
 	@echo "Done."
+
+backup:
+	@echo "Creating manual backup..."
+	npx ts-node -r tsconfig-paths/register scripts/backup.ts
+	@echo "Done."
+
+deploy:
+	@echo "=== Step 1/5: backup ==="
+	make backup
+	@echo "=== Step 2/5: validate prisma schema ==="
+	npx prisma validate --config=./prisma.config.ts
+	@echo "=== Step 3/5: build ==="
+	npm run build
+	@echo "=== Step 4/5: migrate ==="
+	npx prisma migrate deploy --config=./prisma.config.ts
+	@echo "=== Step 5/5: restart ==="
+	pm2 restart all
+	@echo "=== Deploy complete ==="
