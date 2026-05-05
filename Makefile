@@ -25,15 +25,21 @@ backup:
 	npx ts-node -r tsconfig-paths/register scripts/backup.ts
 	@echo "Done."
 
-deploy:
-	@echo "=== Step 1/5: backup ==="
+node_modules/.install-stamp: package.json package-lock.json
+	npm install
+	touch node_modules/.install-stamp
+
+deploy: node_modules/.install-stamp
+	@echo "=== Step 1/6: backup ==="
 	make backup
-	@echo "=== Step 2/5: validate prisma schema ==="
+	@echo "=== Step 2/6: validate prisma schema ==="
 	npx prisma validate --config=./prisma.config.ts
-	@echo "=== Step 3/5: build ==="
-	npm run build
-	@echo "=== Step 4/5: migrate ==="
+	@echo "=== Step 3/6: migrate ==="
 	npx prisma migrate deploy --config=./prisma.config.ts
-	@echo "=== Step 5/5: restart ==="
+	@echo "=== Step 4/6: generate prisma client ==="
+	npx prisma generate --config=./prisma.config.ts
+	@echo "=== Step 5/6: build ==="
+	npm run build
+	@echo "=== Step 6/6: restart ==="
 	pm2 restart all
 	@echo "=== Deploy complete ==="
