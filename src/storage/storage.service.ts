@@ -104,6 +104,34 @@ export class StorageService implements OnModuleInit {
     } while (startFileName);
   }
 
+  /**
+   * Given a raw (unauthenticated) B2 URL, returns a signed download URL.
+   * Parses the bucket name from the URL and matches it to a StorageBucket.
+   * Returns null if the URL does not match any known bucket.
+   */
+  async getSignedUrlFromRawUrl(rawUrl: string): Promise<string | null> {
+    // B2 URLs: {downloadUrl}/file/{bucketName}/{fileName}
+    const match = rawUrl.match(/\/file\/([^/?#]+)\/(.+?)(\?.*)?$/);
+    if (!match) return null;
+
+    const [, urlBucketName, encodedFileName] = match;
+    const fileName = decodeURIComponent(encodedFileName);
+
+    const bucketMap: Record<StorageBucket, string> = {
+      [StorageBucket.INVOICES]: this.config.getOrThrow('B2_BUCKET_INVOICES_NAME'),
+      [StorageBucket.CLIENT_REQUESTS]: this.config.getOrThrow('B2_BUCKET_CLIENT_REQUESTS_NAME'),
+      [StorageBucket.DB_DUMPS]: this.config.getOrThrow('B2_BUCKET_DB_DUMPS_NAME'),
+      [StorageBucket.CHAT_ATTACHMENTS]: this.config.getOrThrow('B2_BUCKET_CHAT_ATTACHMENTS_NAME'),
+    };
+
+    const bucket = (Object.keys(bucketMap) as StorageBucket[]).find(
+      (k) => bucketMap[k] === urlBucketName,
+    );
+    if (!bucket) return null;
+
+    return this.getDownloadUrl(bucket, fileName);
+  }
+
   async getDownloadUrl(
     bucket: StorageBucket,
     fileName: string,
@@ -156,6 +184,10 @@ export class StorageService implements OnModuleInit {
       [StorageBucket.DB_DUMPS]: {
         id: this.config.getOrThrow<string>('B2_BUCKET_DB_DUMPS_ID'),
         name: this.config.getOrThrow<string>('B2_BUCKET_DB_DUMPS_NAME'),
+      },
+      [StorageBucket.CHAT_ATTACHMENTS]: {
+        id: this.config.getOrThrow<string>('B2_BUCKET_CHAT_ATTACHMENTS_ID'),
+        name: this.config.getOrThrow<string>('B2_BUCKET_CHAT_ATTACHMENTS_NAME'),
       },
     };
     return configs[bucket];

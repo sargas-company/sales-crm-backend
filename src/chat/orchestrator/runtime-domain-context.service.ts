@@ -7,6 +7,20 @@ import { DomainContext } from './types';
 export class RuntimeDomainContextService {
   constructor(private readonly prisma: PrismaService) {}
 
+  async findOrCreateChat(proposalId: string, userId: string) {
+    const proposal = await this.prisma.proposal.findFirst({
+      where: { id: proposalId, userId },
+    });
+    if (!proposal) throw new NotFoundException('Proposal not found');
+
+    // upsert is atomic — safe against concurrent requests
+    return this.prisma.chat.upsert({
+      where: { proposalId },
+      update: {},
+      create: { proposalId },
+    });
+  }
+
   async resolveChat(proposalId: string, userId: string) {
     const proposal = await this.prisma.proposal.findFirst({
       where: { id: proposalId, userId },

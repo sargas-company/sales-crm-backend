@@ -3,10 +3,9 @@ import * as bcrypt from 'bcrypt';
 import { PrismaClient, PromptType, UserRole } from '@prisma/client';
 import { JOB_GATEKEEPER_PROMPT } from '../src/ai/prompts/job-gatekeeper.prompt';
 import { JOB_EVALUATION_PROMPT } from '../src/ai/prompts/job-evaluation.prompt';
-import { CHAT_CLASSIFIER_PROMPT } from '../src/ai/prompts/chat-classifier.prompt';
+import { CHAT_GATE_PROMPT } from '../src/ai/prompts/chat-gate.prompt';
+import { CHAT_SELECTOR_PROMPT } from '../src/ai/prompts/chat-selector.prompt';
 import { CHAT_SUMMARY_PROMPT } from '../src/ai/prompts/chat-summary.prompt';
-import { KNOWLEDGE_TITLE_FILTER_PROMPT } from '../src/ai/prompts/knowledge-title-filter.prompt';
-import { KNOWLEDGE_CONTENT_FILTER_PROMPT } from '../src/ai/prompts/knowledge-content-filter.prompt';
 
 const prisma = new PrismaClient();
 
@@ -135,31 +134,31 @@ SCREENING QUESTIONS: Answer in 2-4 sentences. Conversational, not formal. One co
       content: 'You are an assistant that helps write professional proposals.',
     },
     {
-      type: PromptType.CHAT_CLASSIFIER,
-      title: 'Chat Classifier',
-      content: CHAT_CLASSIFIER_PROMPT,
-    },
-    {
       type: PromptType.CHAT_SUMMARY,
       title: 'Chat Summary',
       content: CHAT_SUMMARY_PROMPT,
     },
     {
-      type: PromptType.KNOWLEDGE_TITLE_FILTER,
-      title: 'Knowledge Title Filter',
-      content: KNOWLEDGE_TITLE_FILTER_PROMPT,
+      type: PromptType.CHAT_GATE,
+      title: 'Chat Gate',
+      content: CHAT_GATE_PROMPT,
     },
     {
-      type: PromptType.KNOWLEDGE_CONTENT_FILTER,
-      title: 'Knowledge Content Filter',
-      content: KNOWLEDGE_CONTENT_FILTER_PROMPT,
+      type: PromptType.CHAT_SELECTOR,
+      title: 'Chat Selector',
+      content: CHAT_SELECTOR_PROMPT,
     },
   ];
 
   for (const { type, title, content } of prompts) {
-    const existing = await prisma.prompt.findFirst({ where: { type, isActive: true } });
+    const existing = await prisma.prompt.findFirst({
+      where: { type, isActive: true },
+    });
     if (existing) {
-      await prisma.prompt.update({ where: { id: existing.id }, data: { title, content } });
+      await prisma.prompt.update({
+        where: { id: existing.id },
+        data: { title, content },
+      });
     } else {
       await prisma.prompt.create({
         data: {

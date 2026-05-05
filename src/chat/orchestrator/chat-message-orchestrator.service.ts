@@ -1,26 +1,23 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { KnowledgeDocument } from '@prisma/client';
 
+import { PrismaService } from '../../prisma/prisma.service';
+import { AttachmentPreprocessorService } from './attachment-preprocessor.service';
+import { BaseKnowledgeGateService } from './base-knowledge-gate.service';
+import { BaseKnowledgeSelectorService } from './base-knowledge-selector.service';
 import { ConversationContextService } from './conversation-context.service';
-import { KnowledgeRetrievalService } from './knowledge-retrieval.service';
 import { LlmGatewayService } from './llm-gateway.service';
 import { MessageService } from './message.service';
 import { PromptAssemblyService } from './prompt-assembly.service';
 import { RuntimeDomainContextService } from './runtime-domain-context.service';
 import { SummaryService } from './summary.service';
-import { TaskClassifierService } from './task-classifier.service';
-import { SUMMARY_TRIGGER_EVERY } from './pipeline.config';
-import { BuiltPrompt, ClassifierResult } from './types';
+import { HISTORY_LIMIT, SUMMARY_TRIGGER_EVERY } from './pipeline.config';
+import { BuiltPrompt } from './types';
 
 const FALLBACK_RESPONSE = 'Something went wrong. Please try again.';
 
-const CLASSIFIER_FALLBACK: ClassifierResult = {
-  intent: 'general',
-  needsKnowledge: false,
-};
-
 interface PipelineResult {
   chatId: string;
-  classifierResult: ClassifierResult;
   systemBlocks: BuiltPrompt['systemBlocks'];
   messages: BuiltPrompt['messages'];
 }
@@ -30,23 +27,30 @@ export class ChatMessageOrchestratorService {
   private readonly logger = new Logger(ChatMessageOrchestratorService.name);
 
   constructor(
+    private readonly prisma: PrismaService,
     private readonly messageService: MessageService,
     private readonly conversationContext: ConversationContextService,
     private readonly runtimeContext: RuntimeDomainContextService,
-    private readonly classifier: TaskClassifierService,
-    private readonly knowledgeRetrieval: KnowledgeRetrievalService,
+    private readonly attachmentPreprocessor: AttachmentPreprocessorService,
+    private readonly summaryService: SummaryService,
+    private readonly knowledgeGate: BaseKnowledgeGateService,
+    private readonly knowledgeSelector: BaseKnowledgeSelectorService,
     private readonly promptAssembly: PromptAssemblyService,
     private readonly llmGateway: LlmGatewayService,
-    private readonly summaryService: SummaryService,
   ) {}
 
   async *streamMessage(
     proposalId: string,
     content: string,
     userId: string,
+    preCreatedMessageId?: string,
   ): AsyncGenerator<{ type: 'chunk'; text: string }> {
-    const { chatId, classifierResult, systemBlocks, messages } =
-      await this.buildPipeline(proposalId, content, userId);
+    const { chatId, systemBlocks, messages } = await this.buildPipeline(
+      proposalId,
+      content,
+      userId,
+      preCreatedMessageId,
+    );
 
     try {
       let fullText = '';
@@ -57,21 +61,13 @@ export class ChatMessageOrchestratorService {
         fullText += chunk;
         yield { type: 'chunk', text: chunk };
       }
-      await this.messageService.saveAssistant(
-        chatId,
-        fullText,
-        classifierResult.intent,
-      );
+      await this.messageService.saveAssistant(chatId, fullText);
     } catch (error) {
       this.logger.error(
         'streamMessage failed',
         error instanceof Error ? error.stack : String(error),
       );
-      await this.messageService.saveAssistant(
-        chatId,
-        FALLBACK_RESPONSE,
-        classifierResult.intent,
-      );
+      await this.messageService.saveAssistant(chatId, FALLBACK_RESPONSE);
       yield { type: 'chunk', text: FALLBACK_RESPONSE };
     }
   }
@@ -80,10 +76,15 @@ export class ChatMessageOrchestratorService {
     proposalId: string,
     content: string,
     userId: string,
+    preCreatedMessageId?: string,
   ): Promise<PipelineResult> {
+    // ── 1. Resolve chat + save user message ──────────────────────────────────
     const chat = await this.runtimeContext.resolveChat(proposalId, userId);
-    await this.messageService.saveUser(chat.id, content);
+    const userMessage = preCreatedMessageId
+      ? { id: preCreatedMessageId }
+      : await this.messageService.saveUser(chat.id, content);
 
+    // Background cron-summary trigger (unchanged)
     const messageCount = await this.messageService.count(chat.id);
     if (messageCount % SUMMARY_TRIGGER_EVERY === 0) {
       this.logger.log(
@@ -105,53 +106,111 @@ export class ChatMessageOrchestratorService {
       }, 0);
     }
 
-    const [history, summary, domainContext] = await Promise.all([
-      this.conversationContext.getHistory(chat.id),
-      this.summaryService.getLatestSummary(chat.id),
-      this.runtimeContext.load(chat.proposalId, chat.leadId),
-    ]);
+    // ── 2. Wait for attachments to finish parsing before building the prompt ───
+    await this.attachmentPreprocessor.waitForAttachments(userMessage.id);
 
-    const rawClassifier = await this.classifier
-      .classify(content, domainContext)
-      .catch((err) => {
-        this.logger.error(
-          'classifier failed',
-          err instanceof Error ? err.stack : String(err),
-        );
-        return null;
-      });
+    // ── 3. Parallel: recent history + attachments + cached summary + domain ctx
+    const [allMessages, latestAttachments, cachedSummary, domainContext] =
+      await Promise.all([
+        this.conversationContext.getHistory(chat.id, HISTORY_LIMIT),
+        this.messageService.getAttachmentsForMessage(userMessage.id),
+        this.summaryService.getLatestSummary(chat.id),
+        this.runtimeContext.load(chat.proposalId, chat.leadId),
+      ]);
 
-    const classifierResult =
-      rawClassifier && typeof rawClassifier.needsKnowledge === 'boolean'
-        ? rawClassifier
-        : CLASSIFIER_FALLBACK;
-
-    const vacancyContext =
-      domainContext.proposal?.vacancy ||
-      domainContext.proposal?.jobPost?.rawText ||
-      content;
-
-    const knowledgeSnippets = classifierResult.needsKnowledge
-      ? await this.knowledgeRetrieval.getSnippets(vacancyContext)
-      : [];
-
+    const attachmentsDone = latestAttachments.filter(
+      (a) => (a as unknown as { status?: string }).status === 'DONE',
+    );
+    const attachmentsWithText = attachmentsDone.filter(
+      (a) => a.textRepresentation,
+    );
     this.logger.log(
-      `pipeline done | chat=${chat.id} | intent=${classifierResult.intent} | needsKnowledge=${classifierResult.needsKnowledge} | history=${history.length} | summary=${!!summary} | snippets=${knowledgeSnippets.length}`,
+      `context loaded | history=${allMessages.length} msgs` +
+        ` | attachments=${latestAttachments.length}` +
+        ` (done=${attachmentsDone.length}, with_text=${attachmentsWithText.length})` +
+        ` | summary=${cachedSummary ? `${cachedSummary.length} chars` : 'none'}` +
+        ` | vacancy=${!!domainContext.proposal?.vacancy}` +
+        ` | lead=${!!domainContext.lead}`,
     );
 
+    // ── 3. Embed parsed attachment text into messages (read-only, no parsing) ─
+    const recentMessages =
+      await this.attachmentPreprocessor.processMessages(allMessages);
+
+    // ── 4. Summary from DB covers everything older than HISTORY_LIMIT ─────────
+    const summary = cachedSummary ?? null;
+
+    // ── 5. Base Knowledge Gate ───────────────────────────────────────────────
+    const { needsBaseKnowledge } = await this.knowledgeGate
+      .decide({
+        latestUserMessage: content,
+        summary,
+        recentMessages,
+        latestAttachments,
+      })
+      .catch((err) => {
+        this.logger.error(
+          'knowledge gate failed, defaulting to false',
+          err instanceof Error ? err.stack : String(err),
+        );
+        return { needsBaseKnowledge: false };
+      });
+
+    this.logger.log(`gate decision | needsBaseKnowledge=${needsBaseKnowledge}`);
+
+    // ── 6. Base Knowledge Selector ───────────────────────────────────────────
+    let selectedKnowledge: KnowledgeDocument[] = [];
+
+    if (needsBaseKnowledge) {
+      const knowledgeItems = await this.prisma.knowledgeDocument.findMany({
+        where: { isActive: true },
+      });
+
+      const { selectedKnowledgeIds } = await this.knowledgeSelector
+        .select({
+          latestUserMessage: content,
+          summary,
+          recentMessages,
+          latestAttachments,
+          knowledgeItems,
+        })
+        .catch((err) => {
+          this.logger.error(
+            'knowledge selector failed, using empty selection',
+            err instanceof Error ? err.stack : String(err),
+          );
+          return { selectedKnowledgeIds: [] as string[] };
+        });
+
+      selectedKnowledge = knowledgeItems.filter((k) =>
+        selectedKnowledgeIds.includes(k.id),
+      );
+
+      this.logger.log(
+        `selector | selected=${selectedKnowledge.length}/${knowledgeItems.length} knowledge items`,
+      );
+    }
+
+    // ── 7. Prompt assembly ───────────────────────────────────────────────────
     const { systemBlocks, messages } = await this.promptAssembly.buildPrompt({
-      userContent: content,
-      history,
+      latestUserMessage: content,
+      recentMessages,
       summary,
       domainContext,
-      knowledgeSnippets,
+      selectedKnowledge,
+      latestAttachments,
     });
 
-    return {
-      chatId: chat.id,
-      classifierResult,
-      systemBlocks,
-      messages,
-    };
+    const systemChars = systemBlocks.reduce((s, b) => s + b.text.length, 0);
+    const messagesChars = messages.reduce(
+      (s, m) => s + (typeof m.content === 'string' ? m.content.length : 0),
+      0,
+    );
+    this.logger.log(
+      `prompt built | system_blocks=${systemBlocks.length} (${systemChars} chars)` +
+        ` | messages=${messages.length} (${messagesChars} chars total)`,
+    );
+
+    return { chatId: chat.id, systemBlocks, messages };
   }
 }

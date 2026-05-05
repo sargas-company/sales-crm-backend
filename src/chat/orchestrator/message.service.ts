@@ -1,10 +1,16 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { AttachmentQueueService } from './attachment-queue.service';
 
 @Injectable()
 export class MessageService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(MessageService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly attachmentQueue: AttachmentQueueService,
+  ) {}
 
   saveUser(chatId: string, content: string) {
     const trimmed = content.trim();
@@ -28,5 +34,29 @@ export class MessageService {
     return this.prisma.chatMessage.create({
       data: { chatId, role: 'assistant', content, decision, reasoning },
     });
+  }
+
+  getAttachmentsForMessage(messageId: string) {
+    return this.prisma.messageAttachment.findMany({ where: { messageId } });
+  }
+
+  async addAttachment(
+    messageId: string,
+    fileName: string,
+    mimeType?: string,
+    fileUrl?: string,
+  ) {
+    const attachment = await this.prisma.messageAttachment.create({
+      data: { messageId, fileName, mimeType, fileUrl },
+    });
+
+    this.attachmentQueue.enqueue(attachment.id).catch((err: unknown) => {
+      this.logger.error(
+        `failed to enqueue attachment ${attachment.id}`,
+        err instanceof Error ? err.stack : String(err),
+      );
+    });
+
+    return attachment;
   }
 }

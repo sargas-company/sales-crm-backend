@@ -1,21 +1,25 @@
-import { ChatMessage, JobPost, Lead, Proposal } from '@prisma/client';
+import {
+  ChatMessage,
+  JobPost,
+  KnowledgeDocument,
+  Lead,
+  MessageAttachment,
+  Proposal,
+} from '@prisma/client';
 
+// Used by RuntimeDomainContextService
 export interface DomainContext {
   proposal: (Proposal & { jobPost: JobPost | null }) | null;
   lead: Lead | null;
 }
 
-export type ClassifierResult = {
-  intent: string;
-  needsKnowledge: boolean;
-};
-
 export interface PromptInput {
-  userContent: string;
-  history: ChatMessage[];
+  latestUserMessage: string;
+  recentMessages: ChatMessage[];
   summary: string | null;
   domainContext: DomainContext;
-  knowledgeSnippets: string[];
+  selectedKnowledge: KnowledgeDocument[];
+  latestAttachments: MessageAttachment[];
 }
 
 export type SystemBlock =

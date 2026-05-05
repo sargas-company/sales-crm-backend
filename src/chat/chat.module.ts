@@ -2,31 +2,40 @@ import { Module } from '@nestjs/common';
 
 import { AuthModule } from '../auth/auth.module';
 import { PromptModule } from '../prompt/prompt.module';
+import { AttachmentPreprocessorService } from './orchestrator/attachment-preprocessor.service';
+import { AttachmentProcessorService } from './orchestrator/attachment-processor.service';
+import { AttachmentQueueService } from './orchestrator/attachment-queue.service';
+import { BaseKnowledgeGateService } from './orchestrator/base-knowledge-gate.service';
+import { BaseKnowledgeSelectorService } from './orchestrator/base-knowledge-selector.service';
 import { ChatMessageOrchestratorService } from './orchestrator/chat-message-orchestrator.service';
 import { ConversationContextService } from './orchestrator/conversation-context.service';
-import { KnowledgeRetrievalService } from './orchestrator/knowledge-retrieval.service';
+import { FileParserService } from './orchestrator/file-parser.service';
 import { LlmGatewayService } from './orchestrator/llm-gateway.service';
 import { MessageService } from './orchestrator/message.service';
 import { PromptAssemblyService } from './orchestrator/prompt-assembly.service';
 import { RuntimeDomainContextService } from './orchestrator/runtime-domain-context.service';
 import { SummaryService } from './orchestrator/summary.service';
-import { TaskClassifierService } from './orchestrator/task-classifier.service';
+import { ProposalChatController } from './chat-send.controller';
 import { ChatController } from './chat.controller';
 import { ChatGateway } from './chat.gateway';
 import { ChatService } from './chat.service';
 
 @Module({
   imports: [AuthModule, PromptModule],
-  controllers: [ChatController],
+  controllers: [ChatController, ProposalChatController],
   providers: [
     ChatService,
     ChatGateway,
     ChatMessageOrchestratorService,
+    AttachmentPreprocessorService,
+    AttachmentQueueService,
+    AttachmentProcessorService,
+    FileParserService,
+    BaseKnowledgeGateService,
+    BaseKnowledgeSelectorService,
     MessageService,
     ConversationContextService,
     RuntimeDomainContextService,
-    TaskClassifierService,
-    KnowledgeRetrievalService,
     PromptAssemblyService,
     LlmGatewayService,
     SummaryService,

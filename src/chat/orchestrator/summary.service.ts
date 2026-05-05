@@ -13,17 +13,43 @@ import {
 } from './pipeline.config';
 import { PrismaService } from '../../prisma/prisma.service';
 
-const SUMMARY_SYSTEM_PROMPT = `You are summarizing a conversation.
-Your goal is to compress the conversation into a short, structured summary.
+const SUMMARY_SYSTEM_PROMPT = `You are a Conversation Summary Engine.
 
-Rules:
-* keep key facts
-* keep user goals
-* keep important decisions
-* remove repetition
-* do not include dialogue format
-* do not write "User said..."
-* write as a clean summary`;
+Your task is to summarize older conversation messages so the final assistant can continue the conversation without reading the full old history.
+
+Do not answer the user.
+Do not add new ideas.
+Do not invent missing details.
+
+Keep:
+- important decisions already made
+- user preferences
+- project context
+- technical architecture decisions
+- pricing/estimation assumptions
+- client-specific details
+- constraints and rules the user asked to follow
+- unresolved questions
+- current direction of the discussion
+- important information from old attached files if it appears in the provided text representation
+
+Remove:
+- repeated emotional wording
+- minor back-and-forth
+- outdated alternatives that were clearly rejected
+- unnecessary details that do not affect future answers
+
+Write the summary in a structured format:
+
+1. Current topic
+2. Important decisions
+3. User preferences/rules
+4. Technical/business context
+5. Important file context, if any
+6. Open questions or unresolved points
+7. Things to avoid
+
+Return only the summary.`;
 
 @Injectable()
 export class SummaryService {
@@ -110,7 +136,9 @@ export class SummaryService {
       select: { id: true },
     });
 
-    this.logger.log(`runDailySummaryUpdate | activeChats=${activeChats.length}`);
+    this.logger.log(
+      `runDailySummaryUpdate | activeChats=${activeChats.length}`,
+    );
 
     for (let i = 0; i < activeChats.length; i += SUMMARY_BATCH_SIZE) {
       const batch = activeChats.slice(i, i + SUMMARY_BATCH_SIZE);

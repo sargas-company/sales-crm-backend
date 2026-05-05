@@ -80,8 +80,11 @@ enum PromptType {
   JOB_EVALUATION
   CHAT_SYSTEM
   CHAT_FALLBACK
-  CHAT_CLASSIFIER
   CHAT_SUMMARY
+  CHAT_GATE
+  CHAT_SELECTOR
+  // deprecated — kept for DB compatibility, not used in code
+  CHAT_CLASSIFIER
   KNOWLEDGE_TITLE_FILTER
   KNOWLEDGE_CONTENT_FILTER
 }
@@ -224,9 +227,38 @@ model ChatMessage {
   reasoning String?
   createdAt DateTime    @default(now())
 
-  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  chat        Chat                @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  attachments MessageAttachment[]
 
   @@index([chatId, createdAt])
+}
+
+model MessageAttachment {
+  id                 String   @id @default(uuid())
+  messageId          String
+  fileName           String
+  mimeType           String?
+  fileUrl            String?
+  textRepresentation String?
+  status             MessageAttachmentStatus @default(PENDING)
+  error              String?
+  attempts           Int                     @default(0)
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@index([status])
+  @@index([messageId, status])
+}
+
+enum MessageAttachmentStatus {
+  PENDING
+  PROCESSING
+  DONE
+  FAILED
+  TIMEOUT
 }
 
 model KnowledgeDocument {
@@ -234,6 +266,7 @@ model KnowledgeDocument {
   title     String?
   category  String
   content   String
+  isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

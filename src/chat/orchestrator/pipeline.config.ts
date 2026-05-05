@@ -6,21 +6,18 @@ export const LLM_MODEL = 'claude-opus-4-6';
 /** Max tokens the LLM can generate per response */
 export const LLM_MAX_TOKENS = 4096;
 
-/** Model used for task classification */
-export const CLASSIFIER_MODEL = 'claude-sonnet-4-6';
-
 /** Model used for summary generation */
 export const SUMMARY_MODEL = 'claude-sonnet-4-6';
 
-// ─── Knowledge Retrieval (two-stage LLM filter) ───────────────────────────────
+/** Model used by BaseKnowledgeGateService */
+export const GATE_MODEL = 'claude-sonnet-4-6';
 
-/** Model for stage 1: filters all document titles → candidate IDs */
-export const TITLE_FILTER_MODEL = 'claude-sonnet-4-6';
+/** Model used by BaseKnowledgeSelectorService */
+export const SELECTOR_MODEL = 'claude-sonnet-4-6';
 
-/** Model for stage 2: filters candidate documents by full content → final IDs */
-export const CONTENT_FILTER_MODEL = 'claude-sonnet-4-6';
+// ─── Knowledge Selection ─────────────────────────────────────────────────────
 
-/** Max characters of each document's content sent to stage 2 */
+/** Max characters of each document's content passed to the selector */
 export const CONTENT_FILTER_DOC_LIMIT = 4000;
 
 /** Separator between knowledge documents in the final prompt */
@@ -33,11 +30,8 @@ export const CONTENT_MAX_LENGTH = 20_000;
 
 // ─── Prompt Assembly ─────────────────────────────────────────────────────────
 
-/** Number of recent messages loaded from DB and passed into the prompt as history */
+/** Number of recent messages kept as direct context; older ones are summarised */
 export const HISTORY_LIMIT = 20;
-
-/** Max characters from job post rawText included in the [JOB POST] block */
-export const JOB_POST_LIMIT = 1500;
 
 /** Max characters of the user's message passed to the LLM */
 export const USER_CONTENT_LIMIT = 2000;
@@ -51,7 +45,7 @@ export const SUMMARY_TRIGGER_EVERY = 20;
 export const SUMMARY_MAX_LENGTH = 1500;
 
 /** Recent messages excluded from summary compression (they go into history directly) */
-export const HISTORY_KEEP_RECENT = 20;
+export const HISTORY_KEEP_RECENT = 15;
 
 /** Max number of older messages fed into summary generation */
 export const HISTORY_MAX_OLD = 100;

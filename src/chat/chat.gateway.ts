@@ -49,6 +49,10 @@ export class ChatGateway implements OnGatewayConnection {
     private readonly jwtService: JwtService,
   ) {}
 
+  getSocket(socketId: string): Socket | undefined {
+    return this.server.sockets.sockets.get(socketId);
+  }
+
   handleConnection(client: Socket): void {
     const token = (client.handshake.auth?.token ||
       client.handshake.query?.token) as string | undefined;
