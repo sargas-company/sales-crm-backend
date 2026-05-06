@@ -77,15 +77,14 @@ export class AttachmentPreprocessorService {
 
   /**
    * Parses the file from an in-memory buffer and saves the result to DB.
-   * Used by the controller right after upload — avoids an extra HTTP round-trip
-   * to re-download a file that is already in memory.
+   * Kept for reference — no longer called from controller (processing is via BullMQ worker).
    */
   async parseFromBuffer(
     attachment: MessageAttachment,
     buffer: Buffer,
   ): Promise<void> {
     const status = (attachment as unknown as { status?: string }).status;
-    if (status === 'DONE' || status === 'FAILED' || status === 'TIMEOUT') {
+    if (status === 'DONE' || status === 'FAILED') {
       return;
     }
 
@@ -158,8 +157,8 @@ export class AttachmentPreprocessorService {
   async parseAndSave(attachment: MessageAttachment): Promise<void> {
     const status = (attachment as unknown as { status?: string }).status;
 
-    // Skip terminal states — status is the single source of truth
-    if (status === 'DONE' || status === 'FAILED' || status === 'TIMEOUT') {
+    // Skip terminal states — DONE and FAILED are the only terminal states
+    if (status === 'DONE' || status === 'FAILED') {
       return;
     }
 
@@ -231,14 +230,15 @@ export class AttachmentPreprocessorService {
         `failed to parse attachment ${attachment.id} (${attachment.fileName})`,
         error instanceof Error ? error.stack : String(error),
       );
-      throw error; // re-throw so caller (worker / controller) decides on retry
+      throw error; // re-throw so caller (worker) decides on retry
     }
   }
 
   /**
    * Polls until all attachments for a message reach a terminal state
-   * (DONE, FAILED, TIMEOUT) or the timeout elapses.
-   * On timeout, pending/processing attachments are marked TIMEOUT.
+   * (DONE or FAILED) or the polling window elapses.
+   * On timeout, PENDING/PROCESSING attachments are forced to FAILED and
+   * a readiness check is triggered so message.status reflects the outcome.
    */
   async waitForAttachments(
     messageId: string,
@@ -257,7 +257,7 @@ export class AttachmentPreprocessorService {
 
       const allTerminal = attachments.every((a) => {
         const s = (a as unknown as { status?: string }).status;
-        return s === 'DONE' || s === 'FAILED' || s === 'TIMEOUT';
+        return s === 'DONE' || s === 'FAILED';
       });
 
       if (allTerminal) return;
@@ -267,9 +267,8 @@ export class AttachmentPreprocessorService {
       );
     }
 
-    // Timeout reached — mark still-pending/processing attachments
-    // 'TIMEOUT' cast: value exists in schema but client regeneration is pending
-    await this.prisma.messageAttachment.updateMany({
+    // Polling window exceeded — force remaining PENDING/PROCESSING to FAILED
+    const { count } = await this.prisma.messageAttachment.updateMany({
       where: {
         messageId,
         status: {
@@ -279,18 +278,18 @@ export class AttachmentPreprocessorService {
           ],
         },
       },
-      data: { status: 'TIMEOUT' as never },
+      data: {
+        status: MessageAttachmentStatus.FAILED,
+        error: 'Attachment processing timeout',
+      },
     });
 
     this.logger.warn(
-      `waitForAttachments timed out for message ${messageId} after ${timeoutMs}ms`,
+      `waitForAttachments timed out for message ${messageId} after ${timeoutMs}ms — forced ${count} attachment(s) to FAILED`,
     );
   }
 
   private stripAttachmentBlocks(content: string): string {
-    // Matches only well-formed blocks our formatter produces:
-    //   "Attached file:\nFile name: {name}\n\nContent:\n{text}"
-    // Requires the exact Content: marker so user text is never affected.
     return content
       .replace(
         /\n+Attached file:\nFile name:[^\n]+\n\nContent:\n[\s\S]*?(?=\n\nAttached file:|$)/g,

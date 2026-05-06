@@ -14,12 +14,15 @@ import { SummaryService } from './summary.service';
 import { HISTORY_LIMIT, SUMMARY_TRIGGER_EVERY } from './pipeline.config';
 import { BuiltPrompt } from './types';
 
-const FALLBACK_RESPONSE = 'Something went wrong. Please try again.';
-
 interface PipelineResult {
   chatId: string;
   systemBlocks: BuiltPrompt['systemBlocks'];
   messages: BuiltPrompt['messages'];
+}
+
+export interface StreamHandle {
+  chatId: string;
+  stream: AsyncGenerator<string>;
 }
 
 @Injectable()
@@ -39,12 +42,17 @@ export class ChatMessageOrchestratorService {
     private readonly llmGateway: LlmGatewayService,
   ) {}
 
-  async *streamMessage(
+  /**
+   * Builds the prompt pipeline and returns a raw chunk stream.
+   * Pure: no side effects, no assistant saves, no fallbacks.
+   * Throws if pipeline build or LLM stream fails — caller owns error handling.
+   */
+  async buildStream(
     proposalId: string,
     content: string,
     userId: string,
     preCreatedMessageId?: string,
-  ): AsyncGenerator<{ type: 'chunk'; text: string }> {
+  ): Promise<StreamHandle> {
     const { chatId, systemBlocks, messages } = await this.buildPipeline(
       proposalId,
       content,
@@ -52,23 +60,16 @@ export class ChatMessageOrchestratorService {
       preCreatedMessageId,
     );
 
-    try {
-      let fullText = '';
-      for await (const chunk of this.llmGateway.stream(
-        systemBlocks,
-        messages,
-      )) {
-        fullText += chunk;
-        yield { type: 'chunk', text: chunk };
-      }
-      await this.messageService.saveAssistant(chatId, fullText);
-    } catch (error) {
-      this.logger.error(
-        'streamMessage failed',
-        error instanceof Error ? error.stack : String(error),
-      );
-      await this.messageService.saveAssistant(chatId, FALLBACK_RESPONSE);
-      yield { type: 'chunk', text: FALLBACK_RESPONSE };
+    const stream = this.streamChunks(systemBlocks, messages);
+    return { chatId, stream };
+  }
+
+  private async *streamChunks(
+    systemBlocks: BuiltPrompt['systemBlocks'],
+    messages: BuiltPrompt['messages'],
+  ): AsyncGenerator<string> {
+    for await (const chunk of this.llmGateway.stream(systemBlocks, messages)) {
+      yield chunk;
     }
   }
 
@@ -106,10 +107,7 @@ export class ChatMessageOrchestratorService {
       }, 0);
     }
 
-    // ── 2. Wait for attachments to finish parsing before building the prompt ───
-    await this.attachmentPreprocessor.waitForAttachments(userMessage.id);
-
-    // ── 3. Parallel: recent history + attachments + cached summary + domain ctx
+    // ── 2. Parallel: recent history + attachments + cached summary + domain ctx
     const [allMessages, latestAttachments, cachedSummary, domainContext] =
       await Promise.all([
         this.conversationContext.getHistory(chat.id, HISTORY_LIMIT),

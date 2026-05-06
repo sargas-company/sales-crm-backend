@@ -19,9 +19,6 @@ export function formatAttachmentBlock(attachment: MessageAttachment): string {
     case 'FAILED':
       return `${header}\n\nContent:\nFile processing failed. Please re-upload the file or try again later.`;
 
-    case 'TIMEOUT':
-      return `${header}\n\nContent:\nFile processing timed out. Please re-upload the file or try again later.`;
-
     case 'DONE':
       if (attachment.textRepresentation?.trim()) {
         const text = attachment.textRepresentation.slice(0, MAX_BLOCK_CHARS);

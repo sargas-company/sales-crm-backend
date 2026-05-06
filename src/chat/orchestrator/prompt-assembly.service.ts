@@ -31,9 +31,7 @@ export class PromptAssemblyService {
 
     if (input.summary) {
       dynamicParts.push(`[CONVERSATION SUMMARY]\n${input.summary}`);
-      this.logger.debug(
-        `system[1] +summary | ${input.summary.length} chars`,
-      );
+      this.logger.debug(`system[1] +summary | ${input.summary.length} chars`);
     }
 
     if (input.selectedKnowledge.length) {
@@ -68,24 +66,16 @@ export class PromptAssemblyService {
     }));
 
     if (history.length > 0) {
-      const historyChars = history.reduce(
-        (s, m) => s + m.content.length,
-        0,
-      );
+      const historyChars = history.reduce((s, m) => s + m.content.length, 0);
       this.logger.debug(
         `messages history | ${history.length} msgs | ${historyChars} chars`,
       );
     }
 
     const userMessage = this.buildUserMessage(input);
-    this.logger.log(
-      `messages[-1] user | ${userMessage.length} chars`,
-    );
+    this.logger.log(`messages[-1] user | ${userMessage.length} chars`);
 
-    return [
-      ...history,
-      { role: 'user', content: userMessage },
-    ];
+    return [...history, { role: 'user', content: userMessage }];
   }
 
   private buildUserMessage(input: PromptInput): string {
@@ -99,9 +89,7 @@ export class PromptAssemblyService {
 
     const safeContent = input.latestUserMessage.slice(0, USER_CONTENT_LIMIT);
     parts.push(`[LATEST USER MESSAGE]\n${safeContent}`);
-    this.logger.debug(
-      `user msg +user_content | ${safeContent.length} chars`,
-    );
+    this.logger.debug(`user msg +user_content | ${safeContent.length} chars`);
 
     if (input.latestAttachments.length > 0) {
       const blocks = input.latestAttachments

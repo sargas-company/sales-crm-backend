@@ -25,14 +25,13 @@ import {
 } from '@nestjs/swagger';
 import { memoryStorage } from 'multer';
 
-import { MessageAttachment } from '@prisma/client';
+import { ChatMessageStatus, MessageAttachment } from '@prisma/client';
 
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageBucket, StorageService } from '../storage';
-import { AttachmentPreprocessorService } from './orchestrator/attachment-preprocessor.service';
 import { AttachmentQueueService } from './orchestrator/attachment-queue.service';
-import { ChatMessageOrchestratorService } from './orchestrator/chat-message-orchestrator.service';
+import { MessageReadinessService } from './orchestrator/message-readiness.service';
 import { MessageService } from './orchestrator/message.service';
 import { RuntimeDomainContextService } from './orchestrator/runtime-domain-context.service';
 import { ChatGateway } from './chat.gateway';
@@ -82,9 +81,8 @@ export class ProposalChatController {
     private readonly storage: StorageService,
     private readonly runtimeContext: RuntimeDomainContextService,
     private readonly messageService: MessageService,
-    private readonly attachmentPreprocessor: AttachmentPreprocessorService,
     private readonly attachmentQueue: AttachmentQueueService,
-    private readonly orchestrator: ChatMessageOrchestratorService,
+    private readonly readiness: MessageReadinessService,
     private readonly gateway: ChatGateway,
   ) {}
 
@@ -96,7 +94,7 @@ export class ProposalChatController {
   })
   @ApiResponse({
     status: 200,
-    description: 'Pipeline started, streaming via WebSocket',
+    description: 'Message queued — AI response streams via WebSocket proposal room',
   })
   async sendMessage(
     @Param('id') proposalId: string,
@@ -105,35 +103,42 @@ export class ProposalChatController {
     @Request() req: { user: { id: string } },
   ): Promise<{ status: string; messageId: string }> {
     const userId = req.user.id;
-    const { socketId } = dto;
 
     this.logger.log(
-      `sendMessage | proposal=${proposalId} user=${userId} files=${files?.length ?? 0} socket=${socketId}`,
+      `sendMessage | proposal=${proposalId} user=${userId} files=${files?.length ?? 0}`,
     );
-
-    const socket = this.gateway.getSocket(socketId);
-    if (!socket) {
-      this.logger.warn(
-        `socket ${socketId} not found — stream events will be dropped`,
-      );
-    }
 
     const chat = await this.runtimeContext.findOrCreateChat(proposalId, userId);
     this.logger.debug(`chat resolved | id=${chat.id} proposal=${proposalId}`);
 
-    const message = await this.messageService.saveUser(chat.id, dto.content);
+    // Auto-join the sender's socket to the proposal room so all subsequent
+    // room broadcasts (thinking, chunk, done, message_updated) reach the client.
+    // Supports clients that haven't migrated to explicit join_proposal yet.
+    if (dto.socketId) {
+      const socket = this.gateway.getSocket(dto.socketId);
+      if (socket && !this.gateway.isInProposalRoom(socket, proposalId)) {
+        const room = this.gateway.getProposalRoom(proposalId);
+        await socket.join(room);
+      }
+    }
+
+    const initialStatus = files?.length
+      ? ChatMessageStatus.PREPARING_ATTACHMENTS
+      : ChatMessageStatus.READY_FOR_AI;
+
+    const message = await this.messageService.saveUser(
+      chat.id,
+      dto.content,
+      initialStatus,
+    );
     this.logger.log(`message created | id=${message.id} chat=${chat.id}`);
 
     if (files?.length) {
       this.logger.log(
-        `processing ${files.length} attachment(s) for message ${message.id}`,
+        `uploading ${files.length} attachment(s) for message ${message.id}`,
       );
 
       for (const file of files) {
-        this.logger.log(
-          `attachment upload start | file="${file.originalname}" mime=${file.mimetype} size=${file.size}B`,
-        );
-
         let attachment: MessageAttachment;
         try {
           const fileName = `${message.id}/${Date.now()}-${randomUUID()}${extname(file.originalname)}`;
@@ -146,7 +151,7 @@ export class ProposalChatController {
             mimeType: file.mimetype,
           });
           this.logger.log(
-            `attachment uploaded to B2 | file="${file.originalname}" b2Key=${fileName} url=${url} duration=${Date.now() - uploadStart}ms`,
+            `attachment uploaded | file="${file.originalname}" duration=${Date.now() - uploadStart}ms`,
           );
 
           attachment = await this.prisma.messageAttachment.create({
@@ -158,7 +163,7 @@ export class ProposalChatController {
             },
           });
           this.logger.log(
-            `attachment record created | id=${attachment.id} messageId=${message.id} fileUrl=${url}`,
+            `attachment record created | id=${attachment.id} messageId=${message.id}`,
           );
         } catch (err) {
           this.logger.error(
@@ -168,46 +173,28 @@ export class ProposalChatController {
           continue;
         }
 
-        socket?.emit('attachment_processing', {
-          attachmentId: attachment.id,
-          fileName: file.originalname,
-        });
-
-        try {
-          this.logger.debug(
-            `parsing attachment | id=${attachment.id} mime=${file.mimetype}`,
-          );
-          const parseStart = Date.now();
-          await this.attachmentPreprocessor.parseFromBuffer(
-            attachment,
-            file.buffer,
-          );
-          this.logger.log(
-            `attachment parsed | id=${attachment.id} duration=${Date.now() - parseStart}ms`,
-          );
-          socket?.emit('attachment_ready', {
-            attachmentId: attachment.id,
-            fileName: file.originalname,
-          });
-        } catch (parseErr) {
-          this.logger.warn(
-            `immediate parse failed for ${attachment.id} ("${file.originalname}"), queuing for retry`,
-          );
-          socket?.emit('attachment_error', {
-            attachmentId: attachment.id,
-            fileName: file.originalname,
-            message: 'File processing failed, retrying in background',
-          });
-          this.attachmentQueue.enqueue(attachment.id).catch((e: unknown) => {
+        await this.attachmentQueue
+          .enqueue(attachment.id)
+          .catch((e: unknown) => {
             this.logger.error(
               `enqueue failed for attachment ${attachment.id}: ${String(e)}`,
             );
           });
-        }
       }
+    } else {
+      // Text-only: AI triggered via readiness engine (same path as file messages)
+      this.logger.log(
+        `text-only message ${message.id} — routing to readiness engine`,
+      );
+      void this.readiness
+        .checkMessageReadiness(message.id, dto.socketId)
+        .catch((e: unknown) => {
+          this.logger.error(
+            `readiness check failed for text-only message ${message.id}`,
+            e instanceof Error ? e.stack : String(e),
+          );
+        });
     }
-
-    this.runPipeline(proposalId, dto.content, userId, message.id, socketId);
 
     return { status: 'processing', messageId: message.id };
   }
@@ -231,7 +218,15 @@ export class ProposalChatController {
     const messages = await this.prisma.chatMessage.findMany({
       where: { chatId: chat.id },
       orderBy: { createdAt: 'asc' },
-      include: {
+      select: {
+        id: true,
+        chatId: true,
+        role: true,
+        content: true,
+        status: true,
+        decision: true,
+        reasoning: true,
+        createdAt: true,
         attachments: {
           select: {
             id: true,
@@ -274,57 +269,5 @@ export class ProposalChatController {
     this.logger.debug(`signed URL generated | attachmentId=${attachmentId}`);
 
     return { url };
-  }
-
-  private runPipeline(
-    proposalId: string,
-    content: string,
-    userId: string,
-    messageId: string,
-    socketId: string,
-  ): void {
-    void (async () => {
-      const socket = this.gateway.getSocket(socketId);
-      if (!socket) {
-        this.logger.warn(
-          `socket ${socketId} not found — response will not be streamed`,
-        );
-        return;
-      }
-
-      this.logger.log(
-        `pipeline started | proposal=${proposalId} message=${messageId} socket=${socketId}`,
-      );
-
-      try {
-        socket.emit('thinking');
-
-        const stream = this.orchestrator.streamMessage(
-          proposalId,
-          content,
-          userId,
-          messageId,
-        );
-
-        this.logger.debug(`streaming started | socket=${socketId}`);
-
-        for await (const event of stream) {
-          socket.emit('chunk', { text: event.text });
-        }
-
-        socket.emit('done');
-        this.logger.log(
-          `pipeline done | proposal=${proposalId} socket=${socketId}`,
-        );
-      } catch (err) {
-        this.logger.error(
-          `pipeline failed | proposal=${proposalId} message=${messageId}`,
-          err instanceof Error ? err.stack : String(err),
-        );
-        socket.emit('error', {
-          message: err instanceof Error ? err.message : 'AI pipeline error',
-        });
-      }
-    })();
   }
 }

@@ -1,5 +1,7 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 
+import { ChatMessageStatus } from '@prisma/client';
+
 import { PrismaService } from '../../prisma/prisma.service';
 import { AttachmentQueueService } from './attachment-queue.service';
 
@@ -12,12 +14,16 @@ export class MessageService {
     private readonly attachmentQueue: AttachmentQueueService,
   ) {}
 
-  saveUser(chatId: string, content: string) {
+  saveUser(
+    chatId: string,
+    content: string,
+    status: ChatMessageStatus = ChatMessageStatus.READY_FOR_AI,
+  ) {
     const trimmed = content.trim();
     if (!trimmed)
       throw new BadRequestException('Message content cannot be empty');
     return this.prisma.chatMessage.create({
-      data: { chatId, role: 'user', content: trimmed },
+      data: { chatId, role: 'user', content: trimmed, status },
     });
   }
 
@@ -32,7 +38,14 @@ export class MessageService {
     reasoning?: string,
   ) {
     return this.prisma.chatMessage.create({
-      data: { chatId, role: 'assistant', content, decision, reasoning },
+      data: {
+        chatId,
+        role: 'assistant',
+        content,
+        status: ChatMessageStatus.DONE,
+        decision,
+        reasoning,
+      },
     });
   }
 

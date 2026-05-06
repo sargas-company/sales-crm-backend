@@ -219,18 +219,21 @@ model Chat {
 }
 
 model ChatMessage {
-  id        String      @id @default(uuid())
+  id        String            @id @default(uuid())
   chatId    String
   role      MessageRole
   content   String
+  status    ChatMessageStatus @default(PREPARING_ATTACHMENTS)
   decision  String?
   reasoning String?
-  createdAt DateTime    @default(now())
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
 
   chat        Chat                @relation(fields: [chatId], references: [id], onDelete: Cascade)
   attachments MessageAttachment[]
 
   @@index([chatId, createdAt])
+  @@index([status, updatedAt])
 }
 
 model MessageAttachment {
@@ -258,7 +261,15 @@ enum MessageAttachmentStatus {
   PROCESSING
   DONE
   FAILED
-  TIMEOUT
+}
+
+enum ChatMessageStatus {
+  PREPARING_ATTACHMENTS
+  PARTIAL_READY
+  READY_FOR_AI
+  AI_PROCESSING
+  DONE
+  FAILED
 }
 
 model KnowledgeDocument {
