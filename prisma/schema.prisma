@@ -229,8 +229,9 @@ model ChatMessage {
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
 
-  chat        Chat                @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  attachments MessageAttachment[]
+  chat         Chat                 @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  attachments  MessageAttachment[]
+  translations MessageTranslation[]
 
   @@index([chatId, createdAt])
   @@index([status, updatedAt])
@@ -270,6 +271,35 @@ enum ChatMessageStatus {
   AI_PROCESSING
   DONE
   FAILED
+}
+
+enum TranslationLanguage {
+  RU
+  UK
+}
+
+enum TranslationProvider {
+  DEEPL
+}
+
+model MessageTranslation {
+  id                String              @id @default(uuid())
+
+  messageId         String
+  targetLanguage    TranslationLanguage
+
+  content String
+
+  sourceLanguage    String?
+  provider          TranslationProvider
+
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, targetLanguage])
+  @@index([messageId])
 }
 
 model KnowledgeDocument {

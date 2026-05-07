@@ -15,6 +15,7 @@ import { ClientRequestsModule } from './client-requests/client-requests.module';
 import { CounterpartyModule } from './counterparty/counterparty.module';
 import { InvoiceModule } from './invoice/invoice.module';
 import { SettingsModule } from './settings/settings.module';
+import { TranslationModule } from './translation/translation.module';
 import { PlatformModule } from './platform/platform.module';
 import { AnthropicModule } from './anthropic/anthropic.module';
 import { ChatModule } from './chat/chat.module';
@@ -50,6 +51,7 @@ import { TelegramModule } from './telegram/telegram.module';
     CounterpartyModule,
     ClientCallsModule,
     SettingsModule,
+    TranslationModule,
   ],
 })
 export class AppModule {}
