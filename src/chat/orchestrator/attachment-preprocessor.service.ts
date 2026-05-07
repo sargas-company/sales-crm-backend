@@ -11,6 +11,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { StorageService } from '../../storage';
 import { formatAttachmentBlock } from './attachment-formatter';
 import { FileParserService } from './file-parser.service';
+import { ImageAnalysisService } from './image-analysis.service';
 
 const FETCH_TIMEOUT_MS = 10_000;
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
@@ -35,6 +36,7 @@ export class AttachmentPreprocessorService {
     private readonly prisma: PrismaService,
     private readonly fileParser: FileParserService,
     private readonly storage: StorageService,
+    private readonly imageAnalysis: ImageAnalysisService,
   ) {}
 
   /**
@@ -93,6 +95,7 @@ export class AttachmentPreprocessorService {
     await this.setStatus(attachment.id, MessageAttachmentStatus.PROCESSING);
 
     if (mimeType.startsWith('image/')) {
+      const description = await this.imageAnalysis.describe(buffer, mimeType);
       await this.prisma.messageAttachment.update({
         where: {
           id: attachment.id,
@@ -100,11 +103,11 @@ export class AttachmentPreprocessorService {
         },
         data: {
           status: MessageAttachmentStatus.DONE,
-          textRepresentation: null,
+          textRepresentation: description,
         },
       });
       this.logger.log(
-        `attachment ${attachment.id} is an image — marked DONE without text`,
+        `attachment ${attachment.id} image analyzed — ${description.length} chars`,
       );
       return;
     }
@@ -168,8 +171,10 @@ export class AttachmentPreprocessorService {
 
     await this.setStatus(attachment.id, MessageAttachmentStatus.PROCESSING);
 
-    // Images: mark DONE without text extraction
+    // Images: analyze with AI vision, store description as textRepresentation
     if (mimeType.startsWith('image/')) {
+      const buffer = await this.fetchFile(attachment.fileUrl);
+      const description = await this.imageAnalysis.describe(buffer, mimeType);
       await this.prisma.messageAttachment.update({
         where: {
           id: attachment.id,
@@ -177,11 +182,11 @@ export class AttachmentPreprocessorService {
         },
         data: {
           status: MessageAttachmentStatus.DONE,
-          textRepresentation: null,
+          textRepresentation: description,
         },
       });
       this.logger.log(
-        `attachment ${attachment.id} is an image — marked DONE without text`,
+        `attachment ${attachment.id} image analyzed — ${description.length} chars`,
       );
       return;
     }

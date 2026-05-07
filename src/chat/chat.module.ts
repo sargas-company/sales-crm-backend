@@ -12,6 +12,7 @@ import { BaseKnowledgeSelectorService } from './orchestrator/base-knowledge-sele
 import { ChatMessageOrchestratorService } from './orchestrator/chat-message-orchestrator.service';
 import { ConversationContextService } from './orchestrator/conversation-context.service';
 import { FileParserService } from './orchestrator/file-parser.service';
+import { ImageAnalysisService } from './orchestrator/image-analysis.service';
 import { LlmGatewayService } from './orchestrator/llm-gateway.service';
 import { MessageReadinessService } from './orchestrator/message-readiness.service';
 import { MessageService } from './orchestrator/message.service';
@@ -36,6 +37,7 @@ import { ChatService } from './chat.service';
     AttachmentQueueService,
     AttachmentProcessorService,
     FileParserService,
+    ImageAnalysisService,
     BaseKnowledgeGateService,
     BaseKnowledgeSelectorService,
     AiRecoveryService,

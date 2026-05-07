@@ -15,6 +15,12 @@ export const GATE_MODEL = 'claude-sonnet-4-6';
 /** Model used by BaseKnowledgeSelectorService */
 export const SELECTOR_MODEL = 'claude-sonnet-4-6';
 
+/** Model used for one-time image analysis (vision) when processing attachments */
+export const IMAGE_ANALYSIS_MODEL = 'claude-haiku-4-5-20251001';
+
+/** Max tokens the image analysis model can generate per image */
+export const IMAGE_ANALYSIS_MAX_TOKENS = 1024;
+
 // ─── Knowledge Selection ─────────────────────────────────────────────────────
 
 /** Max characters of each document's content passed to the selector */
