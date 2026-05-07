@@ -21,7 +21,7 @@ COMMIT;
 
 -- AlterTable
 ALTER TABLE "ChatMessage" ADD COLUMN     "status" "ChatMessageStatus" NOT NULL DEFAULT 'PREPARING_ATTACHMENTS',
-ADD COLUMN     "updatedAt" TIMESTAMP(3) NOT NULL;
+ADD COLUMN     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT NOW();
 
 -- CreateIndex
 CREATE INDEX "ChatMessage_status_updatedAt_idx" ON "ChatMessage"("status", "updatedAt");
