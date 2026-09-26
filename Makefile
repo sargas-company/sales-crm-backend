@@ -79,39 +79,23 @@ init:
 	@echo "seeds .env if absent). For local Docker infra: make local-up / local-down / local-logs."
 	@exit 1
 
-# ─── Manual backup ────────────────────────────────────────────────────────────
+# ─── Deprecation stub: backup ────────────────────────────────────────────────
+# `make backup` used to run scripts/backup.ts (pg_dump + B2 upload). It is now
+# a deprecation stub. Operators may still invoke `scripts/backup.ts` directly
+# when a manual backup is required — see docs/runbooks/production-deploy.md
+# (added by T-06).
 backup:
-	@echo "Creating manual backup..."
-	npx ts-node -r tsconfig-paths/register scripts/backup.ts
-	@echo "Done."
+	@echo "make backup is deprecated. Follow docs/runbooks/production-deploy.md for the"
+	@echo "manual procedure. Operators may still invoke scripts/backup.ts directly."
+	@exit 1
 
-# ─── Sentinel: npm install only when deps change ──────────────────────────────
-node_modules/.install-stamp: package.json package-lock.json
-	. $$HOME/.nvm/nvm.sh && nvm use 20 --silent
-	npm install
-	touch node_modules/.install-stamp
-
-# ─── Deploy ───────────────────────────────────────────────────────────────────
-deploy: node_modules/.install-stamp
-	. $$HOME/.nvm/nvm.sh && nvm use 20 --silent
-	@echo "Node $$(node -v) | npm $$(npm -v)"
-
-	@echo "=== Step 1/6: backup ==="
-	$(MAKE) backup
-
-	@echo "=== Step 2/6: validate prisma schema ==="
-	npx prisma validate --config=./prisma.config.ts
-
-	@echo "=== Step 3/6: migrate ==="
-	npx prisma migrate deploy --config=./prisma.config.ts
-
-	@echo "=== Step 4/6: generate prisma client ==="
-	npx prisma generate --config=./prisma.config.ts
-
-	@echo "=== Step 5/6: build ==="
-	npm run build
-
-	@echo "=== Step 6/6: restart ==="
-	pm2 restart all
-
-	@echo "=== Deploy complete ==="
+# ─── Deprecation stub: deploy ────────────────────────────────────────────────
+# `make deploy` used to chain backup + prisma migrate deploy + build + pm2
+# restart. Operational production commands are deferred to a later feature.
+# See docs/runbooks/production-deploy.md (added by T-06) for the manual
+# procedure. The node_modules/.install-stamp sentinel that fed this recipe
+# has been removed alongside it.
+deploy:
+	@echo "make deploy is deprecated. Operational production commands are deferred to a"
+	@echo "later feature. Follow docs/runbooks/production-deploy.md for the manual procedure."
+	@exit 1
