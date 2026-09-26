@@ -1,6 +1,5 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 
 import { PrismaService } from '../prisma/prisma.service';
@@ -17,14 +16,12 @@ export class AuthService {
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
 
-  // `role` accepts null so the compile stays green while `User.role` is
-  // the nullable legacy shadow of `roleId`. Existing users are backfilled
-  // by the roles-and-permissions migration, so in practice role is
-  // never null at runtime; a null value falls back to MANAGER for the
-  // JWT claim to preserve the current legacy `RolesGuard` behaviour
-  // (settings / telegram-auth) until Legacy Cleanup removes the enum.
-  private generateTokens(userId: string, email: string, role: UserRole | null) {
-    const payload = { sub: userId, email, role: role ?? UserRole.MANAGER };
+  // JWT carries identity only per spec §2. Role and permissions are
+  // resolved from the DB per protected request by `PermissionGuard`
+  // (and by the legacy `RolesGuard`, which now also reads
+  // `User.role` from the DB rather than a JWT claim).
+  private generateTokens(userId: string, email: string) {
+    const payload = { sub: userId, email };
 
     const accessToken = this.jwt.sign(payload);
 
@@ -56,7 +53,7 @@ export class AuthService {
     const isValid = await bcrypt.compare(dto.password, user.passwordHash);
     if (!isValid) throw new UnauthorizedException('Invalid credentials');
 
-    const tokens = this.generateTokens(user.id, user.email, user.role);
+    const tokens = this.generateTokens(user.id, user.email);
     await this.saveRefreshToken(user.id, tokens.refreshToken);
 
     return tokens;
@@ -84,7 +81,7 @@ export class AuthService {
     const tokenMatches = await bcrypt.compare(refreshToken, user.refreshTokenHash);
     if (!tokenMatches) throw new UnauthorizedException('Invalid refresh token');
 
-    const tokens = this.generateTokens(user.id, user.email, user.role);
+    const tokens = this.generateTokens(user.id, user.email);
     await this.saveRefreshToken(user.id, tokens.refreshToken);
 
     return tokens;
