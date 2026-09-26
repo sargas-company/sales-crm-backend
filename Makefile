@@ -1,7 +1,7 @@
 .ONESHELL:
 SHELL := /bin/bash
 
-.PHONY: setup local-up local-down local-logs init backup deploy
+.PHONY: setup local-up local-down local-logs local-migrate local-seed local-reset init backup deploy
 
 # ─── First-time / repeat local setup ─────────────────────────────────────────
 # Non-destructive. Installs deps, generates the Prisma client, and copies
@@ -31,6 +31,44 @@ local-down:
 
 local-logs:
 	docker compose logs -f
+
+# ─── Guarded local DB operations ─────────────────────────────────────────────
+# Every recipe runs scripts/assert-local-db.ts (the five-signal guard from
+# T-02) before Prisma. `set -e` ensures a guard failure aborts the recipe
+# before Prisma is invoked. `local-reset` additionally prompts the operator
+# to type the local database name reported by the guard; a mismatch (or
+# empty input) aborts before reset.
+local-migrate:
+	set -e
+	@echo "==> assert local db"
+	npx ts-node scripts/assert-local-db.ts
+	@echo "==> prisma migrate dev"
+	npx prisma migrate dev --config=./prisma.config.ts
+
+local-seed:
+	set -e
+	@echo "==> assert local db"
+	npx ts-node scripts/assert-local-db.ts
+	@echo "==> prisma db seed"
+	npx prisma db seed --config=./prisma.config.ts
+
+local-reset:
+	set -e
+	@echo "==> assert local db"
+	DBLINE=$$(npx ts-node scripts/assert-local-db.ts)
+	@echo "$$DBLINE"
+	DBNAME=$$(echo "$$DBLINE" | sed 's/^OK //; s/@.*//')
+	@echo ""
+	@echo "*** LOCAL RESET ***"
+	@echo "This will drop and re-seed local database '$$DBNAME'."
+	@echo "Type the database name to confirm (anything else aborts):"
+	IFS= read -r CONFIRM < /dev/tty
+	if [ "$$CONFIRM" != "$$DBNAME" ]; then
+		echo "Confirmation mismatch — aborting."
+		exit 1
+	fi
+	@echo "==> prisma migrate reset --force (drops all tables, applies migrations, re-seeds)"
+	npx prisma migrate reset --force --config=./prisma.config.ts
 
 # ─── Deprecation stub: init ──────────────────────────────────────────────────
 # `make init` was a destructive bootstrap. It is replaced by `make setup`
