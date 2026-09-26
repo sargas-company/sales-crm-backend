@@ -1,30 +1,45 @@
 .ONESHELL:
 SHELL := /bin/bash
 
-.PHONY: init backup deploy
+.PHONY: setup local-up local-down local-logs init backup deploy
 
-# ─── Local dev init ───────────────────────────────────────────────────────────
-init:
-	@echo "Cleaning..."
-	rm -rf node_modules
-	rm -f package-lock.json
-	npm install
+# ─── First-time / repeat local setup ─────────────────────────────────────────
+# Non-destructive. Installs deps, generates the Prisma client, and copies
+# .env.example -> .env only when .env is absent. Does not start Docker or
+# touch the database.
+setup:
+	set -e
+	@echo "==> npm ci"
+	npm ci
+	@if [ ! -f .env ]; then \
+		echo "==> creating .env from .env.example"; \
+		cp .env.example .env; \
+	else \
+		echo "==> .env already exists — leaving it alone"; \
+	fi
+	@echo "==> prisma generate"
 	npx prisma generate --config=./prisma.config.ts
-	@if [ ! -f .env ]; then cp .env.example .env; fi
+	@echo "Setup complete."
 
-	@echo "Starting Docker containers..."
-	docker compose up -d --build
+# ─── Local infra (docker compose) ────────────────────────────────────────────
+# up / down operate on the compose stack; named volumes survive `down`.
+local-up:
+	docker compose up -d
 
-	@echo "Waiting for database to be ready..."
-	sleep 10
+local-down:
+	docker compose down
 
-	@echo "Running Prisma migrations..."
-	npx prisma migrate reset --force --config=./prisma.config.ts
+local-logs:
+	docker compose logs -f
 
-	@echo "Seeding database..."
-	npx prisma db seed --config=./prisma.config.ts
-
-	@echo "Done."
+# ─── Deprecation stub: init ──────────────────────────────────────────────────
+# `make init` was a destructive bootstrap. It is replaced by `make setup`
+# plus the local-* targets. This stub exits non-zero so any lingering
+# caller fails loudly.
+init:
+	@echo "make init is deprecated — use 'make setup' (installs deps, generates prisma client,"
+	@echo "seeds .env if absent). For local Docker infra: make local-up / local-down / local-logs."
+	@exit 1
 
 # ─── Manual backup ────────────────────────────────────────────────────────────
 backup:
