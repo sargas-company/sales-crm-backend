@@ -21,56 +21,37 @@ AI-инструмент для менеджеров: вместо 10–15 мин
 
 ## Быстрый старт
 
-### 1. Переменные окружения
-
-Скопируй `.env.example` в `.env` и заполни ключи:
-
-```bash
-cp .env.example .env
-```
-
-```env
-DATABASE_URL="postgresql://postgres:postgres@localhost:5432/ai_dashboard"
-API_PORT=3000
-NODE_ENV=development
-
-JWT_SECRET=your-secret-here
-JWT_REFRESH_SECRET=your-refresh-secret-here
-
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-### 2. Запуск через Make (рекомендуется)
-
-Поднимает БД, устанавливает зависимости, применяет миграции и сидирует данные:
+Локальный запуск идёт через явно охраняемые `make`-цели. Подробный
+пошаговый гид с ожидаемым выводом каждого шага —
+[`docs/local-setup.md`](docs/local-setup.md).
 
 ```bash
-make init
+make setup          # npm ci + prisma generate + .env из .env.example (если .env ещё нет)
+make local-up       # docker compose up -d (Postgres + Redis)
+make local-migrate  # запускает guard, затем prisma migrate dev
+make local-seed     # запускает guard, затем prisma db seed
+npm run start:dev   # старт NestJS
 ```
 
-После этого запусти сервер:
+Гвард `scripts/assert-local-db.ts` проверяет пять сигналов
+(`APP_ENV=local`, парсимый Postgres URL, host из
+`{localhost, 127.0.0.1, ::1}`, порт `5433`, БД `ai_dashboard`) и
+завершается с ошибкой, если хотя бы один не совпал — так исключается
+случайный `prisma migrate dev` против чужой базы.
 
-```bash
-npm run start:dev
-```
+Для полного пересоздания локальной БД (drop + мигрировать + сидировать)
+используйте `make local-reset`. Цель запрашивает у оператора ввести
+имя БД вручную; любое несовпадение (включая пустой ввод) прерывает
+сброс до вызова Prisma.
 
-### 3. Запуск вручную
+Дополнительные локальные цели: `make local-down` (остановить контейнеры,
+volumes сохраняются), `make local-logs` (`docker compose logs -f`).
 
-```bash
-# Зависимости
-npm install
-
-# База данных
-docker compose up -d
-
-# Prisma client + миграции
-npx prisma generate
-npx prisma migrate deploy
-
-# Сервер
-npm run start:dev
-```
+> `make init`, `make deploy`, `make backup` теперь являются
+> deprecation-заглушками и завершаются с ненулевым кодом. Ручной
+> production-деплой описан в
+> [`docs/runbooks/production-deploy.md`](docs/runbooks/production-deploy.md);
+> охраняемый production-набор команд отложен до отдельной feature.
 
 ## Сервисы
 
