@@ -17,8 +17,14 @@ export class AuthService {
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
 
-  private generateTokens(userId: string, email: string, role: UserRole) {
-    const payload = { sub: userId, email, role };
+  // `role` accepts null so the compile stays green while `User.role` is
+  // the nullable legacy shadow of `roleId`. Existing users are backfilled
+  // by the roles-and-permissions migration, so in practice role is
+  // never null at runtime; a null value falls back to MANAGER for the
+  // JWT claim to preserve the current legacy `RolesGuard` behaviour
+  // (settings / telegram-auth) until Legacy Cleanup removes the enum.
+  private generateTokens(userId: string, email: string, role: UserRole | null) {
+    const payload = { sub: userId, email, role: role ?? UserRole.MANAGER };
 
     const accessToken = this.jwt.sign(payload);
 

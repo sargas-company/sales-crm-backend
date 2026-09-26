@@ -18,12 +18,65 @@ model User {
   refreshTokenHash String?
   firstName        String
   lastName         String
-  role             UserRole   @default(MANAGER)
+  // LEGACY: kept nullable during the migration window as a shadow of
+  // roleId; used only by the legacy RolesGuard (settings / telegram-auth)
+  // until Legacy Cleanup drops both the enum and the column.
+  role             UserRole?
+  roleId           String?
+  roleRef          Role?      @relation(fields: [roleId], references: [id])
   createdAt        DateTime   @default(now())
 
   proposals    Proposal[]
   accounts     Account[]
   clientCalls  ClientCall[]
+  auditLogs    AuditLog[] @relation("AuditLogActor")
+}
+
+model Role {
+  id           String           @id @default(uuid())
+  name         String           @unique
+  label        String
+  description  String?
+  system       Boolean          @default(false)
+  permissions  RolePermission[]
+  users        User[]
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+}
+
+model Permission {
+  id          String           @id @default(uuid())
+  key         String           @unique
+  module      String
+  action      String
+  label       String?
+  description String?
+  roles       RolePermission[]
+  createdAt   DateTime         @default(now())
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  actor      User?    @relation("AuditLogActor", fields: [actorId], references: [id])
+  action     String
+  targetType String
+  targetId   String
+  summary    Json?
+  createdAt  DateTime @default(now())
+
+  @@index([actorId])
+  @@index([targetType, targetId])
 }
 
 // ─── Enums ───────────────────────────────────────────────────────────────────
