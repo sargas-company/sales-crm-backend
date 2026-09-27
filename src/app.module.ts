@@ -26,6 +26,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { ProposalModule } from './proposal/proposal.module';
 import { PromptModule } from './prompt/prompt.module';
 import { TelegramModule } from './telegram/telegram.module';
+import { AuditLogModule } from './audit/audit-log.module';
 
 @Module({
   controllers: [HealthController],
@@ -36,6 +37,7 @@ import { TelegramModule } from './telegram/telegram.module';
     StorageModule,
     DatabaseBackupModule,
     PrismaModule,
+    AuditLogModule,
     AuthModule,
     PlatformModule,
     AccountModule,

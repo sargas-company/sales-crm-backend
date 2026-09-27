@@ -1,11 +1,12 @@
 import 'dotenv/config';
 import * as bcrypt from 'bcrypt';
-import { PrismaClient, PromptType, UserRole } from '@prisma/client';
+import { Prisma, PrismaClient, PromptType, UserRole } from '@prisma/client';
 import { JOB_GATEKEEPER_PROMPT } from '../src/ai/prompts/job-gatekeeper.prompt';
 import { JOB_EVALUATION_PROMPT } from '../src/ai/prompts/job-evaluation.prompt';
 import { CHAT_GATE_PROMPT } from '../src/ai/prompts/chat-gate.prompt';
 import { CHAT_SELECTOR_PROMPT } from '../src/ai/prompts/chat-selector.prompt';
 import { CHAT_SUMMARY_PROMPT } from '../src/ai/prompts/chat-summary.prompt';
+import { redactSummary } from '../src/audit/redact';
 
 const prisma = new PrismaClient();
 
@@ -127,6 +128,34 @@ const ADMIN_MANAGER_EXTRA_KEYS = new Set([
   'settings:view',
 ]);
 
+// Inline audit-log writer used by the seed script. Mirrors
+// `AuditLogService.log` in shape and applies the same secret-key
+// redaction via the shared `redactSummary` helper (spec §3.4).
+// seed.ts runs outside the Nest DI container so the service class
+// itself is not instantiated here.
+type AuditAction = 'role.create' | 'role.update' | 'role.delete' | 'user.role.assign';
+type AuditTargetType = 'Role' | 'User';
+
+async function auditLog(entry: {
+  actorId?: string | null;
+  action: AuditAction;
+  targetType: AuditTargetType;
+  targetId: string;
+  summary?: Record<string, unknown>;
+}) {
+  const summary = redactSummary(entry.summary);
+  await prisma.auditLog.create({
+    data: {
+      actorId: entry.actorId ?? null,
+      action: entry.action,
+      targetType: entry.targetType,
+      targetId: entry.targetId,
+      summary:
+        summary === undefined ? Prisma.JsonNull : (summary as Prisma.InputJsonValue),
+    },
+  });
+}
+
 async function seedRolesAndPermissions() {
   // 1. System roles.
   const owner = await prisma.role.upsert({
@@ -213,6 +242,29 @@ async function seedRolesAndPermissions() {
     `Seeded roles: owner, admin_manager, regular_manager; permissions: ${allPermissions.length}; ` +
       `Owner-bindings: ${allPermissions.length}; Admin-Manager-bindings: ${adminManagerSet.length}.`,
   );
+
+  // 4. AuditLog catch-up. Records `role.create` exactly once per
+  //    system role, and remains idempotent on re-seed: if an entry
+  //    already exists, the log call is skipped. actorId is null
+  //    because the seed itself is not authored by a user (spec §3.4).
+  for (const role of [owner, adminManager, regularManager]) {
+    const already = await prisma.auditLog.findFirst({
+      where: { action: 'role.create', targetType: 'Role', targetId: role.id },
+      select: { id: true },
+    });
+    if (already) continue;
+    await auditLog({
+      action: 'role.create',
+      targetType: 'Role',
+      targetId: role.id,
+      summary: {
+        name: role.name,
+        label: role.label,
+        system: role.system,
+        description: role.description,
+      },
+    });
+  }
 
   return {
     ownerId: owner.id,
@@ -301,6 +353,39 @@ async function main() {
   });
 
   console.log(`Seeded users: ${user.email}, ${user2.email}, tg-bot@internal`);
+
+  // AuditLog catch-up for `user.role.assign`. Records one entry per
+  // seeded user whose roleId is set, exactly once. On re-seed the
+  // check-then-insert branch skips users that already have an
+  // assignment audit for their current roleId; roleId changes (e.g.
+  // reassigning manager@test.com back to admin_manager after a
+  // T-03 walkthrough) then produce a fresh audit row.
+  for (const seededUser of await prisma.user.findMany({
+    where: { roleId: { not: null } },
+    select: { id: true, email: true, roleId: true, roleRef: { select: { name: true } } },
+  })) {
+    const roleId = seededUser.roleId!; // narrowed by the `not: null` filter above
+    const already = await prisma.auditLog.findFirst({
+      where: {
+        action: 'user.role.assign',
+        targetType: 'User',
+        targetId: seededUser.id,
+        summary: { path: ['roleId'], equals: roleId },
+      },
+      select: { id: true },
+    });
+    if (already) continue;
+    await auditLog({
+      action: 'user.role.assign',
+      targetType: 'User',
+      targetId: seededUser.id,
+      summary: {
+        email: seededUser.email,
+        roleId,
+        roleName: seededUser.roleRef?.name ?? null,
+      },
+    });
+  }
 
   // Accounts
   const existingAccount = await prisma.account.findFirst({
