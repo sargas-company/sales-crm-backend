@@ -8,17 +8,14 @@ import {
   Param,
   Post,
   Put,
-  Query,
-  Request,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 import { ChatService } from '../chat/chat.service';
 import { AnalyzeProposalDto } from './dto/analyze-proposal.dto';
-import { CreateProposalDto } from './dto/create-proposal.dto';
 import { UpdateProposalDto } from './dto/update-proposal.dto';
 import { ProposalService } from './proposal.service';
 
@@ -31,27 +28,6 @@ export class ProposalController {
     private readonly proposalService: ProposalService,
     private readonly chatService: ChatService,
   ) {}
-
-  @Post()
-  @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Create a proposal' })
-  @ApiResponse({ status: 201, description: 'Proposal created' })
-  @ApiResponse({ status: 400, description: 'Title is required' })
-  create(@Body() dto: CreateProposalDto, @Request() req) {
-    return this.proposalService.create(dto, req.user.id);
-  }
-
-  @Get()
-  @ApiOperation({ summary: 'Get paginated proposals' })
-  @ApiQuery({ name: 'page', required: false, example: 1, description: 'Page number (default: 1)' })
-  @ApiQuery({ name: 'limit', required: false, example: 10, description: 'Items per page (default: 10)' })
-  @ApiResponse({ status: 200, description: 'Paginated list of proposals ordered by date desc' })
-  findAll(
-    @Query('page') page = 1,
-    @Query('limit') limit = 10,
-  ) {
-    return this.proposalService.findAll(Number(page), Number(limit));
-  }
 
   @Get(':id')
   @ApiOperation({ summary: 'Get a proposal by ID' })

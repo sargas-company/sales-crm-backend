@@ -45,22 +45,6 @@ export class ProposalService {
     });
   }
 
-  async findAll(page: number, limit: number) {
-    const offset = (page - 1) * limit;
-
-    const [data, total] = await Promise.all([
-      this.prisma.proposal.findMany({
-        orderBy: { createdAt: 'desc' },
-        skip: offset,
-        take: limit,
-        include: PROPOSAL_INCLUDE,
-      }),
-      this.prisma.proposal.count(),
-    ]);
-
-    return { data, total };
-  }
-
   async findOne(id: string) {
     const proposal = await this.prisma.proposal.findUnique({
       where: { id },
