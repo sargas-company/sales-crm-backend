@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
   Post,
@@ -53,5 +54,18 @@ export class AuthController {
   @ApiResponse({ status: 204, description: 'Logged out' })
   logout(@Request() req) {
     return this.authService.logout(req.user.id);
+  }
+
+  @Get('me')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: "Returns the caller's identity, role and permissions (loaded fresh from the DB per request)",
+  })
+  @ApiResponse({ status: 200, description: 'Returns id, email, firstName, lastName, role, permissions' })
+  @ApiResponse({ status: 401, description: 'Missing or invalid access token' })
+  me(@Request() req) {
+    return this.authService.getMe(req.user.id);
   }
 }

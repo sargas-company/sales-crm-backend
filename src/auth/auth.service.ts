@@ -93,4 +93,45 @@ export class AuthService {
       data: { refreshTokenHash: null },
     });
   }
+
+  // Loads the caller's identity, role and permissions from the DB per
+  // request (spec §2, §3.1). Same policy as `PermissionGuard`; no
+  // in-memory cache in this feature.
+  async getMe(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        roleRef: {
+          select: {
+            id: true,
+            name: true,
+            label: true,
+            permissions: {
+              select: { permission: { select: { key: true } } },
+            },
+          },
+        },
+      },
+    });
+
+    if (!user) throw new UnauthorizedException('User not found');
+
+    const role = user.roleRef
+      ? { id: user.roleRef.id, name: user.roleRef.name, label: user.roleRef.label }
+      : null;
+    const permissions = user.roleRef?.permissions.map((rp) => rp.permission.key) ?? [];
+
+    return {
+      id: user.id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      role,
+      permissions,
+    };
+  }
 }
