@@ -6,11 +6,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ROLES_KEY } from './roles.decorator';
 
 /**
- * Legacy role guard kept in place for `settings` / `telegram-auth`
- * until Legacy Cleanup drops the `UserRole` enum. Since the JWT
- * now carries identity only (spec §2), the guard resolves the
- * caller's legacy enum role from the DB on every protected
- * request — same policy as `PermissionGuard`.
+ * Legacy role guard kept in place for surfaces still guarded by the
+ * `UserRole` enum. Since the JWT carries identity only (spec §2),
+ * the guard resolves the caller's legacy enum role from the DB on
+ * every protected request — same policy as `PermissionGuard`.
  */
 @Injectable()
 export class RolesGuard implements CanActivate {

@@ -18,9 +18,6 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     const res = ctx.getResponse<Response>();
     const req = ctx.getRequest<Request>();
 
-    // Skip WebSocket context
-    if (!res || !req) return;
-
     this.logger.error(
       `${req.method} ${req.url}`,
       exception instanceof Error ? exception.stack : JSON.stringify(exception),

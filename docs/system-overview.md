@@ -6,8 +6,7 @@
 - **ORM:** Prisma 6 → PostgreSQL (localhost:5433, db: `ai_dashboard`)
 - **Auth:** JWT (access + refresh), passport-jwt
 - **Queue:** BullMQ + Redis
-- **AI:** Anthropic SDK (`claude-*`) + OpenAI SDK
-- **Real-time:** Socket.io (WebSockets)
+- **AI:** Anthropic SDK (`claude-*`) — Job-Post gatekeeper + evaluator only
 - **Notifications:** Discord (BullMQ queue)
 - **File storage:** Backblaze B2 (transcript URLs stored as plain strings in DB)
 
@@ -28,22 +27,23 @@
 
 ```
 src/
-├── auth/              JWT auth, guards, roles
+├── auth/              JWT auth, guards, roles/permissions
 ├── account/           Developer accounts (Upwork profile, LinkedIn profile)
 ├── platform/          Platforms (Upwork, LinkedIn) — seeded on deploy
-├── proposal/          Proposals with AI chat, source: telegram | manual
-├── job-post/          Telegram job posts staging, AI scoring/parsing
+├── proposal/          Proposals (detail / update / delete; created from Job-Post)
+├── job-post/          Job posts staging + AI gatekeeper/evaluator
 ├── lead/              Leads (from proposals or standalone)
 ├── client-requests/   Inbound client form submissions
 ├── client-calls/      Scheduled calls with leads or client requests
-├── chat/              Chat sessions (linked to proposal or lead)
 ├── invoice/           Invoices with line items + PDF generation
 ├── counterparty/      Invoice recipients (client | contractor)
-├── base-knowledge/    Vector embeddings for AI context (pgvector)
-├── prompt/            AI prompt templates (CRUD, versioned, one active per type)
-├── ai/                Anthropic/OpenAI service wrappers
+├── prompt/            AI prompt templates (JOB_GATEKEEPER + JOB_EVALUATION)
+├── ai/                Anthropic service wrappers
 ├── notification/      Discord notifications via BullMQ
-├── telegram/          Telegram bot listener → job-post staging
+├── settings/          Runtime settings (key/value)
+├── audit-log/         Audit trail
+├── roles/             Roles + permissions + user assignment
+├── storage/           Backblaze B2 helpers
 └── prisma/            PrismaService (extends PrismaClient)
 ```
 
@@ -65,20 +65,13 @@ Account (developer profile on a platform)
  └── Proposal[]
 
 Proposal
- ├── Chat? (1:1)
  ├── Lead? (1:1, proposalId on Lead)
  └── JobPost? (1:1)
 
-JobPost (Telegram staging)
+JobPost (staging)
  └── Proposal? (after conversion)
 
-Chat
- ├── ChatMessage[]
- ├── Proposal? (optional link)
- └── Lead? (optional link)
-
 Lead
- ├── Chat? (1:1, created on lead creation)
  ├── Proposal? (optional backlink)
  └── ClientCall[] (leadId FK, CASCADE DELETE)
 
@@ -102,12 +95,11 @@ Invoice
 ## Key Business Flows
 
 ### Proposal → Lead flow
-1. Job post comes from Telegram → staged as `JobPost` (status: NEW)
-2. AI evaluates `JobPost` → sets `decision`, `matchScore`, `aiResponse`
-3. Manager converts `JobPost` → `Proposal` (via `/job-posts/:id/convert`)
-4. Manager promotes `Proposal` → `Lead` (via `/proposals/:id/lead`)
-5. Lead gets a `Chat` automatically (inherits from proposal's chat)
-6. Standalone lead can also be created directly via `POST /leads`
+1. Job post is staged as `JobPost` (status: NEW) by an external ingestion path.
+2. AI evaluates `JobPost` via `JOB_GATEKEEPER` + `JOB_EVALUATION` prompts → sets `decision`, `matchScore`, `aiResponse`.
+3. Manager converts `JobPost` → `Proposal` (via `/job-posts/:id/to-proposal`).
+4. Manager promotes `Proposal` → `Lead` (via `/proposals/:id/lead`).
+5. Standalone lead can also be created directly via `POST /leads`.
 
 ### Lead — display name logic
 Lead may have no name (created from proposal, only proposalId set).
@@ -122,10 +114,9 @@ Frontend display priority: `firstName lastName` → `proposal.title` → `id`
 5. After call: `PATCH /client-calls/:id` → set `status: completed`, `notes`, `summary`, `transcriptUrl`, `aiSummary`
 6. `transcriptUrl` = Backblaze B2 URL, uploaded separately, then patched onto the call
 
-### Chat / AI
-- Each Proposal and Lead has one Chat with ChatMessages
-- AI uses `base-knowledge` (pgvector embeddings) for context
-- Prompt templates managed via `/prompts` (type: JOB_GATEKEEPER | JOB_EVALUATION | CHAT_SYSTEM | CHAT_FALLBACK)
+### AI prompts
+- Prompt templates managed via `/prompts` (types: `JOB_GATEKEEPER`, `JOB_EVALUATION`).
+- One active row per type; used by `AiJobEvaluatorService` during Job-Post processing.
 
 ---
 
@@ -154,11 +145,9 @@ Response: { data: [...], total: N }
 ```
 
 ### Cascade delete
-- Lead deleted → Chat deleted (if no proposalId) or unlinked
 - Lead deleted → ClientCall deleted (CASCADE)
 - ClientRequest deleted → ClientCall deleted (CASCADE)
 - Invoice deleted → InvoiceLineItems deleted (CASCADE)
-- Chat deleted → ChatMessages deleted (CASCADE)
 
 ---
 
@@ -166,7 +155,6 @@ Response: { data: [...], total: N }
 - Type: `CALL_REMINDER | JOB_POST_MATCH | CLIENT_REQUEST`
 - Channel: Discord only (currently)
 - Stored as `NotificationEvent` + `NotificationDelivery` (status: PENDING → SENT | FAILED)
-- Discord/Telegram listeners disabled in current branch (`DISABLE LISTENERS` commit)
 
 ---
 

@@ -9,8 +9,6 @@
 | `GET` | `/proposals/:id` | Get single proposal |
 | `PUT` | `/proposals/:id` | Update proposal |
 | `DELETE` | `/proposals/:id` | Delete proposal |
-| `GET` | `/proposals/:id/chat` | Get chat history |
-| `POST` | `/proposals/:id/analyze` | Analyze proposal intent (AI) |
 
 All endpoints require `Authorization: Bearer <token>`.
 

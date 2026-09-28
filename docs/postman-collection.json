@@ -350,31 +350,6 @@
             "url": "{{baseUrl}}/proposals/{{proposalId}}",
             "description": "Delete a proposal by ID. Returns 204 No Content."
           }
-        },
-        {
-          "name": "Get Chat History",
-          "request": {
-            "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
-            "url": "{{baseUrl}}/proposals/{{proposalId}}/chat",
-            "description": "Get all chat messages for a proposal, ordered by `createdAt` ascending.\n\n**Response:**\n```json\n[\n  { \"id\": \"...\", \"role\": \"user\", \"content\": \"...\", \"createdAt\": \"...\" },\n  { \"id\": \"...\", \"role\": \"assistant\", \"content\": \"...\", \"decision\": \"bid\", \"reasoning\": \"...\", \"createdAt\": \"...\" }\n]\n```"
-          }
-        },
-        {
-          "name": "Analyze Proposal Intent (AI)",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{token}}" }
-            ],
-            "url": "{{baseUrl}}/proposals/{{proposalId}}/analyze",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"content\": \"Should we bid on this job? The client has good reviews.\"\n}"
-            },
-            "description": "Analyze a message against the proposal context using AI — without generating a full chat response.\n\n**Response:**\n```json\n{ \"decision\": \"bid\", \"reasoning\": \"...\" }\n```"
-          }
         }
       ]
     },
