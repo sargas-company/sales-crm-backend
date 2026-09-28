@@ -7,11 +7,17 @@ import {
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 
-import { InvoiceStatus } from '@prisma/client';
+import { InvoiceStatus, Prisma } from '@prisma/client';
 
+import { AuthUser, scopePolicy } from '../auth/auth-user';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageBucket, StorageService } from '../storage';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
+import {
+  InvoiceSortBy,
+  InvoiceSortDirection,
+  ListInvoicesDto,
+} from './dto/list-invoices.dto';
 import { UpdateInvoiceDto } from './dto/update-invoice.dto';
 
 @Injectable()
@@ -22,7 +28,16 @@ export class InvoiceService {
     private readonly storage: StorageService,
   ) {}
 
-  async create(dto: CreateInvoiceDto) {
+  async create(dto: CreateInvoiceDto, user: AuthUser) {
+    const cp = await this.prisma.counterparty.findUnique({
+      where: { id: dto.counterpartyId },
+      select: { type: true },
+    });
+    if (!cp) throw new NotFoundException('Counterparty not found');
+    // Scope check: creating an invoice against a contractor
+    // counterparty requires `contractor_scope:manage`.
+    scopePolicy.assertCanManageType(user, cp.type);
+
     const { lineItems, ...invoiceData } = dto;
 
     return this.prisma.invoice.create({
@@ -43,23 +58,61 @@ export class InvoiceService {
     });
   }
 
-  async findAll(page: number, limit: number) {
+  async findAll(dto: ListInvoicesDto, user: AuthUser) {
+    const page = dto.page ?? 1;
+    const limit = dto.limit ?? 10;
     const offset = (page - 1) * limit;
+    const dir: Prisma.SortOrder =
+      dto.sortDirection ?? InvoiceSortDirection.desc;
+    const visibleTypes = scopePolicy.visibleTypes(user);
+
+    const where: Prisma.InvoiceWhereInput = {
+      counterparty: { type: { in: visibleTypes } },
+      ...(dto.search
+        ? { number: { contains: dto.search, mode: 'insensitive' } }
+        : {}),
+    };
+
+    const orderBy = this.buildOrderBy(dto.sortBy, dir);
 
     const [data, total] = await Promise.all([
       this.prisma.invoice.findMany({
-        orderBy: { createdAt: 'desc' },
+        where,
+        orderBy,
         skip: offset,
         take: limit,
         include: { counterparty: true },
       }),
-      this.prisma.invoice.count(),
+      this.prisma.invoice.count({ where }),
     ]);
 
     return { data, total };
   }
 
-  async findOne(id: string) {
+  private buildOrderBy(
+    sortBy: InvoiceSortBy | undefined,
+    dir: Prisma.SortOrder,
+  ): Prisma.InvoiceOrderByWithRelationInput {
+    switch (sortBy) {
+      case InvoiceSortBy.number:
+        return { number: { sort: dir, nulls: 'last' } };
+      case InvoiceSortBy.counterparty:
+        return { counterparty: { firstName: dir } };
+      case InvoiceSortBy.status:
+        return { status: dir };
+      case InvoiceSortBy.date:
+        return { date: { sort: dir, nulls: 'last' } };
+      case InvoiceSortBy.dueDate:
+        return { dueDate: { sort: dir, nulls: 'last' } };
+      case InvoiceSortBy.currency:
+        return { currency: dir };
+      case InvoiceSortBy.createdAt:
+      default:
+        return { createdAt: dir };
+    }
+  }
+
+  async findOne(id: string, user: AuthUser) {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id },
       include: {
@@ -68,11 +121,22 @@ export class InvoiceService {
       },
     });
     if (!invoice) throw new NotFoundException('Invoice not found');
+    scopePolicy.assertCanReadType(user, invoice.counterparty.type);
     return invoice;
   }
 
-  async update(id: string, dto: UpdateInvoiceDto) {
-    const existing = await this.findOne(id);
+  async update(id: string, dto: UpdateInvoiceDto, user: AuthUser) {
+    const existing = await this.prisma.invoice.findUnique({
+      where: { id },
+      include: {
+        lineItems: { orderBy: { sortOrder: 'asc' } },
+        counterparty: true,
+      },
+    });
+    if (!existing) throw new NotFoundException('Invoice not found');
+    // Contractor-scope: any mutation on a contractor invoice requires
+    // `contractor_scope:manage`.
+    scopePolicy.assertCanManageType(user, existing.counterparty.type);
 
     if (dto.status === 'paid' && !existing.pdfUrl) {
       throw new BadRequestException(
@@ -105,8 +169,16 @@ export class InvoiceService {
     });
   }
 
-  async remove(id: string) {
-    const invoice = await this.findOne(id);
+  async remove(id: string, user: AuthUser) {
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id },
+      include: {
+        lineItems: { orderBy: { sortOrder: 'asc' } },
+        counterparty: true,
+      },
+    });
+    if (!invoice) throw new NotFoundException('Invoice not found');
+    scopePolicy.assertCanManageType(user, invoice.counterparty.type);
 
     if (invoice.pdfUrl) {
       const fileName = invoice.pdfUrl.startsWith('http')
@@ -118,8 +190,8 @@ export class InvoiceService {
     return this.prisma.invoice.delete({ where: { id } });
   }
 
-  async getPdfDownloadUrl(id: string): Promise<string> {
-    const invoice = await this.findOne(id);
+  async getPdfDownloadUrl(id: string, user: AuthUser): Promise<string> {
+    const invoice = await this.findOne(id, user);
     if (!invoice.pdfUrl) throw new NotFoundException('Invoice PDF has not been generated yet');
     // pdfUrl can be a full URL (old records) or plain filename (new records)
     const fileName = invoice.pdfUrl.startsWith('http')
@@ -128,8 +200,18 @@ export class InvoiceService {
     return this.storage.getDownloadUrl(StorageBucket.INVOICES, fileName);
   }
 
-  async generate(id: string) {
-    const invoice = await this.findOne(id);
+  async generate(id: string, user: AuthUser) {
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id },
+      include: {
+        lineItems: { orderBy: { sortOrder: 'asc' } },
+        counterparty: true,
+      },
+    });
+    if (!invoice) throw new NotFoundException('Invoice not found');
+    // Generate is a mutation (writes pdfUrl + status) so contractor
+    // rows require `contractor_scope:manage`, matching update/delete.
+    scopePolicy.assertCanManageType(user, invoice.counterparty.type);
 
     const MONTHS = [
       'Jan',

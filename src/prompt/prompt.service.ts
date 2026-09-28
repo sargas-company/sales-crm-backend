@@ -4,13 +4,17 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { PromptType } from '@prisma/client';
+import { Prisma, PromptType } from '@prisma/client';
 
 import { JOB_EVALUATION_PROMPT } from '../ai/prompts/job-evaluation.prompt';
 import { JOB_GATEKEEPER_PROMPT } from '../ai/prompts/job-gatekeeper.prompt';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePromptDto } from './dto/create-prompt.dto';
-import { QueryPromptsDto } from './dto/query-prompts.dto';
+import {
+  PromptSortBy,
+  PromptSortDirection,
+  QueryPromptsDto,
+} from './dto/query-prompts.dto';
 import { UpdatePromptDto } from './dto/update-prompt.dto';
 
 @Injectable()
@@ -58,15 +62,23 @@ export class PromptService {
   async getPrompts(filter: QueryPromptsDto) {
     const page = filter.page ?? 1;
     const limit = filter.limit ?? 10;
-    const where = {
+    const dir: Prisma.SortOrder =
+      filter.sortDirection ?? PromptSortDirection.desc;
+
+    const where: Prisma.PromptWhereInput = {
       ...(filter.type !== undefined && { type: filter.type }),
       ...(filter.isActive !== undefined && { isActive: filter.isActive }),
+      ...(filter.search
+        ? { title: { contains: filter.search, mode: 'insensitive' } }
+        : {}),
     };
+
+    const orderBy = this.buildOrderBy(filter.sortBy, dir);
 
     const [data, total] = await Promise.all([
       this.prisma.prompt.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy,
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -74,6 +86,29 @@ export class PromptService {
     ]);
 
     return { data, total };
+  }
+
+  private buildOrderBy(
+    sortBy: PromptSortBy | undefined,
+    dir: Prisma.SortOrder,
+  ): Prisma.PromptOrderByWithRelationInput {
+    switch (sortBy) {
+      case PromptSortBy.title:
+        return { title: dir };
+      case PromptSortBy.type:
+        return { type: dir };
+      case PromptSortBy.version:
+        return { version: { sort: dir, nulls: 'last' } };
+      case PromptSortBy.isActive:
+        return { isActive: dir };
+      case PromptSortBy.createdBy:
+        return { createdBy: { sort: dir, nulls: 'last' } };
+      case PromptSortBy.updatedAt:
+        return { updatedAt: dir };
+      case PromptSortBy.createdAt:
+      default:
+        return { createdAt: dir };
+    }
   }
 
   async createPrompt(dto: CreatePromptDto) {

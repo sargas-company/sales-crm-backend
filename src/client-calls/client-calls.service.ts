@@ -1,8 +1,13 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { ClientCallClientType } from '@prisma/client';
+import { ClientCallClientType, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateClientCallDto } from './dto/create-client-call.dto';
+import {
+  ClientCallSortBy,
+  ClientCallSortDirection,
+  ListClientCallsDto,
+} from './dto/list-client-calls.dto';
 import { UpdateClientCallDto } from './dto/update-client-call.dto';
 
 const KYIV_TZ = 'Europe/Kiev';
@@ -86,12 +91,23 @@ export class ClientCallsService {
     return enrichCall(call);
   }
 
-  async findAll(page: number, limit: number) {
+  async findAll(dto: ListClientCallsDto) {
+    const page = dto.page ?? 1;
+    const limit = dto.limit ?? 10;
     const offset = (page - 1) * limit;
+    const dir: Prisma.SortOrder =
+      dto.sortDirection ?? ClientCallSortDirection.desc;
+
+    const where: Prisma.ClientCallWhereInput = dto.search
+      ? { callTitle: { contains: dto.search, mode: 'insensitive' } }
+      : {};
+
+    const orderBy = this.buildOrderBy(dto.sortBy, dir);
 
     const [data, total] = await Promise.all([
       this.prisma.clientCall.findMany({
-        orderBy: { scheduledAt: 'desc' },
+        where,
+        orderBy,
         skip: offset,
         take: limit,
         include: {
@@ -106,10 +122,33 @@ export class ClientCallsService {
           },
         },
       }),
-      this.prisma.clientCall.count(),
+      this.prisma.clientCall.count({ where }),
     ]);
 
     return { data: data.map(enrichCall), total };
+  }
+
+  private buildOrderBy(
+    sortBy: ClientCallSortBy | undefined,
+    dir: Prisma.SortOrder,
+  ): Prisma.ClientCallOrderByWithRelationInput {
+    switch (sortBy) {
+      case ClientCallSortBy.callTitle:
+        return { callTitle: dir };
+      case ClientCallSortBy.duration:
+        return { duration: dir };
+      case ClientCallSortBy.clientTimezone:
+        return { clientTimezone: dir };
+      case ClientCallSortBy.status:
+        return { status: dir };
+      case ClientCallSortBy.createdBy:
+        return { createdBy: { firstName: dir } };
+      case ClientCallSortBy.createdAt:
+        return { createdAt: dir };
+      case ClientCallSortBy.scheduledAt:
+      default:
+        return { scheduledAt: dir };
+    }
   }
 
   async findOne(id: string) {

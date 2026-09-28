@@ -2,9 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 
-// JWT carries identity only (spec §2). Role and permissions are
-// resolved from the DB per protected request by `PermissionGuard`
-// and, during the migration window, by the legacy `RolesGuard`.
+// JWT carries identity only. Role and permissions are resolved from
+// the DB per protected request by `PermissionGuard`.
 export interface JwtPayload {
   sub: string;
   email: string;

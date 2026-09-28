@@ -1,12 +1,17 @@
 import * as path from 'path';
 
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { NotificationType } from '@prisma/client';
+import { NotificationType, Prisma } from '@prisma/client';
 
 import { NotificationService } from '../notification/notification.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { IncomingFileData, StorageBucket, StorageService, StoredFileMetadata } from '../storage';
 import { CreateClientRequestDto } from './dto/create-client-request.dto';
+import {
+  ClientRequestSortBy,
+  ClientRequestSortDirection,
+  ListClientRequestsDto,
+} from './dto/list-client-requests.dto';
 import { UpdateClientRequestDto } from './dto/update-client-request.dto';
 
 @Injectable()
@@ -19,19 +24,49 @@ export class ClientRequestsService {
     private readonly storage: StorageService,
   ) {}
 
-  async findAll(page: number, limit: number) {
+  async findAll(dto: ListClientRequestsDto) {
+    const page = dto.page ?? 1;
+    const limit = dto.limit ?? 10;
     const offset = (page - 1) * limit;
+    const dir: Prisma.SortOrder =
+      dto.sortDirection ?? ClientRequestSortDirection.desc;
+
+    const where: Prisma.ClientRequestWhereInput = dto.search
+      ? { name: { contains: dto.search, mode: 'insensitive' } }
+      : {};
+
+    const orderBy = this.buildOrderBy(dto.sortBy, dir);
 
     const [data, total] = await Promise.all([
       this.prisma.clientRequest.findMany({
-        orderBy: { createdAt: 'desc' },
+        where,
+        orderBy,
         skip: offset,
         take: limit,
       }),
-      this.prisma.clientRequest.count(),
+      this.prisma.clientRequest.count({ where }),
     ]);
 
     return { data, total };
+  }
+
+  private buildOrderBy(
+    sortBy: ClientRequestSortBy | undefined,
+    dir: Prisma.SortOrder,
+  ): Prisma.ClientRequestOrderByWithRelationInput {
+    switch (sortBy) {
+      case ClientRequestSortBy.name:
+        return { name: dir };
+      case ClientRequestSortBy.email:
+        return { email: dir };
+      case ClientRequestSortBy.phoneCountry:
+        return { phoneCountry: { sort: dir, nulls: 'last' } };
+      case ClientRequestSortBy.status:
+        return { status: dir };
+      case ClientRequestSortBy.createdAt:
+      default:
+        return { createdAt: dir };
+    }
   }
 
   async findOne(id: string) {

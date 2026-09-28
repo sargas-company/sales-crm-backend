@@ -5,6 +5,8 @@ import {
   IsEnum,
   IsInt,
   IsOptional,
+  IsString,
+  MaxLength,
   Max,
   Min,
 } from 'class-validator';
@@ -18,6 +20,20 @@ import {
 export enum JobPostSortBy {
   createdAt = 'createdAt',
   matchScore = 'matchScore',
+  title = 'title',
+  status = 'status',
+  budget = 'budget',
+  location = 'location',
+  totalSpent = 'totalSpent',
+  avgRatePaid = 'avgRatePaid',
+  hireRate = 'hireRate',
+  scanner = 'scanner',
+  processedAt = 'processedAt',
+}
+
+export enum JobPostSortDirection {
+  asc = 'asc',
+  desc = 'desc',
 }
 
 export class ListJobPostsDto {
@@ -54,6 +70,27 @@ export class ListJobPostsDto {
   @IsOptional()
   @IsEnum(JobPostSortBy)
   sortBy?: JobPostSortBy = JobPostSortBy.createdAt;
+
+  @ApiPropertyOptional({
+    enum: JobPostSortDirection,
+    default: JobPostSortDirection.desc,
+  })
+  @IsOptional()
+  @IsEnum(JobPostSortDirection)
+  sortDirection?: JobPostSortDirection = JobPostSortDirection.desc;
+
+  @ApiPropertyOptional({
+    description:
+      'Partial, case-insensitive match against the job post title.',
+    example: 'react',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() || undefined : value,
+  )
+  search?: string;
 
   @ApiPropertyOptional({ default: 20 })
   @IsOptional()

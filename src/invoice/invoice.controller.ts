@@ -9,6 +9,7 @@ import {
   Patch,
   Post,
   Query,
+  Request,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -20,72 +21,70 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { PermissionGuard } from '../auth/permission.guard';
+import { RequirePermission } from '../auth/permission.decorator';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
+import { ListInvoicesDto } from './dto/list-invoices.dto';
 import { UpdateInvoiceDto } from './dto/update-invoice.dto';
 import { InvoiceService } from './invoice.service';
 
 @ApiTags('Invoices')
 @ApiBearerAuth('jwt')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionGuard)
 @Controller('invoices')
 export class InvoiceController {
   constructor(private readonly invoiceService: InvoiceService) {}
 
   @Post()
+  @RequirePermission('invoices:create')
   @ApiOperation({ summary: 'Create invoice' })
-  @ApiResponse({ status: 201, description: 'Invoice created' })
-  create(@Body() dto: CreateInvoiceDto) {
-    return this.invoiceService.create(dto);
+  create(@Body() dto: CreateInvoiceDto, @Request() req) {
+    return this.invoiceService.create(dto, req.user);
   }
 
   @Get()
-  @ApiOperation({ summary: 'Get paginated invoices' })
-  @ApiQuery({ name: 'page', required: false, example: 1 })
-  @ApiQuery({ name: 'limit', required: false, example: 10 })
-  @ApiResponse({ status: 200, description: 'Paginated list of invoices' })
-  findAll(@Query('page') page = 1, @Query('limit') limit = 10) {
-    return this.invoiceService.findAll(Number(page), Number(limit));
+  @RequirePermission('invoices:view')
+  @ApiOperation({
+    summary: 'Get paginated / searched / sorted invoices',
+  })
+  findAll(@Query() dto: ListInvoicesDto, @Request() req) {
+    return this.invoiceService.findAll(dto, req.user);
   }
 
   @Get(':id')
+  @RequirePermission('invoices:view')
   @ApiOperation({ summary: 'Get invoice by ID' })
-  @ApiResponse({ status: 200, description: 'Invoice with line items and counterparty' })
-  @ApiResponse({ status: 404, description: 'Invoice not found' })
-  findOne(@Param('id') id: string) {
-    return this.invoiceService.findOne(id);
+  findOne(@Param('id') id: string, @Request() req) {
+    return this.invoiceService.findOne(id, req.user);
   }
 
   @Patch(':id')
+  @RequirePermission('invoices:update')
   @ApiOperation({ summary: 'Update invoice' })
-  @ApiResponse({ status: 200, description: 'Invoice updated' })
-  @ApiResponse({ status: 404, description: 'Invoice not found' })
-  update(@Param('id') id: string, @Body() dto: UpdateInvoiceDto) {
-    return this.invoiceService.update(id, dto);
+  update(@Param('id') id: string, @Body() dto: UpdateInvoiceDto, @Request() req) {
+    return this.invoiceService.update(id, dto, req.user);
   }
 
   @Post(':id/generate')
+  @RequirePermission('invoices:generate')
   @ApiOperation({ summary: 'Generate PDF for invoice via invoice-generator.com' })
-  @ApiResponse({ status: 201, description: 'PDF generated and saved, pdfUrl updated' })
-  @ApiResponse({ status: 404, description: 'Invoice not found' })
-  generate(@Param('id') id: string) {
-    return this.invoiceService.generate(id);
+  generate(@Param('id') id: string, @Request() req) {
+    return this.invoiceService.generate(id, req.user);
   }
 
   @Get(':id/pdf')
+  @RequirePermission('invoices:view')
   @ApiOperation({ summary: 'Get a temporary download URL for the invoice PDF (1h expiry)' })
-  @ApiResponse({ status: 200, description: '{ url: string }' })
-  @ApiResponse({ status: 404, description: 'Invoice not found or PDF not generated yet' })
-  async getPdfUrl(@Param('id') id: string) {
-    const url = await this.invoiceService.getPdfDownloadUrl(id);
+  async getPdfUrl(@Param('id') id: string, @Request() req) {
+    const url = await this.invoiceService.getPdfDownloadUrl(id, req.user);
     return { url };
   }
 
   @Delete(':id')
+  @RequirePermission('invoices:delete')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Delete invoice' })
-  @ApiResponse({ status: 204, description: 'Invoice deleted' })
-  @ApiResponse({ status: 404, description: 'Invoice not found' })
-  remove(@Param('id') id: string) {
-    return this.invoiceService.remove(id);
+  remove(@Param('id') id: string, @Request() req) {
+    return this.invoiceService.remove(id, req.user);
   }
 }

@@ -19,6 +19,12 @@ import { REQUIRED_PERMISSIONS_KEY } from './permission.decorator';
  * request is the cost we accept for immediate revocation on
  * role / permission changes (see spec §2, §6, §7).
  *
+ * On success the guard attaches the caller's granted key set to
+ * `req.user.permissions: Set<string>`, so downstream service-layer
+ * scope checks (e.g. `contractor_scope:view` on
+ * counterparty/invoice reads) can consult it without an additional
+ * DB round-trip.
+ *
  * `JwtAuthGuard` MUST run first — this guard reads `req.user.id`
  * from the JWT strategy's `validate()` result.
  */
@@ -69,6 +75,10 @@ export class PermissionGuard implements CanActivate {
     if (missing.length > 0) {
       throw new ForbiddenException('Insufficient permissions');
     }
+
+    // Expose the granted set so scope-sensitive services on the same
+    // request can consult it without another DB read.
+    if (req.user) req.user.permissions = granted;
 
     return true;
   }

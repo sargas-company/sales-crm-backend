@@ -21,18 +21,22 @@ import {
 } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { PermissionGuard } from '../auth/permission.guard';
+import { RequirePermission } from '../auth/permission.decorator';
 import { ClientCallsService } from './client-calls.service';
 import { CreateClientCallDto } from './dto/create-client-call.dto';
+import { ListClientCallsDto } from './dto/list-client-calls.dto';
 import { UpdateClientCallDto } from './dto/update-client-call.dto';
 
 @ApiTags('Client Calls')
 @ApiBearerAuth('jwt')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, PermissionGuard)
 @Controller('client-calls')
 export class ClientCallsController {
   constructor(private readonly clientCallsService: ClientCallsService) {}
 
   @Post()
+  @RequirePermission('client_calls:create')
   @ApiOperation({ summary: 'Create a client call' })
   @ApiResponse({ status: 201, description: 'Call created' })
   create(@Body() dto: CreateClientCallDto, @Request() req) {
@@ -40,18 +44,17 @@ export class ClientCallsController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Get paginated client calls' })
-  @ApiQuery({ name: 'page', required: false, example: 1 })
-  @ApiQuery({ name: 'limit', required: false, example: 10 })
-  @ApiResponse({
-    status: 200,
-    description: 'Paginated list ordered by scheduledAt desc',
+  @RequirePermission('client_calls:view')
+  @ApiOperation({
+    summary: 'Get paginated / searched / sorted client calls',
   })
-  findAll(@Query('page') page = 1, @Query('limit') limit = 10) {
-    return this.clientCallsService.findAll(Number(page), Number(limit));
+  @ApiResponse({ status: 200, description: 'Paginated list of client calls' })
+  findAll(@Query() dto: ListClientCallsDto) {
+    return this.clientCallsService.findAll(dto);
   }
 
   @Get(':id')
+  @RequirePermission('client_calls:view')
   @ApiOperation({ summary: 'Get client call by ID' })
   @ApiResponse({ status: 200 })
   @ApiResponse({ status: 404, description: 'Not found' })
@@ -60,6 +63,7 @@ export class ClientCallsController {
   }
 
   @Patch(':id')
+  @RequirePermission('client_calls:update')
   @ApiOperation({ summary: 'Update client call' })
   @ApiResponse({ status: 200 })
   @ApiResponse({ status: 404, description: 'Not found' })
@@ -68,6 +72,7 @@ export class ClientCallsController {
   }
 
   @Delete(':id')
+  @RequirePermission('client_calls:delete')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Delete client call' })
   @ApiResponse({ status: 204 })

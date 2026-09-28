@@ -16,10 +16,8 @@ export class AuthService {
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
 
-  // JWT carries identity only per spec §2. Role and permissions are
-  // resolved from the DB per protected request by `PermissionGuard`
-  // (and by the legacy `RolesGuard`, which now also reads
-  // `User.role` from the DB rather than a JWT claim).
+  // JWT carries identity only. Role and permissions are resolved
+  // from the DB per protected request by `PermissionGuard`.
   private generateTokens(userId: string, email: string) {
     const payload = { sub: userId, email };
 

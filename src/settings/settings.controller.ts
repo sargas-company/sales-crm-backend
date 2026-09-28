@@ -14,23 +14,22 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
 
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { Roles } from '../auth/roles.decorator';
-import { RolesGuard } from '../auth/roles.guard';
+import { PermissionGuard } from '../auth/permission.guard';
+import { RequirePermission } from '../auth/permission.decorator';
 import { UpdateSettingDto } from './dto/update-setting.dto';
 import { SettingsService } from './settings.service';
 
 @ApiTags('Settings')
 @ApiBearerAuth('jwt')
-@UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.ADMIN)
+@UseGuards(JwtAuthGuard, PermissionGuard)
 @Controller('settings')
 export class SettingsController {
   constructor(private readonly service: SettingsService) {}
 
   @Get()
+  @RequirePermission('settings:view')
   @ApiOperation({ summary: 'Get all sections with settings' })
   @ApiResponse({ status: 200, description: 'All setting sections with values' })
   findAll() {
@@ -38,6 +37,7 @@ export class SettingsController {
   }
 
   @Get(':key')
+  @RequirePermission('settings:view')
   @ApiOperation({ summary: 'Get a single setting by key' })
   @ApiResponse({ status: 200, description: 'Setting with current value' })
   @ApiResponse({ status: 404, description: 'Not found' })
@@ -46,6 +46,7 @@ export class SettingsController {
   }
 
   @Patch(':key')
+  @RequirePermission('settings:update')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Update setting value' })
   @ApiResponse({ status: 204, description: 'Updated' })

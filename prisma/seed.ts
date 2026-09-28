@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import * as bcrypt from 'bcrypt';
-import { Prisma, PrismaClient, PromptType, UserRole } from '@prisma/client';
+import { Prisma, PrismaClient, PromptType } from '@prisma/client';
 import { JOB_GATEKEEPER_PROMPT } from '../src/ai/prompts/job-gatekeeper.prompt';
 import { JOB_EVALUATION_PROMPT } from '../src/ai/prompts/job-evaluation.prompt';
 import { redactSummary } from '../src/audit/redact';
@@ -37,10 +37,11 @@ const PERMISSION_CATALOGUE: PermissionSeed[] = [
   { module: 'platforms',          action: 'create', key: 'platforms:create',        label: 'Create platforms' },
   { module: 'platforms',          action: 'update', key: 'platforms:update',        label: 'Update platforms' },
   { module: 'platforms',          action: 'delete', key: 'platforms:delete',        label: 'Delete platforms' },
-  { module: 'job_posts',          action: 'view',   key: 'job_posts:view',          label: 'View job posts' },
-  { module: 'job_posts',          action: 'create', key: 'job_posts:create',        label: 'Create job posts' },
-  { module: 'job_posts',          action: 'update', key: 'job_posts:update',        label: 'Update job posts' },
-  { module: 'job_posts',          action: 'delete', key: 'job_posts:delete',        label: 'Delete job posts' },
+  { module: 'job_posts',          action: 'view',    key: 'job_posts:view',          label: 'View job posts' },
+  { module: 'job_posts',          action: 'create',  key: 'job_posts:create',        label: 'Create job posts' },
+  { module: 'job_posts',          action: 'update',  key: 'job_posts:update',        label: 'Update job posts' },
+  { module: 'job_posts',          action: 'delete',  key: 'job_posts:delete',        label: 'Delete job posts' },
+  { module: 'job_posts',          action: 'convert', key: 'job_posts:convert',       label: 'Convert job post to proposal' },
   { module: 'accounts',           action: 'view',   key: 'accounts:view',           label: 'View accounts' },
   { module: 'accounts',           action: 'create', key: 'accounts:create',         label: 'Create accounts' },
   { module: 'accounts',           action: 'update', key: 'accounts:update',         label: 'Update accounts' },
@@ -57,14 +58,21 @@ const PERMISSION_CATALOGUE: PermissionSeed[] = [
   { module: 'client_requests',    action: 'create', key: 'client_requests:create',  label: 'Create client requests' },
   { module: 'client_requests',    action: 'update', key: 'client_requests:update',  label: 'Update client requests' },
   { module: 'client_requests',    action: 'delete', key: 'client_requests:delete',  label: 'Delete client requests' },
-  { module: 'invoices',           action: 'view',   key: 'invoices:view',           label: 'View invoices' },
-  { module: 'invoices',           action: 'create', key: 'invoices:create',         label: 'Create invoices' },
-  { module: 'invoices',           action: 'update', key: 'invoices:update',         label: 'Update invoices' },
-  { module: 'invoices',           action: 'delete', key: 'invoices:delete',         label: 'Delete invoices' },
-  { module: 'counterparties',     action: 'view',   key: 'counterparties:view',     label: 'View counterparties' },
-  { module: 'counterparties',     action: 'create', key: 'counterparties:create',   label: 'Create counterparties' },
-  { module: 'counterparties',     action: 'update', key: 'counterparties:update',   label: 'Update counterparties' },
-  { module: 'counterparties',     action: 'delete', key: 'counterparties:delete',   label: 'Delete counterparties' },
+  { module: 'invoices',           action: 'view',     key: 'invoices:view',           label: 'View invoices' },
+  { module: 'invoices',           action: 'create',   key: 'invoices:create',         label: 'Create invoices' },
+  { module: 'invoices',           action: 'update',   key: 'invoices:update',         label: 'Update invoices' },
+  { module: 'invoices',           action: 'delete',   key: 'invoices:delete',         label: 'Delete invoices' },
+  { module: 'invoices',           action: 'generate', key: 'invoices:generate',       label: 'Generate invoice PDF' },
+  { module: 'counterparties',     action: 'view',    key: 'counterparties:view',     label: 'View counterparties' },
+  { module: 'counterparties',     action: 'create',  key: 'counterparties:create',   label: 'Create counterparties' },
+  { module: 'counterparties',     action: 'update',  key: 'counterparties:update',   label: 'Update counterparties' },
+  { module: 'counterparties',     action: 'delete',  key: 'counterparties:delete',   label: 'Delete counterparties' },
+  // Contractor-scope elevators. Baseline counterparties:* / invoices:*
+  // grant access to client-scoped rows only; the two keys below add
+  // read + write access to contractor-scoped counterparties and their
+  // linked invoices. Backend service layer enforces the split.
+  { module: 'contractor_scope',   action: 'view',    key: 'contractor_scope:view',   label: 'View contractor counterparties and their invoices' },
+  { module: 'contractor_scope',   action: 'manage',  key: 'contractor_scope:manage', label: 'Create / update / delete / generate contractor counterparties and their invoices' },
   { module: 'prompts',            action: 'view',   key: 'prompts:view',            label: 'View prompts' },
   { module: 'prompts',            action: 'create', key: 'prompts:create',          label: 'Create prompts' },
   { module: 'prompts',            action: 'update', key: 'prompts:update',          label: 'Update prompts' },
@@ -106,23 +114,55 @@ const PERMISSION_CATALOGUE: PermissionSeed[] = [
   { module: 'roles',              action: 'assign', key: 'roles:assign',            label: 'Assign a role to a user' },
   { module: 'settings',           action: 'view',   key: 'settings:view',           label: 'View application settings' },
   { module: 'settings',           action: 'update', key: 'settings:update',         label: 'Update application settings' },
+  { module: 'audit_logs',         action: 'view',   key: 'audit_logs:view',         label: 'View Audit Log' },
 ];
 
-// Admin Manager's slice of the catalogue: everything except finance,
-// salary, payment_sources, cashflow, profit, finance_analytics,
-// dashboards_finance and the whole roles admin surface.
-// compensation_reviews and settings shrink to view-only.
-const ADMIN_MANAGER_MODULES = new Set([
-  'dashboards_sales',
-  'proposals', 'platforms', 'job_posts', 'accounts',
-  'leads', 'client_calls', 'client_requests',
-  'invoices', 'counterparties',
-  'prompts', 'employees', 'credentials',
-  'sales_analytics',
-]);
-const ADMIN_MANAGER_EXTRA_KEYS = new Set([
-  'compensation_reviews:view',
-  'settings:view',
+// Admin Manager preset — the exact operational surface the user
+// approved. Everything not listed here is denied on a fresh install
+// (Owner-only). No Coming Soon module (employees, credentials,
+// salaries, finances, payment_sources, cashflow, profit,
+// compensation_reviews, finance_analytics, dashboards_finance,
+// projects, linkedin) is included even if its permission keys
+// already exist in the catalogue. `roles:*`, `settings:*` and
+// contractor_scope elevators are Owner-only per the matrix.
+const ADMIN_MANAGER_PRESET_KEYS = new Set<string>([
+  // Sales Analytics — view.
+  'sales_analytics:view',
+
+  // Platforms — full CRUD.
+  'platforms:view', 'platforms:create', 'platforms:update', 'platforms:delete',
+
+  // Accounts — full CRUD.
+  'accounts:view', 'accounts:create', 'accounts:update', 'accounts:delete',
+
+  // Job Posts — view + delete + convert (no manual create / update:
+  // job posts arrive through the ingestion webhook, not by hand).
+  'job_posts:view', 'job_posts:delete', 'job_posts:convert',
+
+  // Leads — full CRUD.
+  'leads:view', 'leads:create', 'leads:update', 'leads:delete',
+
+  // Client Calls — full CRUD.
+  'client_calls:view', 'client_calls:create', 'client_calls:update', 'client_calls:delete',
+
+  // Client Requests — view / update / delete (POST is public inbound).
+  'client_requests:view', 'client_requests:update', 'client_requests:delete',
+
+  // Proposals — view / update / delete (create is via Job-Post convert).
+  'proposals:view', 'proposals:update', 'proposals:delete',
+
+  // Client invoices — full CRUD + generate. Contractor invoices are
+  // NOT included: the service layer enforces client-scope for callers
+  // without `contractor_scope:*`.
+  'invoices:view', 'invoices:create', 'invoices:update', 'invoices:delete', 'invoices:generate',
+
+  // Client counterparties — full CRUD. Contractor counterparties are
+  // filtered / rejected at the service layer for callers without
+  // `contractor_scope:*`.
+  'counterparties:view', 'counterparties:create', 'counterparties:update', 'counterparties:delete',
+
+  // Prompts — full CRUD.
+  'prompts:view', 'prompts:create', 'prompts:update', 'prompts:delete',
 ]);
 
 // Inline audit-log writer used by the seed script. Mirrors
@@ -154,7 +194,18 @@ async function auditLog(entry: {
 }
 
 async function seedRolesAndPermissions() {
-  // 1. System roles.
+  // 1. System roles. A role's initial permission preset is applied
+  //    ONLY when this seed run is the one that creates the role. If
+  //    the role already existed in the database — with any binding
+  //    count, including zero — its permissions are left alone. This
+  //    respects an operator who intentionally emptied a role via the
+  //    Roles UI: subsequent seeds must not undo that.
+  const priorExisting = await prisma.role.findMany({
+    where: { name: { in: ['owner', 'admin_manager', 'regular_manager'] } },
+    select: { name: true },
+  });
+  const existedBeforeSeed = new Set(priorExisting.map((r) => r.name));
+
   const owner = await prisma.role.upsert({
     where: { name: 'owner' },
     update: {
@@ -214,30 +265,62 @@ async function seedRolesAndPermissions() {
     });
   }
 
-  // 3. Bindings — connect Owner to every permission, Admin Manager to
-  //    the operational slice. Regular Manager stays empty. Idempotent:
-  //    delete-then-recreate for the two system roles so drift on
-  //    reseed converges to the catalogue.
+  // 3. Bindings.
+  //
+  //    Owner is the ONLY role the seed auto-syncs on every run. Its
+  //    contract is "always has every permission in the current
+  //    catalogue" and it is the reason the catalogue can grow safely.
+  //
+  //    Every other role (system or custom) is left alone whenever it
+  //    already existed before this seed run — regardless of how many
+  //    bindings it currently has. Reasoning:
+  //      • Business roles (Admin Manager, Regular Manager, and any
+  //        custom role created via the Roles UI) are edited by the
+  //        Owner through the UI. Reseeding must never silently grant
+  //        or revoke permissions on them — otherwise every new
+  //        permission added by developers would leak into whichever
+  //        role was closest to it in the seed preset.
+  //      • An operator who intentionally emptied Admin Manager /
+  //        Regular Manager through the UI must see zero bindings
+  //        again after every reseed; `count === 0` is NOT the same
+  //        signal as "role was just created".
+  //      • The initial preset is applied only when the role record
+  //        itself did not exist before this seed run (fresh env
+  //        bootstrap).
   const allPermissions = await prisma.permission.findMany({ select: { id: true, key: true, module: true } });
 
+  // Owner: full sync every time.
   await prisma.rolePermission.deleteMany({ where: { roleId: owner.id } });
   await prisma.rolePermission.createMany({
     data: allPermissions.map((p) => ({ roleId: owner.id, permissionId: p.id })),
     skipDuplicates: true,
   });
 
-  const adminManagerSet = allPermissions.filter(
-    (p) => ADMIN_MANAGER_MODULES.has(p.module) || ADMIN_MANAGER_EXTRA_KEYS.has(p.key),
-  );
-  await prisma.rolePermission.deleteMany({ where: { roleId: adminManager.id } });
-  await prisma.rolePermission.createMany({
-    data: adminManagerSet.map((p) => ({ roleId: adminManager.id, permissionId: p.id })),
-    skipDuplicates: true,
+  // Admin Manager: seed the operational preset only when this run is
+  // the one that created the role record. Never on re-seed.
+  const adminManagerCreatedNow = !existedBeforeSeed.has('admin_manager');
+  if (adminManagerCreatedNow) {
+    const adminManagerSet = allPermissions.filter((p) =>
+      ADMIN_MANAGER_PRESET_KEYS.has(p.key),
+    );
+    await prisma.rolePermission.createMany({
+      data: adminManagerSet.map((p) => ({ roleId: adminManager.id, permissionId: p.id })),
+      skipDuplicates: true,
+    });
+  }
+  const adminManagerBindingsCount = await prisma.rolePermission.count({
+    where: { roleId: adminManager.id },
   });
+
+  // Regular Manager: intentionally empty on a fresh environment; no
+  // preset ever gets applied. If an operator has added permissions
+  // through the UI, leave them alone.
 
   console.log(
     `Seeded roles: owner, admin_manager, regular_manager; permissions: ${allPermissions.length}; ` +
-      `Owner-bindings: ${allPermissions.length}; Admin-Manager-bindings: ${adminManagerSet.length}.`,
+      `Owner-bindings: ${allPermissions.length}; ` +
+      `Admin-Manager-bindings: ${adminManagerBindingsCount}` +
+      `${adminManagerCreatedNow ? ' (fresh preset applied)' : ' (preserved — role existed before this seed)'}.`,
   );
 
   // 4. AuditLog catch-up. Records `role.create` exactly once per
@@ -300,7 +383,6 @@ async function main() {
     update: {
       firstName: 'Dmytro',
       lastName: 'Sarafaniuk',
-      role: UserRole.ADMIN,
       roleId: ownerId,
     },
     create: {
@@ -308,7 +390,6 @@ async function main() {
       passwordHash,
       firstName: 'Dmytro',
       lastName: 'Sarafaniuk',
-      role: UserRole.ADMIN,
       roleId: ownerId,
     },
   });
@@ -318,7 +399,6 @@ async function main() {
     update: {
       firstName: 'Test',
       lastName: 'Manager',
-      role: UserRole.MANAGER,
       roleId: adminManagerId,
     },
     create: {
@@ -326,7 +406,6 @@ async function main() {
       passwordHash,
       firstName: 'Test',
       lastName: 'Manager',
-      role: UserRole.MANAGER,
       roleId: adminManagerId,
     },
   });

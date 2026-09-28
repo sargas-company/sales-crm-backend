@@ -29,9 +29,12 @@ import {
 import { memoryStorage } from 'multer';
 
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { PermissionGuard } from '../auth/permission.guard';
+import { RequirePermission } from '../auth/permission.decorator';
 import { IncomingFileData } from '../storage';
 import { ClientRequestsService } from './client-requests.service';
 import { CreateClientRequestDto } from './dto/create-client-request.dto';
+import { ListClientRequestsDto } from './dto/list-client-requests.dto';
 import { UpdateClientRequestDto } from './dto/update-client-request.dto';
 
 const MAX_FILES = 20;
@@ -76,18 +79,20 @@ export class ClientRequestsController {
 
   @Get('client-requests')
   @ApiBearerAuth('jwt')
-  @UseGuards(JwtAuthGuard)
-  @ApiOperation({ summary: 'Get paginated client requests' })
-  @ApiQuery({ name: 'page', required: false, example: 1 })
-  @ApiQuery({ name: 'limit', required: false, example: 10 })
-  @ApiResponse({ status: 200, description: 'Paginated list ordered by date desc' })
-  findAll(@Query('page') page = 1, @Query('limit') limit = 10) {
-    return this.service.findAll(Number(page), Number(limit));
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('client_requests:view')
+  @ApiOperation({
+    summary: 'Get paginated / searched / sorted client requests',
+  })
+  @ApiResponse({ status: 200, description: 'Paginated list' })
+  findAll(@Query() dto: ListClientRequestsDto) {
+    return this.service.findAll(dto);
   }
 
   @Get('client-requests/:id')
   @ApiBearerAuth('jwt')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('client_requests:view')
   @ApiOperation({ summary: 'Get a client request by ID' })
   @ApiResponse({ status: 200, description: 'Client request' })
   @ApiResponse({ status: 404, description: 'Not found' })
@@ -97,7 +102,8 @@ export class ClientRequestsController {
 
   @Patch('client-requests/:id')
   @ApiBearerAuth('jwt')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('client_requests:update')
   @ApiOperation({ summary: 'Update a client request' })
   @ApiResponse({ status: 200, description: 'Updated client request' })
   @ApiResponse({ status: 404, description: 'Not found' })
@@ -107,7 +113,8 @@ export class ClientRequestsController {
 
   @Delete('client-requests/:id')
   @ApiBearerAuth('jwt')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('client_requests:delete')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Delete a client request' })
   @ApiResponse({ status: 204, description: 'Deleted' })
@@ -118,7 +125,8 @@ export class ClientRequestsController {
 
   @Get('client-requests/:id/files')
   @ApiBearerAuth('jwt')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('client_requests:view')
   @ApiOperation({ summary: 'Get temporary download URLs for all attached files (1h expiry)' })
   @ApiResponse({ status: 200, description: 'Array of { originalName, url, mimetype, size }' })
   @ApiResponse({ status: 404, description: 'Client request not found' })

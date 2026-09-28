@@ -10,7 +10,11 @@ import { Prisma, ProposalSource, ProposalType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ConvertToProposalDto } from './dto/convert-to-proposal.dto';
 import { JobPostStatsDto } from './dto/job-post-stats.dto';
-import { JobPostSortBy, ListJobPostsDto } from './dto/list-job-posts.dto';
+import {
+  JobPostSortBy,
+  JobPostSortDirection,
+  ListJobPostsDto,
+} from './dto/list-job-posts.dto';
 
 const JOB_POST_SELECT = {
   id: true,
@@ -48,6 +52,8 @@ export class JobPostService {
       minScore,
       maxScore,
       sortBy,
+      sortDirection = JobPostSortDirection.desc,
+      search,
       status = 'PROCESSED',
       limit = 20,
       offset = 0,
@@ -71,6 +77,9 @@ export class JobPostService {
       ...(Object.keys(matchScoreFilter).length
         ? { matchScore: matchScoreFilter }
         : {}),
+      ...(search
+        ? { title: { contains: search, mode: 'insensitive' } }
+        : {}),
       ...(createdFrom || createdTo
         ? {
             createdAt: {
@@ -81,9 +90,7 @@ export class JobPostService {
         : {}),
     };
 
-    const orderBy: Prisma.JobPostOrderByWithRelationInput = sortByScore
-      ? { matchScore: 'desc' }
-      : { createdAt: 'desc' };
+    const orderBy = this.buildOrderBy(sortBy, sortDirection);
 
     const [data, total] = await Promise.all([
       this.prisma.jobPost.findMany({
@@ -99,6 +106,40 @@ export class JobPostService {
     this.logger.log(`findAll: returned ${data.length} of ${total}`);
 
     return { data, meta: { total, limit, offset } };
+  }
+
+  private buildOrderBy(
+    sortBy: JobPostSortBy | undefined,
+    sortDirection: JobPostSortDirection,
+  ): Prisma.JobPostOrderByWithRelationInput {
+    const dir: Prisma.SortOrder = sortDirection;
+    switch (sortBy) {
+      case JobPostSortBy.matchScore:
+        // matchScore-null rows are already excluded from the WHERE clause
+        // when sorting by score, so plain direction is enough here.
+        return { matchScore: dir };
+      case JobPostSortBy.title:
+        return { title: { sort: dir, nulls: 'last' } };
+      case JobPostSortBy.status:
+        return { status: dir };
+      case JobPostSortBy.budget:
+        return { budget: { sort: dir, nulls: 'last' } };
+      case JobPostSortBy.location:
+        return { location: { sort: dir, nulls: 'last' } };
+      case JobPostSortBy.totalSpent:
+        return { totalSpent: { sort: dir, nulls: 'last' } };
+      case JobPostSortBy.avgRatePaid:
+        return { avgRatePaid: { sort: dir, nulls: 'last' } };
+      case JobPostSortBy.hireRate:
+        return { hireRate: { sort: dir, nulls: 'last' } };
+      case JobPostSortBy.scanner:
+        return { scanner: { sort: dir, nulls: 'last' } };
+      case JobPostSortBy.processedAt:
+        return { processedAt: { sort: dir, nulls: 'last' } };
+      case JobPostSortBy.createdAt:
+      default:
+        return { createdAt: dir };
+    }
   }
 
   async getStats(dto: JobPostStatsDto) {

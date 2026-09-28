@@ -4,6 +4,11 @@ import { LeadStatus, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateLeadDto } from './dto/create-lead.dto';
+import {
+  LeadSortBy,
+  LeadSortDirection,
+  ListLeadsDto,
+} from './dto/list-leads.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
 
 @Injectable()
@@ -32,20 +37,62 @@ export class LeadService {
     });
   }
 
-  async findAll(page: number, limit: number) {
+  async findAll(dto: ListLeadsDto) {
+    const page = dto.page ?? 1;
+    const limit = dto.limit ?? 10;
     const offset = (page - 1) * limit;
+    const dir: Prisma.SortOrder =
+      dto.sortDirection ?? LeadSortDirection.desc;
+
+    const where: Prisma.LeadWhereInput = dto.search
+      ? {
+          OR: [
+            { firstName: { contains: dto.search, mode: 'insensitive' } },
+            { lastName: { contains: dto.search, mode: 'insensitive' } },
+            { companyName: { contains: dto.search, mode: 'insensitive' } },
+          ],
+        }
+      : {};
+
+    const orderBy = this.buildOrderBy(dto.sortBy, dir);
 
     const [data, total] = await Promise.all([
       this.prisma.lead.findMany({
-        orderBy: { createdAt: 'desc' },
+        where,
+        orderBy,
         skip: offset,
         take: limit,
         include: { proposal: { select: { id: true, title: true } } },
       }),
-      this.prisma.lead.count(),
+      this.prisma.lead.count({ where }),
     ]);
 
     return { data, total };
+  }
+
+  private buildOrderBy(
+    sortBy: LeadSortBy | undefined,
+    dir: Prisma.SortOrder,
+  ): Prisma.LeadOrderByWithRelationInput {
+    switch (sortBy) {
+      case LeadSortBy.number:
+        return { number: dir };
+      case LeadSortBy.firstName:
+        return { firstName: { sort: dir, nulls: 'last' } };
+      case LeadSortBy.clientType:
+        return { clientType: { sort: dir, nulls: 'last' } };
+      case LeadSortBy.status:
+        return { status: dir };
+      case LeadSortBy.rate:
+        return { rate: { sort: dir, nulls: 'last' } };
+      case LeadSortBy.location:
+        return { location: { sort: dir, nulls: 'last' } };
+      case LeadSortBy.repliedAt:
+        return { repliedAt: dir };
+      case LeadSortBy.createdAt:
+      default:
+        return { createdAt: dir };
+    }
   }
 
   async findOne(id: string) {

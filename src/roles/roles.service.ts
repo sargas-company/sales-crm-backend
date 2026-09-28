@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -234,7 +235,7 @@ export class RolesService {
   }
 
   async assignRoleToUser(userId: string, roleId: string, actorId: string | null) {
-    const [user, role] = await Promise.all([
+    const [user, role, actor] = await Promise.all([
       this.prisma.user.findUnique({
         where: { id: userId },
         select: {
@@ -248,12 +249,25 @@ export class RolesService {
         where: { id: roleId },
         select: { id: true, name: true },
       }),
+      actorId
+        ? this.prisma.user.findUnique({
+            where: { id: actorId },
+            select: { id: true, roleRef: { select: { name: true } } },
+          })
+        : Promise.resolve(null),
     ]);
     if (!user) throw new NotFoundException('USER_NOT_FOUND');
     if (!role) throw new NotFoundException('ROLE_NOT_FOUND');
 
-    // Last-Owner protection (spec §6): if the current caller is the last
-    // Owner and is being moved away from the owner role → block.
+    // Only an Owner may grant the Owner role. Every other actor with
+    // `roles:assign` can move users between non-Owner roles but cannot
+    // escalate anyone (including themselves) to Owner (spec §6).
+    if (role.name === OWNER_SLUG && actor?.roleRef?.name !== OWNER_SLUG) {
+      throw new ForbiddenException('ONLY_OWNER_CAN_GRANT_OWNER');
+    }
+
+    // Last-Owner protection (spec §6): if the target user is currently the
+    // sole Owner and is being moved away from the owner role → block.
     if (user.roleRef?.name === OWNER_SLUG && role.name !== OWNER_SLUG) {
       const ownerCount = await this.prisma.user.count({
         where: { roleRef: { name: OWNER_SLUG } },

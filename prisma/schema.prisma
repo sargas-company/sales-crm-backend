@@ -16,10 +16,6 @@ model User {
   refreshTokenHash String?
   firstName        String
   lastName         String
-  // LEGACY: kept nullable during the migration window as a shadow of
-  // roleId; used only by the legacy RolesGuard (settings / telegram-auth)
-  // until Legacy Cleanup drops both the enum and the column.
-  role             UserRole?
   roleId           String?
   roleRef          Role?      @relation(fields: [roleId], references: [id])
   createdAt        DateTime   @default(now())
@@ -78,11 +74,6 @@ model AuditLog {
 }
 
 // ─── Enums ───────────────────────────────────────────────────────────────────
-
-enum UserRole {
-  ADMIN
-  MANAGER
-}
 
 enum ProposalStatus {
   Draft
