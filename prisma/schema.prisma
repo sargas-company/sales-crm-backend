@@ -126,6 +126,16 @@ enum PromptType {
   JOB_EVALUATION
 }
 
+// ─── Job-Post ingestion (Scanner Core) ───────────────────────────────────────
+
+enum JobPostIngestSource {
+  VIBE_WORKER
+}
+
+enum JobPostIngestStatus {
+  RECEIVED
+}
+
 // ─── Platform ────────────────────────────────────────────────────────────────
 
 model Platform {
@@ -234,11 +244,31 @@ model JobPost {
   hireRate         Float?
   hSkillsKeywords  String[]
 
-  proposal Proposal?
+  proposal     Proposal?
+  ingestEvents JobPostIngestEvent[]
 
   @@unique([chatId, messageId])
   @@index([status])
   @@index([decision])
+}
+
+model JobPostIngestEvent {
+  id             String              @id @default(uuid())
+  source         JobPostIngestSource
+  idempotencyKey String              @unique
+  payload        Json
+  status         JobPostIngestStatus @default(RECEIVED)
+  error          String?
+  attempts       Int                 @default(0)
+  receivedAt     DateTime            @default(now())
+  processedAt    DateTime?
+  jobPostId      String?
+
+  jobPost JobPost? @relation(fields: [jobPostId], references: [id], onDelete: SetNull)
+
+  @@index([source, receivedAt])
+  @@index([status])
+  @@index([jobPostId])
 }
 
 // ─── Lead ────────────────────────────────────────────────────────────────────

@@ -24,6 +24,8 @@ import { ProposalModule } from './proposal/proposal.module';
 import { PromptModule } from './prompt/prompt.module';
 import { AuditLogModule } from './audit/audit-log.module';
 import { RolesModule } from './roles/roles.module';
+import { VibeWorkerWebhookModule } from './webhooks/vibe-worker/vibe-worker.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 
 @Module({
   controllers: [HealthController],
@@ -48,6 +50,8 @@ import { RolesModule } from './roles/roles.module';
     CounterpartyModule,
     ClientCallsModule,
     SettingsModule,
+    VibeWorkerWebhookModule,
+    AnalyticsModule,
   ],
 })
 export class AppModule {}
