@@ -1,12 +1,10 @@
 generator client {
-  provider        = "prisma-client-js"
-  previewFeatures = ["postgresqlExtensions"]
+  provider = "prisma-client-js"
 }
 
 datasource db {
-  provider   = "postgresql"
-  url        = env("DATABASE_URL")
-  extensions = [vector]
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 // ─── Models ──────────────────────────────────────────────────────────────────
@@ -86,11 +84,6 @@ enum UserRole {
   MANAGER
 }
 
-enum MessageRole {
-  user
-  assistant
-}
-
 enum ProposalStatus {
   Draft
   Sent
@@ -131,15 +124,6 @@ enum JobPostPriority {
 enum PromptType {
   JOB_GATEKEEPER
   JOB_EVALUATION
-  CHAT_SYSTEM
-  CHAT_FALLBACK
-  CHAT_SUMMARY
-  CHAT_GATE
-  CHAT_SELECTOR
-  // deprecated — kept for DB compatibility, not used in code
-  CHAT_CLASSIFIER
-  KNOWLEDGE_TITLE_FILTER
-  KNOWLEDGE_CONTENT_FILTER
 }
 
 // ─── Platform ────────────────────────────────────────────────────────────────
@@ -189,7 +173,7 @@ enum ClientType {
   company
 }
 
-// ─── Proposal / Chat ─────────────────────────────────────────────────────────
+// ─── Proposal ────────────────────────────────────────────────────────────────
 
 model Proposal {
   id              String         @id @default(uuid())
@@ -214,7 +198,6 @@ model Proposal {
   user     User      @relation(fields: [userId], references: [id])
   account  Account?  @relation(fields: [accountId], references: [id])
   platform Platform? @relation(fields: [platformId], references: [id])
-  chat     Chat?
   lead     Lead?
   jobPost  JobPost?  @relation(fields: [jobPostId], references: [id])
 
@@ -258,126 +241,6 @@ model JobPost {
   @@index([decision])
 }
 
-model Chat {
-  id         String   @id @default(uuid())
-  proposalId String?  @unique
-  leadId     String?  @unique
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-
-  proposal  Proposal?     @relation(fields: [proposalId], references: [id])
-  lead      Lead?         @relation(fields: [leadId], references: [id])
-  messages  ChatMessage[]
-  summaries ChatSummary[]
-}
-
-model ChatMessage {
-  id        String            @id @default(uuid())
-  chatId    String
-  role      MessageRole
-  content   String
-  status    ChatMessageStatus @default(PREPARING_ATTACHMENTS)
-  decision  String?
-  reasoning String?
-  createdAt DateTime          @default(now())
-  updatedAt DateTime          @updatedAt
-
-  chat         Chat                 @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  attachments  MessageAttachment[]
-  translations MessageTranslation[]
-
-  @@index([chatId, createdAt])
-  @@index([status, updatedAt])
-}
-
-model MessageAttachment {
-  id                 String   @id @default(uuid())
-  messageId          String
-  fileName           String
-  mimeType           String?
-  fileUrl            String?
-  textRepresentation String?
-  status             MessageAttachmentStatus @default(PENDING)
-  error              String?
-  attempts           Int                     @default(0)
-  createdAt          DateTime                @default(now())
-  updatedAt          DateTime                @updatedAt
-
-  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
-
-  @@index([messageId])
-  @@index([status])
-  @@index([messageId, status])
-}
-
-enum MessageAttachmentStatus {
-  PENDING
-  PROCESSING
-  DONE
-  FAILED
-}
-
-enum ChatMessageStatus {
-  PREPARING_ATTACHMENTS
-  PARTIAL_READY
-  READY_FOR_AI
-  AI_PROCESSING
-  DONE
-  FAILED
-}
-
-enum TranslationLanguage {
-  RU
-  UK
-}
-
-enum TranslationProvider {
-  DEEPL
-}
-
-model MessageTranslation {
-  id                String              @id @default(uuid())
-
-  messageId         String
-  targetLanguage    TranslationLanguage
-
-  content String
-
-  sourceLanguage    String?
-  provider          TranslationProvider
-
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
-
-  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
-
-  @@unique([messageId, targetLanguage])
-  @@index([messageId])
-}
-
-model KnowledgeDocument {
-  id        String   @id @default(uuid())
-  title     String?
-  category  String
-  content   String
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([category])
-}
-
-
-model ChatSummary {
-  id        String   @id @default(uuid())
-  chatId    String   @unique
-  summary   String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
-}
-
 // ─── Lead ────────────────────────────────────────────────────────────────────
 
 model Lead {
@@ -398,7 +261,6 @@ model Lead {
   holdAt     DateTime?
 
   proposal    Proposal?    @relation(fields: [proposalId], references: [id], onDelete: SetNull)
-  chat        Chat?
   clientCalls ClientCall[]
 
   @@index([status])

@@ -246,7 +246,6 @@ export class JobPostService {
         boostedConnects: isBid && dto.boosted ? (dto.boostedConnects ?? 0) : 0,
         userId,
         jobPostId: jobPost.id,
-        chat: { create: {} },
       },
     });
   }

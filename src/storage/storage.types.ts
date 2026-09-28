@@ -2,7 +2,6 @@ export enum StorageBucket {
   INVOICES = 'INVOICES',
   CLIENT_REQUESTS = 'CLIENT_REQUESTS',
   DB_DUMPS = 'DB_DUMPS',
-  CHAT_ATTACHMENTS = 'CHAT_ATTACHMENTS',
 }
 
 export interface StorageUploadOptions {

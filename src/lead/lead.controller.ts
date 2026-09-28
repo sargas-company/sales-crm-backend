@@ -33,7 +33,7 @@ export class LeadController {
 
   @Post()
   @ApiOperation({ summary: 'Create a standalone lead (without proposal)' })
-  @ApiResponse({ status: 201, description: 'Lead created with a chat' })
+  @ApiResponse({ status: 201, description: 'Lead created' })
   create(@Body() dto: CreateLeadDto) {
     return this.leadService.create(dto);
   }
@@ -66,17 +66,6 @@ export class LeadController {
   @ApiResponse({ status: 404, description: 'Lead not found' })
   findOne(@Param('id') id: string) {
     return this.leadService.findOne(id);
-  }
-
-  @Get(':id/chat')
-  @ApiOperation({ summary: 'Get chat message history for a lead' })
-  @ApiResponse({
-    status: 200,
-    description: 'Chat messages ordered by date asc',
-  })
-  @ApiResponse({ status: 404, description: 'Lead not found' })
-  getMessages(@Param('id') id: string) {
-    return this.leadService.getMessages(id);
   }
 
   @Delete(':id')

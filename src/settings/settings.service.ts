@@ -65,8 +65,7 @@ export class SettingsService {
   async setSetting(key: string, raw: unknown) {
     const setting = await this.prisma.setting.findUnique({ where: { key } });
 
-    // TODO: replace isActive=false workaround with isInternal field on Setting model
-    if (!setting || (!setting.isActive && !this.isInternalKey(key)))
+    if (!setting || !setting.isActive)
       throw new NotFoundException(`Setting "${key}" not found`);
 
     const coerced = this.coerceAndValidate(setting, raw);
@@ -208,11 +207,6 @@ export class SettingsService {
   }
 
   // ─── Private helpers ─────────────────────────────────────────────────────────
-
-  // TODO: replace with isInternal field on Setting model
-  private isInternalKey(key: string): boolean {
-    return key === SettingKey.JOB_SCANNER_TELEGRAM_AUTH_HASH;
-  }
 
   private async findSettingWithValue(
     key: string,

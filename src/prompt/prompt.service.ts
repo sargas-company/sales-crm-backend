@@ -6,10 +6,6 @@ import {
 } from '@nestjs/common';
 import { PromptType } from '@prisma/client';
 
-import { CHAT_FALLBACK_PROMPT } from '../ai/prompts/chat-fallback.prompt';
-import { CHAT_GATE_PROMPT } from '../ai/prompts/chat-gate.prompt';
-import { CHAT_SELECTOR_PROMPT } from '../ai/prompts/chat-selector.prompt';
-import { CHAT_SUMMARY_PROMPT } from '../ai/prompts/chat-summary.prompt';
 import { JOB_EVALUATION_PROMPT } from '../ai/prompts/job-evaluation.prompt';
 import { JOB_GATEKEEPER_PROMPT } from '../ai/prompts/job-gatekeeper.prompt';
 import { PrismaService } from '../prisma/prisma.service';
@@ -41,35 +37,6 @@ export class PromptService {
     this.cache.set(key, { value, expiresAt: Date.now() + this.CACHE_TTL });
   }
 
-  async getChatPrompt(): Promise<string> {
-    const cached = this.cacheGet<string>('prompt:chat');
-    if (cached) return cached;
-
-    try {
-      const system = await this.prisma.prompt.findFirst({
-        where: { type: PromptType.CHAT_SYSTEM, isActive: true },
-        orderBy: { createdAt: 'desc' },
-      });
-      if (system) {
-        this.cacheSet('prompt:chat', system.content);
-        return system.content;
-      }
-
-      const fallback = await this.prisma.prompt.findFirst({
-        where: { type: PromptType.CHAT_FALLBACK, isActive: true },
-        orderBy: { createdAt: 'desc' },
-      });
-      const value = fallback?.content ?? CHAT_FALLBACK_PROMPT;
-      this.cacheSet('prompt:chat', value);
-      return value;
-    } catch (error) {
-      this.logger.error('Failed to fetch prompt for type CHAT', error.stack);
-      this.logger.warn('Using fallback chat prompt');
-      this.cacheSet('prompt:chat', CHAT_FALLBACK_PROMPT);
-      return CHAT_FALLBACK_PROMPT;
-    }
-  }
-
   getGatekeeperPrompt(): Promise<string> {
     return this.getActiveOrFallback(
       PromptType.JOB_GATEKEEPER,
@@ -82,18 +49,6 @@ export class PromptService {
       PromptType.JOB_EVALUATION,
       JOB_EVALUATION_PROMPT,
     );
-  }
-
-  getSummaryPrompt(): Promise<string> {
-    return this.getActiveOrFallback(PromptType.CHAT_SUMMARY, CHAT_SUMMARY_PROMPT);
-  }
-
-  getGatePrompt(): Promise<string> {
-    return this.getActiveOrFallback(PromptType.CHAT_GATE, CHAT_GATE_PROMPT);
-  }
-
-  getSelectorPrompt(): Promise<string> {
-    return this.getActiveOrFallback(PromptType.CHAT_SELECTOR, CHAT_SELECTOR_PROMPT);
   }
 
   getPromptById(id: string) {

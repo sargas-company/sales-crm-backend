@@ -12,7 +12,6 @@ const PROPOSAL_INCLUDE = {
   user: { select: USER_SELECT },
   account: { include: { platform: true } },
   platform: true,
-  chat: true,
   lead: { select: { id: true } },
 } as const;
 
@@ -39,7 +38,6 @@ export class ProposalService {
         coverLetter: dto.coverLetter,
         vacancy: dto.vacancy,
         userId,
-        chat: { create: {} },
       },
       include: PROPOSAL_INCLUDE,
     });
@@ -101,91 +99,6 @@ export class ProposalService {
 
   async remove(id: string) {
     await this.findOne(id);
-    return this.prisma.$transaction(async (tx) => {
-      const chat = await tx.chat.findUnique({ where: { proposalId: id } });
-      if (chat) {
-        if (!chat.leadId) {
-          await tx.chat.delete({ where: { id: chat.id } });
-        } else {
-          await tx.chat.update({
-            where: { id: chat.id },
-            data: { proposalId: null },
-          });
-        }
-      }
-      return tx.proposal.delete({ where: { id } });
-    });
-  }
-
-  async getMessages(proposalId: string) {
-    const proposal = await this.prisma.proposal.findUnique({
-      where: { id: proposalId },
-      include: {
-        jobPost: true,
-        platform: true,
-        lead: {
-          select: {
-            firstName: true,
-            lastName: true,
-            companyName: true,
-            status: true,
-            clientType: true,
-            location: true,
-          },
-        },
-      },
-    });
-    if (!proposal) throw new NotFoundException('Proposal not found');
-
-    const chat = await this.prisma.chat.findUnique({ where: { proposalId } });
-    const messages = chat
-      ? await this.prisma.chatMessage.findMany({
-          where: { chatId: chat.id },
-          orderBy: { createdAt: 'asc' },
-        })
-      : [];
-
-    const { jobPost, platform, lead, ...proposalFields } = proposal;
-
-    return {
-      messages,
-      context: {
-        proposal: {
-          title: proposalFields.title,
-          status: proposalFields.status,
-          proposalType: proposalFields.proposalType,
-          boosted: proposalFields.boosted,
-          connects: proposalFields.connects,
-          boostedConnects: proposalFields.boostedConnects,
-          platform: platform ? { id: platform.id, name: platform.title } : null,
-          vacancy: proposalFields.vacancy,
-          coverLetter: proposalFields.coverLetter,
-        },
-        jobPost: jobPost
-          ? {
-              title: jobPost.title,
-              description: jobPost.rawText,
-              score: jobPost.matchScore,
-              gigRadarScore: jobPost.gigRadarScore,
-              budget: jobPost.budget,
-              source: jobPost.scanner,
-              totalSpent: jobPost.totalSpent,
-              avgRatePaid: jobPost.avgRatePaid,
-              hireRate: jobPost.hireRate,
-              location: jobPost.location,
-              aiResponse: jobPost.aiResponse,
-            }
-          : null,
-        lead: lead
-          ? {
-              name: [lead.firstName, lead.lastName].filter(Boolean).join(' '),
-              companyName: lead.companyName,
-              status: lead.status,
-              clientType: lead.clientType,
-              location: lead.location,
-            }
-          : null,
-      },
-    };
+    return this.prisma.proposal.delete({ where: { id } });
   }
 }

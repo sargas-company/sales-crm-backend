@@ -4,7 +4,6 @@ import * as path from 'path';
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
-import { IoAdapter } from '@nestjs/platform-socket.io';
 import * as dotenv from 'dotenv';
 dotenv.config({ override: true });
 
@@ -15,7 +14,6 @@ import { setupSwagger } from './common/utils/swagger-setup';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   app.useStaticAssets(path.join(process.cwd(), 'uploads'), { prefix: '/uploads' });
-  app.useWebSocketAdapter(new IoAdapter(app));
 
   const allowedOrigins = [
     process.env.CORS_ORIGIN_1 ?? 'http://localhost:5173',
@@ -49,11 +47,5 @@ async function bootstrap() {
 
   await app.listen(process.env.API_PORT ?? 3000);
 }
-
-// gramjs throws TIMEOUT as an unhandled rejection during MTProto keepalive — safe to ignore
-process.on('unhandledRejection', (reason) => {
-  if (reason instanceof Error && reason.message === 'TIMEOUT') return;
-  throw reason;
-});
 
 void bootstrap();

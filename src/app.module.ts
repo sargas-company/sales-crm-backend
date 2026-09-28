@@ -15,17 +15,13 @@ import { ClientRequestsModule } from './client-requests/client-requests.module';
 import { CounterpartyModule } from './counterparty/counterparty.module';
 import { InvoiceModule } from './invoice/invoice.module';
 import { SettingsModule } from './settings/settings.module';
-import { TranslationModule } from './translation/translation.module';
 import { PlatformModule } from './platform/platform.module';
 import { AnthropicModule } from './anthropic/anthropic.module';
-import { ChatModule } from './chat/chat.module';
-import { KnowledgeModule } from './knowledge/knowledge.module';
 import { JobPostModule } from './job-post/job-post.module';
 import { LeadModule } from './lead/lead.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProposalModule } from './proposal/proposal.module';
 import { PromptModule } from './prompt/prompt.module';
-import { TelegramModule } from './telegram/telegram.module';
 import { AuditLogModule } from './audit/audit-log.module';
 import { RolesModule } from './roles/roles.module';
 
@@ -44,18 +40,14 @@ import { RolesModule } from './roles/roles.module';
     PlatformModule,
     AccountModule,
     ProposalModule,
-    ChatModule,
-    KnowledgeModule,
     PromptModule,
     LeadModule,
     JobPostModule,
-    TelegramModule,
     ClientRequestsModule,
     InvoiceModule,
     CounterpartyModule,
     ClientCallsModule,
     SettingsModule,
-    TranslationModule,
   ],
 })
 export class AppModule {}
