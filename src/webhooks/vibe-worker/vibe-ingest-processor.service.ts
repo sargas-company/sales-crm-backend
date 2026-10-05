@@ -72,13 +72,21 @@ export class VibeIngestProcessorService {
     });
   }
 
-  /** Walks every RECEIVED event in order. Called on boot. */
+  /**
+   * Walks every RECEIVED event in order. Driven by
+   * `VibeIngestScheduler.inboxDrainTick` every 30s.
+   */
   async drainReceived(): Promise<number> {
-    const analysisDisabled = !(await this.settings.getBooleanForKey(
+    const analysisEnabled = await this.settings.getBooleanForKey(
       SK.SCANNER_ANALYSIS_ENABLED,
       true,
-    ));
-    if (analysisDisabled) return 0;
+    );
+    if (!analysisEnabled) {
+      this.logger.log(
+        'drainReceived: skipped (scanner.analysisEnabled=false — events stay RECEIVED until re-enabled)',
+      );
+      return 0;
+    }
 
     const rows = await this.prisma.jobPostIngestEvent.findMany({
       where: { status: JobPostIngestStatus.RECEIVED },
@@ -86,6 +94,7 @@ export class VibeIngestProcessorService {
       select: { id: true, payload: true },
       take: 500,
     });
+    this.logger.log(`drainReceived: found ${rows.length} RECEIVED event(s)`);
     let processed = 0;
     for (const row of rows) {
       try {
