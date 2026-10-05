@@ -65,22 +65,44 @@ export class JobPostProcessorService implements OnModuleInit, OnModuleDestroy {
 
   private async process(job: Job) {
     if (job.name !== JOB_POST_PROCESS) return;
-
     const { jobPostId } = job.data as { jobPostId: string };
+    await this.processJobPost(jobPostId, {
+      attempt: job.attemptsMade,
+      maxAttempts: job.opts.attempts ?? 1,
+    });
+  }
 
+  /**
+   * Business logic lifted out of the BullMQ shim so it can be driven
+   * from tests without a Redis-backed Job. Pipeline:
+   *
+   *   NEW → PROCESSING
+   *   → scanner.analysisEnabled kill-switch
+   *   → gatekeeper (fit? reason)
+   *     ├─ fit=false → PROCESSED, decision=decline, matchScore=0,
+   *     │              priority=low, aiResponse={gatekeeper:{...}}
+   *     │              → NO full evaluate, NO notification.
+   *     └─ fit=true  → full evaluate → PROCESSED, decision/
+   *                    matchScore/priority/aiResponse, notification
+   *                    on approve|maybe (existing path).
+   *
+   * Any throw (gatekeeper or evaluator) rolls the status back to NEW
+   * for retry; the FAILED terminal state is only reached on the last
+   * BullMQ attempt. Errors are NOT masked as decline.
+   */
+  async processJobPost(
+    jobPostId: string,
+    options: { attempt: number; maxAttempts: number },
+  ): Promise<void> {
     const { count } = await this.prisma.jobPost.updateMany({
       where: { id: jobPostId, status: 'NEW' },
       data: { status: 'PROCESSING' },
     });
-
     if (count === 0) {
       this.logger.warn(`JobPost ${jobPostId} already taken, skipping`);
       return;
     }
 
-    // Settings kill-switch: if analysis is paused, roll the status
-    // back to NEW so the row stays in the queue for later and nothing
-    // runs through the AI.
     const analysisEnabled = await this.settings.getBooleanForKey(
       SK.SCANNER_ANALYSIS_ENABLED,
       true,
@@ -104,6 +126,29 @@ export class JobPostProcessorService implements OnModuleInit, OnModuleDestroy {
         select: { rawText: true },
       });
 
+      // ── Gatekeeper gate: a cheap pre-filter the AI evaluator does
+      //    NOT need to run for obvious rejects. Business rules live
+      //    in JOB_GATEKEEPER_PROMPT, not inline here.
+      const gate = await this.aiEvaluator.gate(jobPost!.rawText);
+      if (!gate.fit) {
+        await this.prisma.jobPost.update({
+          where: { id: jobPostId },
+          data: {
+            decision: 'decline',
+            matchScore: 0,
+            priority: 'low',
+            aiResponse: { gatekeeper: { fit: false, reason: gate.reason } },
+            status: 'PROCESSED',
+            processedAt: new Date(),
+          },
+        });
+        this.logger.log(
+          `Gatekeeper declined jobPost: ${jobPostId} — ${gate.reason}`,
+        );
+        return;
+      }
+
+      // ── Fit → full evaluation.
       const result = await this.aiEvaluator.evaluate(jobPost!.rawText);
 
       const processed = await this.prisma.jobPost.update({
@@ -112,7 +157,10 @@ export class JobPostProcessorService implements OnModuleInit, OnModuleDestroy {
           decision: result.decision,
           matchScore: result.matchScore,
           priority: result.priority,
-          aiResponse: result.aiResponse,
+          aiResponse: {
+            gatekeeper: { fit: true, reason: gate.reason },
+            evaluation: result.aiResponse,
+          },
           status: 'PROCESSED',
           processedAt: new Date(),
         },
@@ -146,13 +194,11 @@ export class JobPostProcessorService implements OnModuleInit, OnModuleDestroy {
         `Processed jobPost: ${jobPostId} → ${result.decision} (${result.matchScore})`,
       );
     } catch (err) {
-      const isLastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
-
+      const isLastAttempt = options.attempt + 1 >= options.maxAttempts;
       await this.prisma.jobPost.update({
         where: { id: jobPostId },
         data: { status: isLastAttempt ? 'FAILED' : 'NEW' },
       });
-
       throw err;
     }
   }

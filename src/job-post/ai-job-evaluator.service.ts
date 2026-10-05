@@ -103,11 +103,11 @@ export class AiJobEvaluatorService {
     return result;
   }
 
-  async gate(text: string): Promise<{ fit: boolean }> {
+  async gate(text: string): Promise<GateResult> {
     const system = await this.promptService.getGatekeeperPrompt();
     const response = await this.anthropicService.client.messages.create({
       model: CLAUDE_MODEL,
-      max_tokens: 64,
+      max_tokens: 256,
       system,
       messages: [{ role: 'user', content: text }],
     });
@@ -121,32 +121,64 @@ export class AiJobEvaluatorService {
       .trim();
 
     this.logger.debug(`Gatekeeper raw: ${raw}`);
-
-    const jsonMatch = raw.match(/\{[^}]*\}/);
-    if (!jsonMatch) {
-      this.logger.warn(
-        `Gatekeeper no JSON found, defaulting fit=true: ${raw.slice(0, 100)}`,
-      );
-      return { fit: true };
-    }
-
-    let parsed: { fit?: unknown };
-    try {
-      parsed = JSON.parse(jsonMatch[0]);
-    } catch {
-      this.logger.warn(
-        `Gatekeeper invalid JSON, defaulting fit=true: ${jsonMatch[0]}`,
-      );
-      return { fit: true };
-    }
-
-    const fit = parsed.fit !== false;
-
     const { usage } = response;
+    const result = parseGatekeeperResponse(raw);
     this.logger.log(
-      `Gatekeeper: fit=${fit} | tokens in=${usage.input_tokens} out=${usage.output_tokens}`,
+      `Gatekeeper: fit=${result.fit} reason="${result.reason}" | tokens in=${usage.input_tokens} out=${usage.output_tokens}`,
     );
-
-    return { fit };
+    return result;
   }
+}
+
+export interface GateResult {
+  fit: boolean;
+  reason: string;
+}
+
+export class GatekeeperResponseError extends Error {
+  constructor(reason: string, public readonly raw: string) {
+    super(`Gatekeeper response invalid: ${reason}`);
+    this.name = 'GatekeeperResponseError';
+  }
+}
+
+/**
+ * Pure parser separated so it can be unit-tested without an Anthropic
+ * stub. Throws `GatekeeperResponseError` on any malformed response.
+ * We intentionally do NOT fail open: a bad model reply reaches the
+ * processor's existing retry path (status rolls back to NEW on a
+ * non-last attempt, FAILED on the last one) so a transient hiccup
+ * does not silently flip into `fit=true`.
+ */
+export function parseGatekeeperResponse(raw: string): GateResult {
+  const sample = sanitise(raw);
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new GatekeeperResponseError('no JSON object found', sample);
+  }
+  let parsed: { fit?: unknown; reason?: unknown };
+  try {
+    parsed = JSON.parse(jsonMatch[0]);
+  } catch {
+    throw new GatekeeperResponseError('invalid JSON', sample);
+  }
+  if (typeof parsed.fit !== 'boolean') {
+    throw new GatekeeperResponseError('fit is missing or not boolean', sample);
+  }
+  if (typeof parsed.reason !== 'string') {
+    throw new GatekeeperResponseError('reason is missing or not string', sample);
+  }
+  const trimmed = parsed.reason.trim();
+  if (trimmed.length === 0) {
+    throw new GatekeeperResponseError('reason is empty', sample);
+  }
+  return { fit: parsed.fit, reason: trimmed.slice(0, 200) };
+}
+
+/**
+ * Trim and length-cap the raw text so it can safely land in logs or
+ * attached to an exception without ballooning payloads.
+ */
+function sanitise(raw: string): string {
+  return raw.replace(/\s+/g, ' ').trim().slice(0, 300);
 }
