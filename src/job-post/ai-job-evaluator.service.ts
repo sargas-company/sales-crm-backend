@@ -110,19 +110,26 @@ export class AiJobEvaluatorService {
       max_tokens: 256,
       system,
       messages: [{ role: 'user', content: text }],
+      // Forced tool_use is Anthropic's structured-output mechanism:
+      // the API validates the model's output against `input_schema`
+      // and will not return a tool_use block whose `input` violates
+      // the schema. We never parse freeform text for the gatekeeper
+      // decision any more.
+      tools: [GATEKEEPER_TOOL],
+      tool_choice: { type: 'tool', name: GATEKEEPER_TOOL.name },
     });
 
-    const raw = response.content
-      .filter((c): c is Anthropic.TextBlock => c.type === 'text')
-      .map((c) => c.text)
-      .join('')
-      .replace(/```json/g, '')
-      .replace(/```/g, '')
-      .trim();
-
-    this.logger.debug(`Gatekeeper raw: ${raw}`);
+    const toolUse = response.content.find(
+      (c): c is Anthropic.ToolUseBlock => c.type === 'tool_use',
+    );
+    if (!toolUse) {
+      throw new GatekeeperResponseError(
+        'no tool_use block returned',
+        sanitise(JSON.stringify(response.content ?? '')),
+      );
+    }
     const { usage } = response;
-    const result = parseGatekeeperResponse(raw);
+    const result = parseGatekeeperInput(toolUse.input);
     this.logger.log(
       `Gatekeeper: fit=${result.fit} reason="${result.reason}" | tokens in=${usage.input_tokens} out=${usage.output_tokens}`,
     );
@@ -135,6 +142,39 @@ export interface GateResult {
   reason: string;
 }
 
+/**
+ * The schema the Anthropic API uses to validate the gatekeeper's
+ * structured output. Both fields are required; `reason` is bounded
+ * at 1..200 characters so a vacuous empty string cannot slip
+ * through. `additionalProperties: false` keeps the surface tight so
+ * silent prompt drift (an extra "confidence", "notes" field) raises
+ * a server-side validation error that reaches our retry path.
+ */
+export const GATEKEEPER_TOOL: Anthropic.Tool = {
+  name: 'record_gatekeeper_decision',
+  description:
+    'Return the gatekeeper decision for the current job post. Must be called exactly once with both fit and a short non-empty reason.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      fit: {
+        type: 'boolean',
+        description:
+          'True if the post should proceed to full AI evaluation, false if it should be rejected at the gate.',
+      },
+      reason: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 200,
+        description:
+          'A short factual explanation (<= 200 chars) of the decision. Required for both fit=true and fit=false.',
+      },
+    },
+    required: ['fit', 'reason'],
+    additionalProperties: false,
+  },
+};
+
 export class GatekeeperResponseError extends Error {
   constructor(reason: string, public readonly raw: string) {
     super(`Gatekeeper response invalid: ${reason}`);
@@ -142,49 +182,46 @@ export class GatekeeperResponseError extends Error {
   }
 }
 
-/** Fallback when the model returns a decision but no usable reason. */
-export const GATEKEEPER_REASON_FALLBACK = 'No gatekeeper reason provided';
-
 /**
- * Pure parser separated so it can be unit-tested without an Anthropic
- * stub. Throws `GatekeeperResponseError` on a malformed response —
- * missing JSON, invalid JSON, or a `fit` that is missing / not a
- * boolean — so a bad model reply reaches the processor's existing
- * retry path (status rolls back to NEW on a non-last attempt, FAILED
- * on the last one) rather than silently flipping into `fit=true`.
- *
- * The `reason` field, by contrast, is treated as advisory metadata:
- * when it is missing, empty, or not a string we substitute
- * `GATEKEEPER_REASON_FALLBACK` and let the decision stand. The model
- * is prompted to always return it, but losing a one-line explanation
- * is not a reason to drop a valid gate decision on a backlogged
- * production pipeline.
+ * Pure parser for a `tool_use.input` payload produced by the forced
+ * `record_gatekeeper_decision` tool call. The Anthropic API already
+ * validates the shape against `GATEKEEPER_TOOL.input_schema`, but we
+ * still re-check at the application boundary so a hypothetical
+ * server-side regression or an upstream shim cannot leak an invalid
+ * decision into the pipeline. Throws `GatekeeperResponseError` on
+ * every violation — the processor's existing retry path (status
+ * rolls back to NEW on a non-last attempt, FAILED on the last) takes
+ * it from there. We intentionally do NOT fall back to a placeholder
+ * reason: an empty or missing reason is a protocol violation, not
+ * recoverable metadata loss.
  */
-export function parseGatekeeperResponse(raw: string): GateResult {
-  const sample = sanitise(raw);
-  const jsonMatch = raw.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    throw new GatekeeperResponseError('no JSON object found', sample);
+export function parseGatekeeperInput(raw: unknown): GateResult {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new GatekeeperResponseError(
+      'tool input is not an object',
+      sanitise(JSON.stringify(raw ?? '')),
+    );
   }
-  let parsed: { fit?: unknown; reason?: unknown };
-  try {
-    parsed = JSON.parse(jsonMatch[0]);
-  } catch {
-    throw new GatekeeperResponseError('invalid JSON', sample);
-  }
-  if (typeof parsed.fit !== 'boolean') {
+  const obj = raw as { fit?: unknown; reason?: unknown };
+  const sample = sanitise(JSON.stringify(obj));
+  if (typeof obj.fit !== 'boolean') {
     throw new GatekeeperResponseError('fit is missing or not boolean', sample);
   }
-  const reason =
-    typeof parsed.reason === 'string' && parsed.reason.trim().length > 0
-      ? parsed.reason.trim().slice(0, 200)
-      : GATEKEEPER_REASON_FALLBACK;
-  return { fit: parsed.fit, reason };
+  if (typeof obj.reason !== 'string') {
+    throw new GatekeeperResponseError('reason is missing or not string', sample);
+  }
+  const trimmed = obj.reason.trim();
+  if (trimmed.length === 0) {
+    throw new GatekeeperResponseError('reason is empty', sample);
+  }
+  // The schema already caps at 200, but a defensive slice protects
+  // against any upstream drift and matches historical behaviour.
+  return { fit: obj.fit, reason: trimmed.slice(0, 200) };
 }
 
 /**
- * Trim and length-cap the raw text so it can safely land in logs or
- * attached to an exception without ballooning payloads.
+ * Trim and length-cap the sampled payload so it can safely land in
+ * logs or attached to an exception without ballooning.
  */
 function sanitise(raw: string): string {
   return raw.replace(/\s+/g, ' ').trim().slice(0, 300);

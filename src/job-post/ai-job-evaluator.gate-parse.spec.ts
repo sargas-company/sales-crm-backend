@@ -1,105 +1,112 @@
 import { describe, expect, it } from '@jest/globals';
 import {
-  GATEKEEPER_REASON_FALLBACK,
+  GATEKEEPER_TOOL,
   GatekeeperResponseError,
-  parseGatekeeperResponse,
+  parseGatekeeperInput,
 } from './ai-job-evaluator.service';
 
-describe('parseGatekeeperResponse — well-formed responses', () => {
-  it('accepts a plain pass', () => {
-    const r = parseGatekeeperResponse('{"fit": true, "reason": "Node + Stripe"}');
+describe('GATEKEEPER_TOOL — schema contract', () => {
+  it('declares both fit and reason as required with the right shapes', () => {
+    const schema = GATEKEEPER_TOOL.input_schema as unknown as {
+      required: string[];
+      properties: {
+        fit: { type: string };
+        reason: { type: string; minLength: number; maxLength: number };
+      };
+      additionalProperties: boolean;
+    };
+    expect(schema.required).toEqual(expect.arrayContaining(['fit', 'reason']));
+    expect(schema.properties.fit.type).toBe('boolean');
+    expect(schema.properties.reason.type).toBe('string');
+    expect(schema.properties.reason.minLength).toBe(1);
+    expect(schema.properties.reason.maxLength).toBe(200);
+    expect(schema.additionalProperties).toBe(false);
+  });
+});
+
+describe('parseGatekeeperInput — valid structured output', () => {
+  it('accepts fit=true + non-empty reason', () => {
+    const r = parseGatekeeperInput({ fit: true, reason: 'Node + Stripe' });
     expect(r).toEqual({ fit: true, reason: 'Node + Stripe' });
   });
 
-  it('accepts a plain reject', () => {
-    const r = parseGatekeeperResponse(
-      '{"fit": false, "reason": "Shopify-only build"}',
-    );
+  it('accepts fit=false + non-empty reason', () => {
+    const r = parseGatekeeperInput({
+      fit: false,
+      reason: 'Shopify-only build',
+    });
     expect(r).toEqual({ fit: false, reason: 'Shopify-only build' });
   });
 
-  it('tolerates markdown fences and surrounding prose', () => {
-    const r = parseGatekeeperResponse(
-      'Here is my answer:\n```json\n{"fit": false, "reason": "WordPress-only"}\n```',
-    );
-    expect(r).toEqual({ fit: false, reason: 'WordPress-only' });
-  });
-
-  it('truncates an overly long reason to 200 chars', () => {
-    const longReason = 'x'.repeat(500);
-    const r = parseGatekeeperResponse(
-      `{"fit": false, "reason": "${longReason}"}`,
-    );
-    expect(r.reason.length).toBe(200);
-  });
-
-  it('trims whitespace in the reason', () => {
-    const r = parseGatekeeperResponse('{"fit": true, "reason": "   pass   "}');
+  it('trims surrounding whitespace in the reason', () => {
+    const r = parseGatekeeperInput({ fit: true, reason: '  pass  ' });
     expect(r.reason).toBe('pass');
   });
-});
 
-describe('parseGatekeeperResponse — reason-missing fallback (production hotfix)', () => {
-  it('{fit:true} with no reason → accepted with fallback', () => {
-    const r = parseGatekeeperResponse('{"fit": true}');
-    expect(r).toEqual({ fit: true, reason: GATEKEEPER_REASON_FALLBACK });
-  });
-
-  it('{fit:false} with no reason → accepted with fallback', () => {
-    const r = parseGatekeeperResponse('{"fit": false}');
-    expect(r).toEqual({ fit: false, reason: GATEKEEPER_REASON_FALLBACK });
-  });
-
-  it('empty / whitespace-only reason → fallback', () => {
-    const r = parseGatekeeperResponse('{"fit": true, "reason": "   "}');
-    expect(r.reason).toBe(GATEKEEPER_REASON_FALLBACK);
-  });
-
-  it('non-string reason → fallback (not thrown)', () => {
-    const r = parseGatekeeperResponse('{"fit": true, "reason": 123}');
-    expect(r.reason).toBe(GATEKEEPER_REASON_FALLBACK);
-    expect(r.fit).toBe(true);
-  });
-
-  it('null reason → fallback', () => {
-    const r = parseGatekeeperResponse('{"fit": false, "reason": null}');
-    expect(r).toEqual({ fit: false, reason: GATEKEEPER_REASON_FALLBACK });
+  it('defensively truncates a long reason (schema caps at 200)', () => {
+    const long = 'x'.repeat(500);
+    const r = parseGatekeeperInput({ fit: false, reason: long });
+    expect(r.reason.length).toBe(200);
   });
 });
 
-describe('parseGatekeeperResponse — still throws on real malformed responses', () => {
-  const expectThrows = (raw: string, matcher: RegExp) => {
-    expect(() => parseGatekeeperResponse(raw)).toThrow(GatekeeperResponseError);
-    expect(() => parseGatekeeperResponse(raw)).toThrow(matcher);
+describe('parseGatekeeperInput — throws GatekeeperResponseError', () => {
+  const expectThrows = (input: unknown, matcher: RegExp) => {
+    expect(() => parseGatekeeperInput(input)).toThrow(GatekeeperResponseError);
+    expect(() => parseGatekeeperInput(input)).toThrow(matcher);
   };
 
-  it('no JSON object at all → throws', () => {
-    expectThrows('this is not JSON', /no JSON object found/);
+  it('missing reason → throws', () => {
+    expectThrows({ fit: true }, /reason is missing or not string/);
   });
 
-  it('braces present but JSON invalid → throws', () => {
-    expectThrows('{"fit": tru}', /invalid JSON/);
+  it('empty reason → throws', () => {
+    expectThrows({ fit: true, reason: '' }, /reason is missing or not string|reason is empty/);
+  });
+
+  it('whitespace-only reason → throws', () => {
+    expectThrows({ fit: false, reason: '   ' }, /reason is empty/);
+  });
+
+  it('non-string reason → throws', () => {
+    expectThrows({ fit: true, reason: 123 }, /reason is missing or not string/);
+  });
+
+  it('null reason → throws', () => {
+    expectThrows({ fit: false, reason: null }, /reason is missing or not string/);
   });
 
   it('fit missing → throws', () => {
-    expectThrows('{"reason": "nope"}', /fit is missing or not boolean/);
+    expectThrows({ reason: 'ok' }, /fit is missing or not boolean/);
   });
 
-  it('fit is not boolean (string) → throws', () => {
-    expectThrows('{"fit": "true", "reason": "x"}', /fit is missing or not boolean/);
+  it('fit as string → throws', () => {
+    expectThrows({ fit: 'true', reason: 'ok' }, /fit is missing or not boolean/);
   });
 
-  it('fit is null → throws', () => {
-    expectThrows('{"fit": null, "reason": "x"}', /fit is missing or not boolean/);
+  it('fit as null → throws', () => {
+    expectThrows({ fit: null, reason: 'ok' }, /fit is missing or not boolean/);
   });
 
-  it('error carries a sanitised sample of the raw response', () => {
+  it('null input → throws (malformed structured payload)', () => {
+    expectThrows(null, /tool input is not an object/);
+  });
+
+  it('array input → throws (malformed structured payload)', () => {
+    expectThrows([{ fit: true, reason: 'ok' }], /tool input is not an object/);
+  });
+
+  it('string input → throws (malformed structured payload)', () => {
+    expectThrows('{"fit":true,"reason":"ok"}', /tool input is not an object/);
+  });
+
+  it('error carries a sanitised sample of the raw payload', () => {
     try {
-      parseGatekeeperResponse('completely-off-the-rails');
+      parseGatekeeperInput({ fit: 'oops' });
       throw new Error('should have thrown');
     } catch (err) {
       expect(err).toBeInstanceOf(GatekeeperResponseError);
-      expect((err as GatekeeperResponseError).raw).toBe('completely-off-the-rails');
+      expect((err as GatekeeperResponseError).raw).toContain('oops');
     }
   });
 });
