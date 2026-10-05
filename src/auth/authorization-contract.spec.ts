@@ -155,8 +155,7 @@ describe('Authorization contract', () => {
 
       if (isPublic) {
         // Must NOT have JWT or Permission or Roles guard on the
-        // handler chain (except VibeWorkerWebhookGuard, which is
-        // its own shared-secret guard, verified elsewhere).
+        // handler chain.
         if (r.hasJwtGuard || r.hasPermissionGuard) {
           violations.push(
             `${r.routeKey}: on PUBLIC allowlist but has JWT/Permission guard`,

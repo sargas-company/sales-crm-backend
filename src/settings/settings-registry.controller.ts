@@ -151,9 +151,11 @@ export class SettingsRegistryController {
 
     const discordConfigured =
       !!this.config.get<string>('DISCORD_WEBHOOK_URL');
-    const vibeConfigured = !!this.config.get<string>(
-      'VIBE_WORKER_WEBHOOK_SECRET',
-    );
+    // The Vibe Worker webhook is now public (its UI cannot send
+    // custom headers), so there is no secret to key "configured" on.
+    // We surface `scanner.ingestionEnabled` instead — that is the
+    // only switch that actually gates traffic into the endpoint.
+    const vibeConfigured = ingestionEnabled;
 
     return {
       scanner: {

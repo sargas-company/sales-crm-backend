@@ -5,11 +5,9 @@ import {
   HttpCode,
   HttpStatus,
   Post,
-  UseGuards,
 } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
 
-import { VibeWorkerWebhookGuard } from './vibe-worker.guard';
 import { VibeWorkerWebhookService } from './vibe-worker.service';
 
 const EVENT_ID_HEADER = 'x-vibe-worker-event-id';
@@ -21,8 +19,14 @@ const BODY_EVENT_ID_KEYS = ['event_id', 'eventId', 'id'] as const;
 export class VibeWorkerWebhookController {
   constructor(private readonly service: VibeWorkerWebhookService) {}
 
+  // No auth guard: the real Vibe Worker UI only configures a URL (no
+  // custom headers), so the shared-secret header check used to drop
+  // every real event. Protection against stray traffic now lives at
+  // two layers: Nginx can rate-limit the path, and the
+  // `scanner.ingestionEnabled` setting is a hard kill-switch inside
+  // `VibeWorkerWebhookService.captureJobPost`. The route is still
+  // in `PUBLIC_ALLOWLIST` in authorization-contract.spec.ts.
   @Post('job-post')
-  @UseGuards(VibeWorkerWebhookGuard)
   @HttpCode(HttpStatus.ACCEPTED)
   async captureJobPost(
     @Headers(EVENT_ID_HEADER) headerEventId: string | undefined,
