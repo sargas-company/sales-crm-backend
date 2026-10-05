@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@jest/globals';
 import {
+  GATEKEEPER_REASON_FALLBACK,
   GatekeeperResponseError,
   parseGatekeeperResponse,
 } from './ai-job-evaluator.service';
@@ -38,7 +39,35 @@ describe('parseGatekeeperResponse — well-formed responses', () => {
   });
 });
 
-describe('parseGatekeeperResponse — throws GatekeeperResponseError', () => {
+describe('parseGatekeeperResponse — reason-missing fallback (production hotfix)', () => {
+  it('{fit:true} with no reason → accepted with fallback', () => {
+    const r = parseGatekeeperResponse('{"fit": true}');
+    expect(r).toEqual({ fit: true, reason: GATEKEEPER_REASON_FALLBACK });
+  });
+
+  it('{fit:false} with no reason → accepted with fallback', () => {
+    const r = parseGatekeeperResponse('{"fit": false}');
+    expect(r).toEqual({ fit: false, reason: GATEKEEPER_REASON_FALLBACK });
+  });
+
+  it('empty / whitespace-only reason → fallback', () => {
+    const r = parseGatekeeperResponse('{"fit": true, "reason": "   "}');
+    expect(r.reason).toBe(GATEKEEPER_REASON_FALLBACK);
+  });
+
+  it('non-string reason → fallback (not thrown)', () => {
+    const r = parseGatekeeperResponse('{"fit": true, "reason": 123}');
+    expect(r.reason).toBe(GATEKEEPER_REASON_FALLBACK);
+    expect(r.fit).toBe(true);
+  });
+
+  it('null reason → fallback', () => {
+    const r = parseGatekeeperResponse('{"fit": false, "reason": null}');
+    expect(r).toEqual({ fit: false, reason: GATEKEEPER_REASON_FALLBACK });
+  });
+});
+
+describe('parseGatekeeperResponse — still throws on real malformed responses', () => {
   const expectThrows = (raw: string, matcher: RegExp) => {
     expect(() => parseGatekeeperResponse(raw)).toThrow(GatekeeperResponseError);
     expect(() => parseGatekeeperResponse(raw)).toThrow(matcher);
@@ -60,16 +89,8 @@ describe('parseGatekeeperResponse — throws GatekeeperResponseError', () => {
     expectThrows('{"fit": "true", "reason": "x"}', /fit is missing or not boolean/);
   });
 
-  it('reason missing → throws', () => {
-    expectThrows('{"fit": true}', /reason is missing or not string/);
-  });
-
-  it('reason is not a string → throws', () => {
-    expectThrows('{"fit": true, "reason": 123}', /reason is missing or not string/);
-  });
-
-  it('reason is empty / whitespace → throws', () => {
-    expectThrows('{"fit": true, "reason": "   "}', /reason is empty/);
+  it('fit is null → throws', () => {
+    expectThrows('{"fit": null, "reason": "x"}', /fit is missing or not boolean/);
   });
 
   it('error carries a sanitised sample of the raw response', () => {

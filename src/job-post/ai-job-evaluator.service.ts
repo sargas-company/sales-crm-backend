@@ -142,13 +142,23 @@ export class GatekeeperResponseError extends Error {
   }
 }
 
+/** Fallback when the model returns a decision but no usable reason. */
+export const GATEKEEPER_REASON_FALLBACK = 'No gatekeeper reason provided';
+
 /**
  * Pure parser separated so it can be unit-tested without an Anthropic
- * stub. Throws `GatekeeperResponseError` on any malformed response.
- * We intentionally do NOT fail open: a bad model reply reaches the
- * processor's existing retry path (status rolls back to NEW on a
- * non-last attempt, FAILED on the last one) so a transient hiccup
- * does not silently flip into `fit=true`.
+ * stub. Throws `GatekeeperResponseError` on a malformed response —
+ * missing JSON, invalid JSON, or a `fit` that is missing / not a
+ * boolean — so a bad model reply reaches the processor's existing
+ * retry path (status rolls back to NEW on a non-last attempt, FAILED
+ * on the last one) rather than silently flipping into `fit=true`.
+ *
+ * The `reason` field, by contrast, is treated as advisory metadata:
+ * when it is missing, empty, or not a string we substitute
+ * `GATEKEEPER_REASON_FALLBACK` and let the decision stand. The model
+ * is prompted to always return it, but losing a one-line explanation
+ * is not a reason to drop a valid gate decision on a backlogged
+ * production pipeline.
  */
 export function parseGatekeeperResponse(raw: string): GateResult {
   const sample = sanitise(raw);
@@ -165,14 +175,11 @@ export function parseGatekeeperResponse(raw: string): GateResult {
   if (typeof parsed.fit !== 'boolean') {
     throw new GatekeeperResponseError('fit is missing or not boolean', sample);
   }
-  if (typeof parsed.reason !== 'string') {
-    throw new GatekeeperResponseError('reason is missing or not string', sample);
-  }
-  const trimmed = parsed.reason.trim();
-  if (trimmed.length === 0) {
-    throw new GatekeeperResponseError('reason is empty', sample);
-  }
-  return { fit: parsed.fit, reason: trimmed.slice(0, 200) };
+  const reason =
+    typeof parsed.reason === 'string' && parsed.reason.trim().length > 0
+      ? parsed.reason.trim().slice(0, 200)
+      : GATEKEEPER_REASON_FALLBACK;
+  return { fit: parsed.fit, reason };
 }
 
 /**

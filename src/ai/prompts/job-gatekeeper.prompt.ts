@@ -5,7 +5,7 @@ Return ONLY valid JSON of EXACTLY this shape:
 or
 {"fit": false, "reason": "<short explanation under 200 characters>"}
 
-Always include "reason". It will be stored verbatim in aiResponse and shown to analysts.
+BOTH fields are REQUIRED on every response: "fit" (boolean) and "reason" (short non-empty string). Never omit "reason". It is stored verbatim in aiResponse and shown to analysts, and a missing or empty value forces downstream code to fall back to a generic placeholder instead of your actual judgement.
 
 ========================
 PASS (fit: true)
