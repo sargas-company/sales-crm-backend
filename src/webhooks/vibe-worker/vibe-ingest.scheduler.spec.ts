@@ -199,8 +199,9 @@ describe('inbox drain — tick-based processing', () => {
     expect(ev.status).toBe(JobPostIngestStatus.PROCESSED);
     const count = await prisma.jobPost.count({ where: { providerJobId: providerId } });
     expect(count).toBe(1);
-    expect(queue.calls).toHaveLength(1);
-    expect(queue.calls[0]).toBe(ev.jobPostId);
+    // Scoped to OUR jobPost — other suites running against the same DB
+    // may drop unrelated RECEIVED rows into this scheduler's drain.
+    expect(queue.calls.filter((id) => id === ev.jobPostId)).toHaveLength(1);
   });
 });
 

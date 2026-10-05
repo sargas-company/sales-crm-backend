@@ -15,30 +15,13 @@ import IORedis from 'ioredis';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { DiscordNotificationService } from './discord.service';
+import { JobPostDiscordNotifierService } from './job-post-discord-notifier.service';
 import {
   NOTIFICATION_QUEUE,
   NOTIFICATION_SEND,
-  SCORE_THRESHOLDS,
 } from './notification.constants';
 import { parseCallReminderPayload } from './schemas/call-reminder.payload';
 import { parseClientRequestPayload } from './schemas/client-request.payload';
-import { parseJobPostMatchPayload } from './schemas/job-post-match.payload';
-
-const DECISION_COLOR: Record<string, number> = {
-  approve: 0x57f287,
-  maybe: 0xfee75c,
-};
-
-const DECISION_LABEL: Record<string, string> = {
-  approve: '✅ approve',
-  maybe: '🤔 maybe',
-};
-
-const PRIORITY_LABEL: Record<string, string> = {
-  high: '🔴 high',
-  medium: '🟡 medium',
-  low: '🟢 low',
-};
 
 @Injectable()
 export class NotificationProcessorService
@@ -52,16 +35,20 @@ export class NotificationProcessorService
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly discord: DiscordNotificationService,
+    private readonly jobPostNotifier: JobPostDiscordNotifierService,
   ) {}
 
   onModuleInit() {
+    // Scanner Core (JOB_POST_MATCH) is now routed through the active
+    // DiscordProfile.salesChannelId via DiscordBotClient — the legacy
+    // webhook is only used for CALL_REMINDER / CLIENT_REQUEST paths.
+    // The worker must therefore start regardless of whether
+    // DISCORD_WEBHOOK_URL is set.
     const webhookUrl = this.config.get<string>('DISCORD_WEBHOOK_URL');
-
     if (!webhookUrl) {
       this.logger.warn(
-        'DISCORD_WEBHOOK_URL is not configured — notification worker disabled',
+        'DISCORD_WEBHOOK_URL is not configured — CALL_REMINDER / CLIENT_REQUEST will fail retryably until it is set. Scanner Core (JOB_POST_MATCH) continues to work via the active DiscordProfile.',
       );
-      return;
     }
 
     this.connection = new IORedis({
@@ -113,11 +100,33 @@ export class NotificationProcessorService
 
     this.logger.log(`Event loaded: ${eventId} [${event.type}]`);
 
-    const discordBody = this.buildDiscordBody(event.type, event.payload, eventId);
+    await this.deliverDiscord(event.type, event.payload, eventId);
+  }
 
-    if (!discordBody) return;
+  /**
+   * Route an event to the right Discord sender:
+   *   - JOB_POST_MATCH → active DiscordProfile.salesChannelId via
+   *     DiscordBotClient (Scanner Core path);
+   *   - CALL_REMINDER, CLIENT_REQUEST → legacy DISCORD_WEBHOOK_URL.
+   *
+   * Idempotency, retry and sent/failed bookkeeping are the same
+   * NotificationDelivery contract regardless of channel.
+   */
+  private async deliverDiscord(
+    type: string,
+    payload: unknown,
+    eventId: string,
+  ): Promise<void> {
+    if (type === 'JOB_POST_MATCH') {
+      await this.recordAndSend(eventId, () =>
+        this.jobPostNotifier.send(eventId, payload),
+      );
+      return;
+    }
 
-    await this.sendToDiscord(eventId, discordBody);
+    const body = this.buildDiscordBody(type, payload, eventId);
+    if (!body) return;
+    await this.recordAndSend(eventId, () => this.discord.send(body));
   }
 
   private buildDiscordBody(
@@ -125,10 +134,8 @@ export class NotificationProcessorService
     payload: unknown,
     eventId: string,
   ): Record<string, unknown> | null {
-    if (type === 'JOB_POST_MATCH') {
-      return this.buildJobPostMatchEmbed(payload, eventId);
-    }
-
+    // JOB_POST_MATCH is routed via `JobPostDiscordNotifierService` and
+    // does not pass through this builder any more.
     if (type === 'CALL_REMINDER') {
       return this.buildCallReminderEmbed(payload, eventId);
     }
@@ -139,52 +146,6 @@ export class NotificationProcessorService
 
     this.logger.warn(`No Discord builder for event type ${type}, skipping`);
     return null;
-  }
-
-  private buildJobPostMatchEmbed(
-    payload: unknown,
-    eventId: string,
-  ): Record<string, unknown> | null {
-    const p = parseJobPostMatchPayload(payload);
-
-    if (!p) {
-      this.logger.warn(`Invalid JOB_POST_MATCH payload for event ${eventId}`);
-      return null;
-    }
-
-    const isGreen = p.score >= SCORE_THRESHOLDS.GREEN;
-    const isYellow = p.score >= SCORE_THRESHOLDS.YELLOW;
-    const scoreEmoji = isGreen ? '🟢' : isYellow ? '🟡' : '🔴';
-
-    const fields = [
-      { name: 'Score', value: `${scoreEmoji} ${p.score}%`, inline: true },
-      p.decision
-        ? {
-            name: 'Decision',
-            value: DECISION_LABEL[p.decision] ?? p.decision,
-            inline: true,
-          }
-        : null,
-      p.priority
-        ? {
-            name: 'Priority',
-            value: PRIORITY_LABEL[p.priority] ?? p.priority,
-            inline: true,
-          }
-        : null,
-    ].filter(Boolean);
-
-    return {
-      embeds: [
-        {
-          title: `🔥 ${p.title ?? 'No title'}`,
-          url: p.url ?? undefined,
-          color: DECISION_COLOR[p.decision ?? ''] ?? 0x5865f2,
-          description: p.rawText ?? undefined,
-          fields,
-        },
-      ],
-    };
   }
 
   private buildCallReminderEmbed(
@@ -264,9 +225,17 @@ export class NotificationProcessorService
     };
   }
 
-  private async sendToDiscord(
+  /**
+   * Shared delivery-record bookkeeping used by every Discord sender.
+   * Owns the SENT/FAILED transitions on NotificationDelivery.
+   *   - idempotent: a prior SENT short-circuits before the sender
+   *     runs again (no double send on a BullMQ retry);
+   *   - PENDING is reset at the start of each attempt;
+   *   - sender error → FAILED + rethrow (BullMQ retry picks up).
+   */
+  private async recordAndSend(
     eventId: string,
-    discordBody: Record<string, unknown>,
+    send: () => Promise<void>,
   ): Promise<void> {
     const existing = await this.prisma.notificationDelivery.findFirst({
       where: { eventId, channel: NotificationChannel.DISCORD },
@@ -307,7 +276,7 @@ export class NotificationProcessorService
     this.logger.log(`Delivery created: ${delivery.id} for event ${eventId}`);
 
     try {
-      await this.discord.send(discordBody);
+      await send();
 
       await this.prisma.notificationDelivery.update({
         where: { id: delivery.id },
@@ -316,19 +285,34 @@ export class NotificationProcessorService
 
       this.logger.log(`Delivery ${delivery.id} sent for event ${eventId}`);
     } catch (sendErr) {
+      const safeMessage = sanitiseError((sendErr as Error).message);
       await this.prisma.notificationDelivery.update({
         where: { id: delivery.id },
         data: {
           status: NotificationDeliveryStatus.FAILED,
-          error: (sendErr as Error).message,
+          error: safeMessage,
           failedAttempts: { increment: 1 },
         },
       });
 
       this.logger.error(
-        `Delivery ${delivery.id} failed for event ${eventId}: ${(sendErr as Error).message}`,
+        `Delivery ${delivery.id} failed for event ${eventId}: ${safeMessage}`,
       );
       throw sendErr;
     }
   }
+}
+
+/**
+ * Belt-and-braces redaction before an error message lands in the DB
+ * row or logs. DiscordBotClient already scrubs `Bot <token>` and
+ * `/webhooks/{appId}/<interaction-token>`; we repeat the regexes here
+ * so a message that reaches this file via another path (future
+ * sender, test shim, legacy webhook) is still safe.
+ */
+function sanitiseError(message: string): string {
+  return message
+    .replace(/Bot\s+[A-Za-z0-9._-]+/g, 'Bot <redacted>')
+    .replace(/\/webhooks\/(\d{17,20})\/[^\/\s]+/g, '/webhooks/$1/<redacted>')
+    .slice(0, 500);
 }

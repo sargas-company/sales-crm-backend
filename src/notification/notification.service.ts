@@ -157,12 +157,12 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    if (!this.config.get<string>('DISCORD_WEBHOOK_URL')) {
-      this.logger.warn(
-        `Event ${event.id} skipped: DISCORD_WEBHOOK_URL not configured`,
-      );
-      return;
-    }
+    // Scanner Core delivery no longer depends on DISCORD_WEBHOOK_URL:
+    // the processor routes JOB_POST_MATCH through
+    // JobPostDiscordNotifierService → active DiscordProfile.salesChannelId
+    // → DiscordBotClient. If no profile / salesChannelId is set, the
+    // processor fails retryably and the BullMQ backoff kicks in; this
+    // service only decides whether an event is worth queueing.
 
     this.logger.log(
       `Event ${event.id} passed rule: decision=${payload.decision}`,
