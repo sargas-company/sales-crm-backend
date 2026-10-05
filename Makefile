@@ -6,10 +6,10 @@ SHELL := /bin/bash
         local-migrate local-seed local-seed-demo local-reset \
         backup backup-status backup-verify \
         restore-verify restore-scratch \
-        prod-preflight prod-migrate prod-build prod-seed-system \
+        prod-bootstrap-preflight prod-preflight prod-migrate prod-build prod-seed-system \
         data-dry-run data-apply \
         discord-status discord-disable discord-disable-apply \
-        b2-inventory \
+        b2-inventory b2-cutover-dry-run b2-cutover-apply b2-cutover-verify \
         init deploy
 
 # ─── Help ────────────────────────────────────────────────────────────────────
@@ -43,7 +43,11 @@ help:
 	@echo "                            Restore into a scratch LOCAL DB (name must end _restore_* / _scratch)."
 	@echo ""
 	@echo "Production (safe server-side ops — operator runs these on prod):"
-	@echo "  make prod-preflight       Validate schema + confirm migrate deploy would run."
+	@echo "  make prod-bootstrap-preflight"
+	@echo "                            Initial bootstrap: env + binaries + schema + DB reachable."
+	@echo "                            Does NOT require an existing VERIFIED production backup."
+	@echo "  make prod-preflight       Routine deploy preflight: validates schema + requires a"
+	@echo "                            VERIFIED production backup for env=production."
 	@echo "  make prod-migrate         prisma migrate deploy (NOT dev / NOT reset / NOT push)."
 	@echo "  make prod-seed-system     Idempotent system seed (permissions + roles + platform)."
 	@echo "  make prod-build           nest build on the server."
@@ -61,6 +65,9 @@ help:
 	@echo ""
 	@echo "B2 cutover:"
 	@echo "  make b2-inventory         DB-only report of expected B2 keys per bucket."
+	@echo "  make b2-cutover-dry-run   Walk source + destination, classify each key, no writes."
+	@echo "  make b2-cutover-apply     Copy only plannedCopy keys to destination. No delete."
+	@echo "  make b2-cutover-verify    Re-probe destination for every expected key."
 	@echo ""
 	@echo "Deprecation stubs that still exist for muscle memory:"
 	@echo "  make init / deploy / backup (deprecated)."
@@ -209,6 +216,19 @@ restore-scratch:
 # ─── Production (server-side; owner runs these on prod shell) ────────────────
 # No SSH, no automatic connect. These targets simply call the same guarded
 # scripts/commands the local path uses, except they expect APP_ENV=production.
+
+# Initial bootstrap — runs BEFORE the first production backup exists.
+# Checks every blocker that doesn't need a prior VERIFIED backup. Once
+# bootstrap succeeded and the first backup landed, use `prod-preflight`.
+prod-bootstrap-preflight:
+	@set -e
+	if [ "$$APP_ENV" != "production" ]; then
+		echo "APP_ENV must be 'production' here. Got: '$$APP_ENV'"
+		exit 1
+	fi
+	echo "==> bootstrap preflight (env, binaries, schema, DB reachable)"
+	npx ts-node scripts/bootstrap-preflight.ts
+
 prod-preflight:
 	@set -e
 	if [ "$$APP_ENV" != "production" ]; then
@@ -217,7 +237,7 @@ prod-preflight:
 	fi
 	echo "==> prisma validate"
 	npx prisma validate --config=./prisma.config.ts
-	echo "==> require-fresh-backup"
+	echo "==> require-fresh-backup (expects VERIFIED env=production)"
 	npx ts-node scripts/require-fresh-backup.ts
 	echo "prod-preflight ok"
 
@@ -293,9 +313,23 @@ discord-disable-apply:
 	if [ "$$CONFIRM" != "DISABLE" ]; then echo "Aborted."; exit 1; fi
 	npx ts-node scripts/discord-safe-disable.ts --apply
 
-# ─── B2 cutover inventory ───────────────────────────────────────────────────
+# ─── B2 cutover inventory + guarded copy ────────────────────────────────────
 b2-inventory:
 	npx ts-node scripts/b2-cutover-inventory.ts
+
+b2-cutover-dry-run:
+	npx ts-node scripts/b2-cutover.ts
+
+b2-cutover-apply:
+	@echo "This will COPY (not delete, not overwrite) every plannedCopy key from the"
+	@echo "source B2 account to the destination B2 account. The DB is not touched."
+	@echo "Type COPY to confirm:"
+	IFS= read -r CONFIRM < /dev/tty
+	if [ "$$CONFIRM" != "COPY" ]; then echo "Aborted."; exit 1; fi
+	npx ts-node scripts/b2-cutover.ts --apply
+
+b2-cutover-verify:
+	npx ts-node scripts/b2-cutover.ts --verify
 
 # ─── Deprecation stubs ──────────────────────────────────────────────────────
 init:

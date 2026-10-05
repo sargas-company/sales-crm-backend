@@ -105,4 +105,25 @@ describe('evaluateMigrationGate', () => {
     });
     expect(r.ok).toBe(true);
   });
+
+  it('refuses production when the only VERIFIED backup is a restored local dump', () => {
+    // Regression against a cutover footgun: after the local DB is
+    // pg_restore'd into production, the restored rows carry
+    // `environment='local'`. The production gate must not treat
+    // those as a valid prod backup, otherwise `prisma migrate
+    // deploy` would run without a real production safety net.
+    const r = evaluateMigrationGate({
+      environment: 'production',
+      now,
+      latestVerified: {
+        id: 'local-restored',
+        status: BackupStatus.VERIFIED,
+        environment: 'local',
+        startedAt: new Date('2026-10-04T11:30:00Z'),
+      },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/requires a production backup/);
+    expect(r.reason).toMatch(/environment "local"/);
+  });
 });
