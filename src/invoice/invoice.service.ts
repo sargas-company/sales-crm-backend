@@ -7,10 +7,19 @@ import {
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 
-import { InvoiceStatus, Prisma } from '@prisma/client';
+import {
+  AuditResult,
+  AuditSeverity,
+  InvoiceStatus,
+  Prisma,
+} from '@prisma/client';
 
 import { AuthUser, scopePolicy } from '../auth/auth-user';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuditEventService } from '../audit-event/audit-event.service';
+import { safeDiff } from '../audit-event/audit-sanitizer';
+import { SettingsService } from '../settings/settings.service';
+import { SK } from '../settings/settings-registry';
 import { StorageBucket, StorageService } from '../storage';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import {
@@ -26,7 +35,48 @@ export class InvoiceService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly storage: StorageService,
+    private readonly audit: AuditEventService,
+    private readonly settings: SettingsService,
   ) {}
+
+  /**
+   * Resolve the current invoice defaults from Settings. Used only
+   * when a new invoice is being drafted and the caller did not
+   * explicitly override. Existing invoices keep their snapshot.
+   */
+  async getInvoiceDefaults() {
+    const [currency, paymentTermsDays, numberPrefix, note, instructions] =
+      await Promise.all([
+        this.settings.getStringForKey(SK.INVOICE_DEFAULT_CURRENCY, 'USD'),
+        this.settings.getNumberForKey(
+          SK.INVOICE_DEFAULT_PAYMENT_TERMS_DAYS,
+          14,
+        ),
+        this.settings.getStringForKey(SK.INVOICE_NUMBER_PREFIX, 'INV-'),
+        this.settings.getStringForKey(SK.INVOICE_DEFAULT_NOTE, ''),
+        this.settings.getStringForKey(
+          SK.INVOICE_PAYMENT_INSTRUCTIONS,
+          '',
+        ),
+      ]);
+    return {
+      currency,
+      paymentTermsDays,
+      numberPrefix,
+      note,
+      instructions,
+    };
+  }
+
+  private invoiceLabel(invoice: {
+    number: string | null;
+    counterparty: { firstName: string | null; lastName: string | null };
+  }) {
+    const name =
+      `${invoice.counterparty.firstName ?? ''} ${invoice.counterparty.lastName ?? ''}`.trim();
+    const num = invoice.number ? `#${invoice.number}` : '';
+    return [num, name].filter(Boolean).join(' · ') || 'Invoice';
+  }
 
   async create(dto: CreateInvoiceDto, user: AuthUser) {
     const cp = await this.prisma.counterparty.findUnique({
@@ -40,15 +90,32 @@ export class InvoiceService {
 
     const { lineItems, ...invoiceData } = dto;
 
-    return this.prisma.invoice.create({
+    // Fill in defaults from Settings when the caller did not pass
+    // them. Existing invoices are never rewritten after a Settings
+    // change — the data is baked in at create time.
+    const defaults = await this.getInvoiceDefaults();
+    const resolvedCurrency = invoiceData.currency ?? defaults.currency;
+    const resolvedNote =
+      invoiceData.notes !== undefined && invoiceData.notes !== null
+        ? invoiceData.notes
+        : defaults.note || undefined;
+
+    const created = await this.prisma.invoice.create({
       data: {
         ...invoiceData,
+        currency: resolvedCurrency,
+        notes: resolvedNote,
         date: invoiceData.date ? new Date(invoiceData.date) : undefined,
         dueDate: invoiceData.dueDate
           ? new Date(invoiceData.dueDate)
           : undefined,
         labels: invoiceData.labels ?? {},
-        customFields: invoiceData.customFields ?? [],
+        // Serialise class-validator DTO instances to plain objects for
+        // Prisma's `InputJsonValue`. The wire shape stays `{ name, value }`.
+        customFields: (invoiceData.customFields ?? []).map((c) => ({
+          name: c.name,
+          value: c.value,
+        })),
         lineItems: lineItems?.length ? { create: lineItems } : undefined,
       },
       include: {
@@ -56,6 +123,23 @@ export class InvoiceService {
         counterparty: true,
       },
     });
+    await this.audit.recordSafe({
+      actorUserId: user.id,
+      // actorEmail resolved at read-time from User join
+      domain: 'FINANCE',
+      action: 'invoice.create',
+      targetType: 'Invoice',
+      targetId: created.id,
+      targetLabel: this.invoiceLabel(created),
+      targetHref: `/invoices/edit/${created.id}`,
+      result: AuditResult.SUCCESS,
+      metadata: {
+        number: created.number,
+        currency: created.currency,
+        status: created.status,
+      },
+    });
+    return created;
   }
 
   async findAll(dto: ListInvoicesDto, user: AuthUser) {
@@ -146,19 +230,30 @@ export class InvoiceService {
 
     const { lineItems, ...invoiceData } = dto;
 
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       if (lineItems !== undefined) {
         await tx.invoiceLineItem.deleteMany({ where: { invoiceId: id } });
       }
 
+      // Peel `customFields` off so we can emit it as plain JSON for
+      // Prisma. Shape on the wire is unchanged.
+      const { customFields, ...rest } = invoiceData;
       return tx.invoice.update({
         where: { id },
         data: {
-          ...invoiceData,
+          ...rest,
           date: invoiceData.date ? new Date(invoiceData.date) : undefined,
           dueDate: invoiceData.dueDate
             ? new Date(invoiceData.dueDate)
             : undefined,
+          ...(customFields !== undefined
+            ? {
+                customFields: customFields.map((c) => ({
+                  name: c.name,
+                  value: c.value,
+                })),
+              }
+            : {}),
           lineItems: lineItems?.length ? { create: lineItems } : undefined,
         },
         include: {
@@ -167,6 +262,53 @@ export class InvoiceService {
         },
       });
     });
+
+    // Audit — compute a sanitized diff of the money-visible fields.
+    const changes = safeDiff(
+      {
+        number: existing.number,
+        status: existing.status,
+        currency: existing.currency,
+        date: existing.date?.toISOString() ?? null,
+        dueDate: existing.dueDate?.toISOString() ?? null,
+        amountPaid: existing.amountPaid?.toString() ?? null,
+        tax: existing.tax?.toString() ?? null,
+        discounts: existing.discounts?.toString() ?? null,
+        shipping: existing.shipping?.toString() ?? null,
+      },
+      {
+        number: updated.number,
+        status: updated.status,
+        currency: updated.currency,
+        date: updated.date?.toISOString() ?? null,
+        dueDate: updated.dueDate?.toISOString() ?? null,
+        amountPaid: updated.amountPaid?.toString() ?? null,
+        tax: updated.tax?.toString() ?? null,
+        discounts: updated.discounts?.toString() ?? null,
+        shipping: updated.shipping?.toString() ?? null,
+      },
+    );
+    const action =
+      existing.status !== updated.status
+        ? 'invoice.status.change'
+        : 'invoice.update';
+    await this.audit.recordSafe({
+      actorUserId: user.id,
+      // actorEmail resolved at read-time from User join
+      domain: 'FINANCE',
+      action,
+      targetType: 'Invoice',
+      targetId: updated.id,
+      targetLabel: this.invoiceLabel(updated),
+      targetHref: `/invoices/edit/${updated.id}`,
+      result: AuditResult.SUCCESS,
+      severity:
+        existing.status !== updated.status
+          ? AuditSeverity.WARNING
+          : AuditSeverity.INFO,
+      changes: changes ?? null,
+    });
+    return updated;
   }
 
   async remove(id: string, user: AuthUser) {
@@ -181,13 +323,34 @@ export class InvoiceService {
     scopePolicy.assertCanManageType(user, invoice.counterparty.type);
 
     if (invoice.pdfUrl) {
+      // Legacy rows stored a full URL; new rows store the key alone.
+      // `extractKeyFromLegacyUrl` returns null for anything that is
+      // not a `/file/<bucket>/<key>` URL, which is also the shape
+      // produced for plain keys, so we fall through on null.
       const fileName = invoice.pdfUrl.startsWith('http')
-        ? decodeURIComponent(invoice.pdfUrl.split('/').pop()!)
+        ? this.storage.extractKeyFromLegacyUrl(invoice.pdfUrl) ?? invoice.pdfUrl
         : invoice.pdfUrl;
       await this.storage.deleteByName(StorageBucket.INVOICES, fileName);
     }
 
-    return this.prisma.invoice.delete({ where: { id } });
+    const deleted = await this.prisma.invoice.delete({ where: { id } });
+    await this.audit.recordSafe({
+      actorUserId: user.id,
+      // actorEmail resolved at read-time from User join
+      domain: 'FINANCE',
+      action: 'invoice.delete',
+      targetType: 'Invoice',
+      targetId: id,
+      targetLabel: this.invoiceLabel(invoice),
+      result: AuditResult.SUCCESS,
+      severity: AuditSeverity.WARNING,
+      metadata: {
+        number: invoice.number,
+        currency: invoice.currency,
+        status: invoice.status,
+      },
+    });
+    return deleted;
   }
 
   async getPdfDownloadUrl(id: string, user: AuthUser): Promise<string> {
@@ -195,7 +358,7 @@ export class InvoiceService {
     if (!invoice.pdfUrl) throw new NotFoundException('Invoice PDF has not been generated yet');
     // pdfUrl can be a full URL (old records) or plain filename (new records)
     const fileName = invoice.pdfUrl.startsWith('http')
-      ? decodeURIComponent(invoice.pdfUrl.split('/').pop()!)
+      ? this.storage.extractKeyFromLegacyUrl(invoice.pdfUrl) ?? invoice.pdfUrl
       : invoice.pdfUrl;
     return this.storage.getDownloadUrl(StorageBucket.INVOICES, fileName);
   }
@@ -307,7 +470,7 @@ export class InvoiceService {
       mimeType: 'application/pdf',
     });
 
-    return this.prisma.invoice.update({
+    const generated = await this.prisma.invoice.update({
       where: { id },
       data: { pdfUrl: pdfFileName, status: InvoiceStatus.open },
       include: {
@@ -315,5 +478,21 @@ export class InvoiceService {
         counterparty: true,
       },
     });
+    await this.audit.recordSafe({
+      actorUserId: user.id,
+      // actorEmail resolved at read-time from User join
+      domain: 'FINANCE',
+      action: 'invoice.pdf.generate',
+      targetType: 'Invoice',
+      targetId: id,
+      targetLabel: this.invoiceLabel(generated),
+      targetHref: `/invoices/edit/${id}`,
+      result: AuditResult.SUCCESS,
+      metadata: {
+        number: generated.number,
+        file: pdfFileName,
+      },
+    });
+    return generated;
   }
 }

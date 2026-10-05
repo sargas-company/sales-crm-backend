@@ -14,6 +14,7 @@ export interface AuthUser {
 
 const CONTRACTOR_VIEW = 'contractor_scope:view';
 const CONTRACTOR_MANAGE = 'contractor_scope:manage';
+const PROJECTS_VIEW_ANY = 'projects:view_any';
 
 /**
  * Utilities that translate contractor-scope permissions into
@@ -52,4 +53,12 @@ export const scopePolicy = {
       throw new ForbiddenException('CONTRACTOR_SCOPE_REQUIRED');
     }
   },
+
+  /**
+   * True when the caller may see every project + report, regardless
+   * of team assignment. Absent → the projects / reports services
+   * scope reads to rows the caller is on (see `Employee.userId`).
+   */
+  canViewAnyProject: (user: AuthUser): boolean =>
+    user.permissions.has(PROJECTS_VIEW_ANY),
 };

@@ -13,6 +13,11 @@ export interface JwtPayload {
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor() {
     super({
+      // Bearer header only. The previous `?token=` query fallback was
+      // dropped during the file-layer stabilisation — JWTs in query
+      // strings leak into server logs, Referer headers and browser
+      // history. Private downloads now go through the SPA with axios +
+      // blob + object URL (see `src/page/portfolio/*`).
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       secretOrKey: process.env.JWT_SECRET!,
     });

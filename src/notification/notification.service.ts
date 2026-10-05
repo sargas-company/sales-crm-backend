@@ -126,10 +126,29 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const minScore = await this.settings.getNumber(
-      SettingKey.JOB_SCANNER_NOTIFICATIONS_MIN_SCORE,
-      70,
+    // Registry-driven. The new "scanner.discordScoreThreshold" is
+    // authoritative; the legacy JOB_SCANNER_NOTIFICATIONS_MIN_SCORE is
+    // read as a fallback so pre-registry data still works until the
+    // seed writes the new key.
+    const minScore = await this.settings.getNumberForKey(
+      'scanner.discordScoreThreshold',
+      await this.settings.getNumber(
+        SettingKey.JOB_SCANNER_NOTIFICATIONS_MIN_SCORE,
+        50,
+      ),
     );
+
+    const alertsEnabled = await this.settings.getBooleanForKey(
+      'scanner.discordAlertsEnabled',
+      true,
+    );
+
+    if (!alertsEnabled) {
+      this.logger.log(
+        `Event ${event.id} skipped: Discord alerts disabled by settings`,
+      );
+      return;
+    }
 
     if (payload.score < minScore) {
       this.logger.log(

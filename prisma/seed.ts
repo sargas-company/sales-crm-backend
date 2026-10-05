@@ -3,6 +3,10 @@ import * as bcrypt from 'bcrypt';
 import { Prisma, PrismaClient, PromptType } from '@prisma/client';
 import { JOB_GATEKEEPER_PROMPT } from '../src/ai/prompts/job-gatekeeper.prompt';
 import { JOB_EVALUATION_PROMPT } from '../src/ai/prompts/job-evaluation.prompt';
+import {
+  ADMIN_MANAGER_PRESET_KEYS,
+  REGULAR_MANAGER_PRESET_KEYS,
+} from '../src/auth/system-role-presets';
 import { redactSummary } from '../src/audit/redact';
 
 const prisma = new PrismaClient();
@@ -81,16 +85,33 @@ const PERMISSION_CATALOGUE: PermissionSeed[] = [
   { module: 'employees',          action: 'create', key: 'employees:create',        label: 'Create employees' },
   { module: 'employees',          action: 'update', key: 'employees:update',        label: 'Update employees' },
   { module: 'employees',          action: 'delete', key: 'employees:delete',        label: 'Delete employees' },
-  { module: 'credentials',        action: 'view',   key: 'credentials:view',        label: 'View credentials list' },
-  { module: 'credentials',        action: 'create', key: 'credentials:create',      label: 'Create credentials' },
-  { module: 'credentials',        action: 'update', key: 'credentials:update',      label: 'Update credentials' },
-  { module: 'credentials',        action: 'delete', key: 'credentials:delete',      label: 'Archive credentials' },
-  { module: 'credentials',        action: 'reveal', key: 'credentials:reveal',      label: 'Reveal credential secret' },
-  { module: 'credentials',        action: 'copy',   key: 'credentials:copy',        label: 'Copy credential secret' },
+  { module: 'projects',           action: 'view',    key: 'projects:view',           label: 'View projects' },
+  { module: 'projects',           action: 'create',  key: 'projects:create',         label: 'Create projects' },
+  { module: 'projects',           action: 'update',  key: 'projects:update',         label: 'Update projects' },
+  { module: 'projects',           action: 'delete',  key: 'projects:delete',         label: 'Delete projects' },
+  { module: 'projects',           action: 'view_any', key: 'projects:view_any',      label: 'View every project and report, not just your own' },
+  { module: 'project_reports',    action: 'view',    key: 'project_reports:view',    label: 'View project reports' },
+  { module: 'project_reports',    action: 'create',  key: 'project_reports:create',  label: 'Create project reports' },
+  { module: 'project_reports',    action: 'update',  key: 'project_reports:update',  label: 'Update project reports' },
+  { module: 'project_reports',    action: 'delete',  key: 'project_reports:delete',  label: 'Delete project reports' },
+  { module: 'time_off',           action: 'view',    key: 'time_off:view',           label: 'View time-off records' },
+  { module: 'time_off',           action: 'create',  key: 'time_off:create',         label: 'Create time-off records' },
+  { module: 'time_off',           action: 'update',  key: 'time_off:update',         label: 'Update time-off records' },
+  { module: 'time_off',           action: 'delete',  key: 'time_off:delete',         label: 'Delete time-off records' },
+  { module: 'employee_analytics', action: 'view',    key: 'employee_analytics:view', label: 'View Employee Analytics dashboard' },
+  { module: 'credentials',        action: 'view',         key: 'credentials:view',         label: 'View credentials list' },
+  { module: 'credentials',        action: 'create',       key: 'credentials:create',       label: 'Create credentials' },
+  { module: 'credentials',        action: 'update',       key: 'credentials:update',       label: 'Update credentials' },
+  { module: 'credentials',        action: 'archive',      key: 'credentials:archive',      label: 'Archive credentials' },
+  { module: 'credentials',        action: 'reveal',       key: 'credentials:reveal',       label: 'Reveal credential secret' },
+  { module: 'credentials',        action: 'attachments',  key: 'credentials:attachments',  label: 'Upload / download credential attachments' },
+  { module: 'credentials',        action: 'hard_delete',  key: 'credentials:hard_delete',  label: 'Hard delete credentials (Owner only)' },
+  { module: 'credential_audit',   action: 'view',         key: 'credential_audit:view',    label: 'View sensitive-access audit log' },
   { module: 'salaries',           action: 'view',   key: 'salaries:view',           label: 'View salary records' },
   { module: 'salaries',           action: 'create', key: 'salaries:create',         label: 'Create salary records' },
   { module: 'salaries',           action: 'update', key: 'salaries:update',         label: 'Update salary records' },
   { module: 'salaries',           action: 'delete', key: 'salaries:delete',         label: 'Delete salary records' },
+  { module: 'salaries',           action: 'reopen', key: 'salaries:reopen',         label: 'Reopen a Paid payroll entry back to Draft' },
   { module: 'finances',           action: 'view',   key: 'finances:view',           label: 'View finance records' },
   { module: 'finances',           action: 'create', key: 'finances:create',         label: 'Create finance records' },
   { module: 'finances',           action: 'update', key: 'finances:update',         label: 'Update finance records' },
@@ -105,6 +126,8 @@ const PERMISSION_CATALOGUE: PermissionSeed[] = [
   { module: 'compensation_reviews', action: 'create', key: 'compensation_reviews:create', label: 'Create compensation reviews' },
   { module: 'compensation_reviews', action: 'update', key: 'compensation_reviews:update', label: 'Update compensation reviews' },
   { module: 'compensation_reviews', action: 'delete', key: 'compensation_reviews:delete', label: 'Delete compensation reviews' },
+  { module: 'compensation_analytics', action: 'view', key: 'compensation_analytics:view', label: 'View Compensation Analytics dashboard' },
+  { module: 'project_analytics',     action: 'view', key: 'project_analytics:view',     label: 'View Project Analytics dashboard' },
   { module: 'sales_analytics',    action: 'view',   key: 'sales_analytics:view',    label: 'View sales analytics' },
   { module: 'finance_analytics',  action: 'view',   key: 'finance_analytics:view',  label: 'View finance analytics' },
   { module: 'roles',              action: 'view',   key: 'roles:view',              label: 'View roles and permissions' },
@@ -114,56 +137,54 @@ const PERMISSION_CATALOGUE: PermissionSeed[] = [
   { module: 'roles',              action: 'assign', key: 'roles:assign',            label: 'Assign a role to a user' },
   { module: 'settings',           action: 'view',   key: 'settings:view',           label: 'View application settings' },
   { module: 'settings',           action: 'update', key: 'settings:update',         label: 'Update application settings' },
+  { module: 'settings_scanner',   action: 'update', key: 'settings_scanner:update', label: 'Update scanner & alerts settings' },
+  { module: 'settings_invoicing', action: 'update', key: 'settings_invoicing:update', label: 'Update client invoicing settings' },
+  // Phone Numbers / SIM management.
+  { module: 'phone_numbers', action: 'view',     key: 'phone_numbers:view',     label: 'View phone numbers' },
+  { module: 'phone_numbers', action: 'create',   key: 'phone_numbers:create',   label: 'Create phone numbers' },
+  { module: 'phone_numbers', action: 'update',   key: 'phone_numbers:update',   label: 'Update phone numbers' },
+  { module: 'phone_numbers', action: 'delete',   key: 'phone_numbers:delete',   label: 'Archive phone numbers' },
+  { module: 'phone_numbers', action: 'maintain', key: 'phone_numbers:maintain', label: 'Mark phone maintenance done' },
+  // Portfolio.
+  { module: 'portfolio', action: 'view',   key: 'portfolio:view',   label: 'View portfolio' },
+  { module: 'portfolio', action: 'create', key: 'portfolio:create', label: 'Create portfolio items' },
+  { module: 'portfolio', action: 'update', key: 'portfolio:update', label: 'Update portfolio items' },
+  { module: 'portfolio', action: 'delete', key: 'portfolio:delete', label: 'Delete portfolio items' },
+  { module: 'portfolio', action: 'export', key: 'portfolio:export', label: 'Export portfolio PDF' },
+  // Backups (Owner-only).
+  { module: 'backups', action: 'view',   key: 'backups:view',   label: 'View database backups' },
+  { module: 'backups', action: 'create', key: 'backups:create', label: 'Create a database backup' },
   { module: 'audit_logs',         action: 'view',   key: 'audit_logs:view',         label: 'View Audit Log' },
+  { module: 'linkedin_accounts',  action: 'view',   key: 'linkedin_accounts:view',   label: 'View LinkedIn accounts' },
+  { module: 'linkedin_accounts',  action: 'create', key: 'linkedin_accounts:create', label: 'Create LinkedIn accounts' },
+  { module: 'linkedin_accounts',  action: 'update', key: 'linkedin_accounts:update', label: 'Update LinkedIn accounts' },
+  { module: 'linkedin_accounts',  action: 'delete', key: 'linkedin_accounts:delete', label: 'Delete LinkedIn accounts' },
+  { module: 'linkedin_ideas',     action: 'view',   key: 'linkedin_ideas:view',      label: 'View LinkedIn ideas' },
+  { module: 'linkedin_ideas',     action: 'create', key: 'linkedin_ideas:create',    label: 'Create LinkedIn ideas' },
+  { module: 'linkedin_ideas',     action: 'update', key: 'linkedin_ideas:update',    label: 'Update LinkedIn ideas' },
+  { module: 'linkedin_ideas',     action: 'delete', key: 'linkedin_ideas:delete',    label: 'Delete LinkedIn ideas' },
+  { module: 'linkedin_posts',     action: 'view',   key: 'linkedin_posts:view',      label: 'View LinkedIn posts' },
+  { module: 'linkedin_posts',     action: 'create', key: 'linkedin_posts:create',    label: 'Create LinkedIn posts' },
+  { module: 'linkedin_posts',     action: 'update', key: 'linkedin_posts:update',    label: 'Update LinkedIn posts' },
+  { module: 'linkedin_posts',     action: 'delete', key: 'linkedin_posts:delete',    label: 'Delete LinkedIn posts' },
+  { module: 'finances_weekly',    action: 'view',   key: 'finances_weekly:view',     label: 'View Finance Weekly tracking' },
+  { module: 'finances_weekly',    action: 'edit',   key: 'finances_weekly:edit',     label: 'Edit Finance Weekly entries and payment rules' },
+  // Notifications / attention feed. Gates GET /attention — the
+  // workspace-wide actionable notification list surfaced by the
+  // Notification Bell and the Notifications pages. Owner inherits it
+  // from the full catalogue; Admin Manager has it in its preset;
+  // Regular Manager does NOT receive it (frontend hides the bell /
+  // pages, and a direct API hit is answered with 403).
+  { module: 'notifications',      action: 'view',   key: 'notifications:view',       label: 'View workspace notifications and attention feed' },
+  // Discord integration (settings + scheduler + /report webhook).
+  // All four keys are Owner-only; Admin Manager and Regular Manager
+  // never see these in the system role matrix.
+  { module: 'discord_integration', action: 'view',             key: 'discord_integration:view',             label: 'View Discord integration settings' },
+  { module: 'discord_integration', action: 'configure',        key: 'discord_integration:configure',        label: 'Edit Discord integration profiles' },
+  { module: 'discord_integration', action: 'send_test',        key: 'discord_integration:send_test',        label: 'Fire Discord verify/preview/test deliveries' },
+  { module: 'discord_integration', action: 'activate_profile', key: 'discord_integration:activate_profile', label: 'Switch the active Discord profile (TEST ⇄ PRODUCTION)' },
 ];
 
-// Admin Manager preset — the exact operational surface the user
-// approved. Everything not listed here is denied on a fresh install
-// (Owner-only). No Coming Soon module (employees, credentials,
-// salaries, finances, payment_sources, cashflow, profit,
-// compensation_reviews, finance_analytics, dashboards_finance,
-// projects, linkedin) is included even if its permission keys
-// already exist in the catalogue. `roles:*`, `settings:*` and
-// contractor_scope elevators are Owner-only per the matrix.
-const ADMIN_MANAGER_PRESET_KEYS = new Set<string>([
-  // Sales Analytics — view.
-  'sales_analytics:view',
-
-  // Platforms — full CRUD.
-  'platforms:view', 'platforms:create', 'platforms:update', 'platforms:delete',
-
-  // Accounts — full CRUD.
-  'accounts:view', 'accounts:create', 'accounts:update', 'accounts:delete',
-
-  // Job Posts — view + delete + convert (no manual create / update:
-  // job posts arrive through the ingestion webhook, not by hand).
-  'job_posts:view', 'job_posts:delete', 'job_posts:convert',
-
-  // Leads — full CRUD.
-  'leads:view', 'leads:create', 'leads:update', 'leads:delete',
-
-  // Client Calls — full CRUD.
-  'client_calls:view', 'client_calls:create', 'client_calls:update', 'client_calls:delete',
-
-  // Client Requests — view / update / delete (POST is public inbound).
-  'client_requests:view', 'client_requests:update', 'client_requests:delete',
-
-  // Proposals — view / update / delete (create is via Job-Post convert).
-  'proposals:view', 'proposals:update', 'proposals:delete',
-
-  // Client invoices — full CRUD + generate. Contractor invoices are
-  // NOT included: the service layer enforces client-scope for callers
-  // without `contractor_scope:*`.
-  'invoices:view', 'invoices:create', 'invoices:update', 'invoices:delete', 'invoices:generate',
-
-  // Client counterparties — full CRUD. Contractor counterparties are
-  // filtered / rejected at the service layer for callers without
-  // `contractor_scope:*`.
-  'counterparties:view', 'counterparties:create', 'counterparties:update', 'counterparties:delete',
-
-  // Prompts — full CRUD.
-  'prompts:view', 'prompts:create', 'prompts:update', 'prompts:delete',
-]);
 
 // Inline audit-log writer used by the seed script. Mirrors
 // `AuditLogService.log` in shape and applies the same secret-key
@@ -296,31 +317,68 @@ async function seedRolesAndPermissions() {
     skipDuplicates: true,
   });
 
-  // Admin Manager: seed the operational preset only when this run is
-  // the one that created the role record. Never on re-seed.
-  const adminManagerCreatedNow = !existedBeforeSeed.has('admin_manager');
-  if (adminManagerCreatedNow) {
-    const adminManagerSet = allPermissions.filter((p) =>
-      ADMIN_MANAGER_PRESET_KEYS.has(p.key),
+  // Admin Manager and Regular Manager: the preset is the enforced
+  // baseline — every seed run syncs their bindings so the policy
+  // stated in `ADMIN_MANAGER_PRESET_KEYS` / `REGULAR_MANAGER_PRESET_KEYS`
+  // above is the source of truth. Custom roles (anything other than
+  // the three system role names) are NEVER touched here; user role
+  // assignments are a separate table and are left intact.
+  //
+  // Why this is safe:
+  //  • Owner remains unaffected — a full sync against the catalogue
+  //    was already applied above.
+  //  • Admin Manager / Regular Manager are system roles; their
+  //    permission set is a product-level decision, not an operator
+  //    preference. Expressing the matrix in code and enforcing it on
+  //    every seed keeps dev / staging / local environments honest.
+  //  • If an operator needs a different capability mix for a group,
+  //    they create a custom role via the Roles UI. Custom roles are
+  //    not matched by name here, so they stay untouched.
+  const syncSystemRole = async (
+    roleId: string,
+    preset: ReadonlySet<string>,
+  ): Promise<number> => {
+    const want = new Set(
+      allPermissions.filter((p) => preset.has(p.key)).map((p) => p.id),
     );
-    await prisma.rolePermission.createMany({
-      data: adminManagerSet.map((p) => ({ roleId: adminManager.id, permissionId: p.id })),
-      skipDuplicates: true,
+    const current = await prisma.rolePermission.findMany({
+      where: { roleId },
+      select: { permissionId: true },
     });
-  }
-  const adminManagerBindingsCount = await prisma.rolePermission.count({
-    where: { roleId: adminManager.id },
-  });
+    const have = new Set(current.map((r) => r.permissionId));
+    const toCreate = [...want].filter((id) => !have.has(id));
+    const toDelete = [...have].filter((id) => !want.has(id));
+    if (toCreate.length > 0) {
+      await prisma.rolePermission.createMany({
+        data: toCreate.map((permissionId) => ({ roleId, permissionId })),
+        skipDuplicates: true,
+      });
+    }
+    if (toDelete.length > 0) {
+      await prisma.rolePermission.deleteMany({
+        where: { roleId, permissionId: { in: toDelete } },
+      });
+    }
+    return want.size;
+  };
 
-  // Regular Manager: intentionally empty on a fresh environment; no
-  // preset ever gets applied. If an operator has added permissions
-  // through the UI, leave them alone.
+  const adminManagerBindingsCount = await syncSystemRole(
+    adminManager.id,
+    ADMIN_MANAGER_PRESET_KEYS,
+  );
+  const regularManagerBindingsCount = await syncSystemRole(
+    regularManager.id,
+    REGULAR_MANAGER_PRESET_KEYS,
+  );
+  // Mark both as "created now" vs "pre-existing" is now a logging-only
+  // concern; the preset is applied either way.
+  void existedBeforeSeed;
 
   console.log(
     `Seeded roles: owner, admin_manager, regular_manager; permissions: ${allPermissions.length}; ` +
       `Owner-bindings: ${allPermissions.length}; ` +
-      `Admin-Manager-bindings: ${adminManagerBindingsCount}` +
-      `${adminManagerCreatedNow ? ' (fresh preset applied)' : ' (preserved — role existed before this seed)'}.`,
+      `Admin-Manager-bindings: ${adminManagerBindingsCount}; ` +
+      `Regular-Manager-bindings: ${regularManagerBindingsCount}.`,
   );
 
   // 4. AuditLog catch-up. Records `role.create` exactly once per
@@ -648,6 +706,676 @@ async function main() {
   console.log(
     `Seeded invoice settings: ${invoiceSettings.map((s) => s.key).join(', ')}`,
   );
+
+  await seedAuditDemoEvents({ ownerId, adminManagerId, regularManagerId });
+  await seedPhoneNumbers();
+  await seedPortfolio({ ownerId });
+  await seedBackupRuns();
+}
+
+// ─── Phone Numbers demo seed ────────────────────────────────────────────────
+
+async function seedPhoneNumbers() {
+  // Idempotency guard — presence of our demo marker numbers skips the
+  // whole block so operator data is never trampled.
+  const marker = '+380990000001';
+  const already = await prisma.phoneNumber.findUnique({
+    where: { number: marker },
+  });
+  if (already) {
+    console.log('Phone numbers demo: already present — skipping seed.');
+    return;
+  }
+
+  const employee = await prisma.employee.findFirst({ select: { id: true } });
+  const credProfile = await prisma.credentialProfile.findFirst({
+    select: { id: true },
+  });
+
+  // Four demo numbers covering every state we display in the UI.
+  const defs: Array<{
+    number: string;
+    operator: 'VODAFONE' | 'KYIVSTAR' | 'LIFECELL' | 'OTHER';
+    status: 'ACTIVE' | 'HOLD' | 'DISABLED';
+    maintenanceRequired: boolean;
+    nextMaintenanceAt: Date | null;
+    lastTopUpAt: Date | null;
+    lastNetworkRegistrationAt: Date | null;
+    notes: string;
+    bindings: Array<{ serviceName: string; linkProfile?: boolean }>;
+    maintenanceState?: 'DUE' | 'OVERDUE' | 'COMPLETED';
+  }> = [
+    {
+      number: '+380990000001',
+      operator: 'VODAFONE',
+      status: 'ACTIVE',
+      maintenanceRequired: true,
+      nextMaintenanceAt: daysFromNow(2),
+      lastTopUpAt: daysFromNow(-88),
+      lastNetworkRegistrationAt: daysFromNow(-88),
+      notes: '[demo] Primary SIM for Upwork + Telegram.',
+      bindings: [
+        { serviceName: 'Upwork', linkProfile: true },
+        { serviceName: 'Telegram' },
+      ],
+      maintenanceState: 'DUE',
+    },
+    {
+      number: '+380990000002',
+      operator: 'KYIVSTAR',
+      status: 'ACTIVE',
+      maintenanceRequired: true,
+      nextMaintenanceAt: daysFromNow(-5), // overdue
+      lastTopUpAt: daysFromNow(-95),
+      lastNetworkRegistrationAt: daysFromNow(-95),
+      notes: '[demo] Backup carrier.',
+      bindings: [
+        { serviceName: 'WhatsApp' },
+        { serviceName: 'Gmail' },
+      ],
+      maintenanceState: 'OVERDUE',
+    },
+    {
+      number: '+380990000003',
+      operator: 'LIFECELL',
+      status: 'HOLD',
+      maintenanceRequired: true,
+      nextMaintenanceAt: daysFromNow(45),
+      lastTopUpAt: daysFromNow(-45),
+      lastNetworkRegistrationAt: daysFromNow(-45),
+      notes: '[demo] On hold while re-registering.',
+      bindings: [{ serviceName: 'Microsoft' }],
+      maintenanceState: 'COMPLETED',
+    },
+    {
+      number: '+380990000004',
+      operator: 'OTHER',
+      status: 'DISABLED',
+      maintenanceRequired: false,
+      nextMaintenanceAt: null,
+      lastTopUpAt: null,
+      lastNetworkRegistrationAt: null,
+      notes: '[demo] Decommissioned — kept for audit history.',
+      bindings: [],
+    },
+  ];
+
+  for (const def of defs) {
+    const phone = await prisma.phoneNumber.create({
+      data: {
+        number: def.number,
+        operator: def.operator,
+        status: def.status,
+        holderEmployeeId: employee?.id ?? null,
+        maintenanceRequired: def.maintenanceRequired,
+        nextMaintenanceAt: def.nextMaintenanceAt,
+        lastTopUpAt: def.lastTopUpAt,
+        lastNetworkRegistrationAt: def.lastNetworkRegistrationAt,
+        notes: def.notes,
+      },
+    });
+
+    for (const binding of def.bindings) {
+      const slug = binding.serviceName
+        .toLowerCase()
+        .replace(/[^a-z0-9_]+/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .replace(/^[^a-z]+/, '') || `service_${phone.id.slice(0, 8)}`;
+      const service = await prisma.phoneService.upsert({
+        where: { slug },
+        update: {},
+        create: { name: binding.serviceName, slug },
+      });
+      await prisma.phoneNumberBinding.create({
+        data: {
+          phoneNumberId: phone.id,
+          serviceId: service.id,
+          credentialProfileId:
+            binding.linkProfile && credProfile ? credProfile.id : null,
+          status: def.status === 'DISABLED' ? 'DISABLED' : 'ACTIVE',
+        },
+      });
+    }
+
+    if (def.maintenanceState) {
+      const dueAt =
+        def.maintenanceState === 'COMPLETED'
+          ? daysFromNow(-45)
+          : def.nextMaintenanceAt ?? daysFromNow(0);
+      await prisma.phoneMaintenance.create({
+        data: {
+          phoneNumberId: phone.id,
+          dueAt,
+          status: def.maintenanceState,
+          networkRegisteredAt:
+            def.maintenanceState === 'COMPLETED' ? daysFromNow(-45) : null,
+          toppedUpAt:
+            def.maintenanceState === 'COMPLETED' ? daysFromNow(-45) : null,
+          topUpAmount:
+            def.maintenanceState === 'COMPLETED'
+              ? new Prisma.Decimal('8.00')
+              : null,
+          completedAt:
+            def.maintenanceState === 'COMPLETED' ? daysFromNow(-45) : null,
+          notes: def.maintenanceState === 'OVERDUE' ? '[demo] forgotten' : null,
+        },
+      });
+    }
+  }
+  console.log(`Seeded ${defs.length} demo phone numbers with bindings & maintenance.`);
+}
+
+// ─── Portfolio demo seed ────────────────────────────────────────────────────
+
+async function seedPortfolio(opts: { ownerId: string }) {
+  const marker = 'demo-marketplace-overhaul';
+  const already = await prisma.portfolioItem.findUnique({
+    where: { slug: marker },
+  });
+  if (already) {
+    console.log('Portfolio demo: already present — skipping seed.');
+    return;
+  }
+
+  // Ensure a shared tag catalog so autocomplete has suggestions.
+  const tagDefs = [
+    'Next.js',
+    'NestJS',
+    'PostgreSQL',
+    'Stripe',
+    'Marketplace',
+    'Healthcare',
+    'AI Automation',
+    'Mobile',
+    'AWS',
+  ];
+  const tagRows = await Promise.all(
+    tagDefs.map((displayName) =>
+      prisma.portfolioTag.upsert({
+        where: { normalized: displayName.toLowerCase() },
+        create: { normalized: displayName.toLowerCase(), displayName },
+        update: { displayName },
+        select: { id: true, normalized: true },
+      }),
+    ),
+  );
+  const tagByName = new Map(
+    tagRows.map((t) => [t.normalized, t.id] as const),
+  );
+  const tagsFor = (names: string[]) =>
+    names
+      .map((n) => tagByName.get(n.toLowerCase()))
+      .filter((id): id is string => !!id)
+      .map((tagId) => ({ tagId }));
+
+  const items: Array<{
+    slug: string;
+    title: string;
+    shortSummary: string;
+    status: 'DRAFT' | 'READY' | 'ARCHIVED';
+    isNda: boolean;
+    contentMarkdown: string;
+    tags: string[];
+  }> = [
+    {
+      slug: 'demo-marketplace-overhaul',
+      title: 'Marketplace revenue overhaul',
+      shortSummary:
+        'Replatformed a two-sided marketplace onto Next.js + NestJS and tripled their checkout conversion.',
+      status: 'READY',
+      isNda: false,
+      tags: ['Next.js', 'NestJS', 'PostgreSQL', 'Stripe', 'Marketplace'],
+      contentMarkdown: `# Marketplace revenue overhaul
+
+The client's legacy monolith couldn't ship fast enough to keep up with new seller tooling demands. We re-platformed their checkout and seller onboarding onto a modern Next.js + NestJS stack and launched in **under 10 weeks**.
+
+## Highlights
+
+- 3.1× checkout conversion vs. the legacy funnel
+- 42% faster time-to-first-payout for new sellers
+- Zero downtime cut-over using a two-way sync bridge
+
+## Stack
+
+| Layer      | Technology           |
+| ---------- | -------------------- |
+| Frontend   | Next.js 14, RSC      |
+| API        | NestJS 10 + Prisma   |
+| Payments   | Stripe Connect       |
+| Infra      | AWS ECS + Aurora PG  |
+
+## Approach
+
+1. Built an **adapter layer** that mirrored every legacy write into the new DB.
+2. Rolled out checkout **region by region** behind a feature flag.
+3. Flipped the old DB to read-only once we hit 100% traffic parity.
+
+> "The team shipped faster than any vendor we've worked with in the last five years."
+> — *VP Engineering*
+
+\`\`\`ts
+// Example: the sync bridge resolved cross-DB writes with a single idempotency key.
+await bridge.syncOrder(order.id, { source: 'legacy' })
+\`\`\`
+`,
+    },
+    {
+      slug: 'demo-healthcare-triage',
+      title: 'Healthcare AI triage assistant',
+      shortSummary:
+        'Shipped an AI-assisted triage flow for a regional clinic network under NDA.',
+      status: 'READY',
+      isNda: true,
+      tags: ['AI Automation', 'Healthcare', 'NestJS'],
+      contentMarkdown: `# Healthcare AI triage
+
+NDA case study. The product consolidated three legacy intake flows into a single AI-assisted triage experience, cutting the average time-to-first-doctor-review from 48h to under 6h.
+
+## Scope
+
+- OCR + structured extraction from referral PDFs
+- Risk scoring powered by an in-house LLM pipeline
+- Compliance review with the client's medical safety team
+
+Specific metrics and client identity are confidential and were cleared for internal use only.
+`,
+    },
+    {
+      slug: 'demo-mobile-field-ops',
+      title: 'Field operations mobile app',
+      shortSummary:
+        'Offline-first mobile companion for field technicians, draft only.',
+      status: 'DRAFT',
+      isNda: false,
+      tags: ['Mobile', 'AWS'],
+      contentMarkdown: `# Field operations mobile app
+
+Draft case study — content still being written.
+
+- Offline-first sync with conflict resolution
+- Photo capture with watermarking
+- Dispatcher dashboard web companion
+
+TODO: add result metrics once the client approves the public write-up.
+`,
+    },
+    {
+      slug: 'demo-legacy-crm-migration',
+      title: 'Legacy CRM retire & migrate',
+      shortSummary:
+        'Decommissioned a 12-year-old CRM and moved every record to a modern stack.',
+      status: 'ARCHIVED',
+      isNda: false,
+      tags: ['PostgreSQL', 'NestJS'],
+      contentMarkdown: `# Legacy CRM retire & migrate
+
+Archived — kept for reference. We migrated 1.4M customer rows and 220k attachments from a Perl-era CRM onto a NestJS + PostgreSQL stack over three months.
+`,
+    },
+  ];
+
+  for (const item of items) {
+    await prisma.portfolioItem.create({
+      data: {
+        slug: item.slug,
+        title: item.title,
+        shortSummary: item.shortSummary,
+        status: item.status,
+        isNda: item.isNda,
+        contentMarkdown: item.contentMarkdown,
+        createdById: opts.ownerId,
+        updatedById: opts.ownerId,
+        tags: {
+          create: tagsFor(item.tags),
+        },
+      },
+    });
+  }
+  console.log(`Seeded ${items.length} demo portfolio items with ${tagDefs.length} shared tags.`);
+}
+
+// ─── Backup runs demo seed ──────────────────────────────────────────────────
+
+async function seedBackupRuns() {
+  const already = await prisma.backupRun.findFirst({
+    where: { triggeredBy: 'seed:demo' },
+    select: { id: true },
+  });
+  if (already) {
+    console.log('Backup runs demo: already present — skipping seed.');
+    return;
+  }
+
+  const now = Date.now();
+  type Row = Parameters<typeof prisma.backupRun.create>[0]['data'];
+  const rows: Row[] = [
+    {
+      type: 'DAILY',
+      status: 'SUCCEEDED',
+      environment: 'local',
+      databaseName: 'ai_dashboard',
+      startedAt: new Date(now - 6 * 60 * 60 * 1000),
+      completedAt: new Date(now - 6 * 60 * 60 * 1000 + 54_000),
+      durationMs: 54_000,
+      artifactKey: 'daily/2026-10-01_0300_c0ffee1234.dump',
+      manifestKey: 'daily/2026-10-01_0300_c0ffee1234.manifest.json',
+      size: BigInt(84_000_000),
+      checksum: 'c0ffee1234abcdef5678901234567890abcdef1234567890abcdef1234567890',
+      checksumAlgo: 'sha256',
+      pgVersion: '16.4',
+      gitSha: 'a1b2c3d4e5f67890',
+      migrationName: '20261013000000_phones_portfolio_backup',
+      triggeredBy: 'seed:demo',
+    },
+    {
+      type: 'PRE_MIGRATION',
+      status: 'SUCCEEDED',
+      environment: 'local',
+      databaseName: 'ai_dashboard',
+      startedAt: new Date(now - 2 * 24 * 60 * 60 * 1000),
+      completedAt: new Date(now - 2 * 24 * 60 * 60 * 1000 + 48_000),
+      durationMs: 48_000,
+      artifactKey: 'pre-migration/2026-09-29_1420_a1b2c3d4e5.dump',
+      manifestKey: 'pre-migration/2026-09-29_1420_a1b2c3d4e5.manifest.json',
+      size: BigInt(78_000_000),
+      checksum: 'a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890',
+      checksumAlgo: 'sha256',
+      pgVersion: '16.4',
+      gitSha: 'f0e1d2c3b4a59876',
+      migrationName: '20261012000000_audit_event_extended',
+      triggeredBy: 'seed:demo',
+    },
+    {
+      type: 'MANUAL',
+      status: 'VERIFIED',
+      environment: 'local',
+      databaseName: 'ai_dashboard',
+      startedAt: new Date(now - 3 * 24 * 60 * 60 * 1000),
+      completedAt: new Date(now - 3 * 24 * 60 * 60 * 1000 + 52_000),
+      durationMs: 52_000,
+      artifactKey: 'manual/2026-09-28_0812_9876abcdef.dump',
+      manifestKey: 'manual/2026-09-28_0812_9876abcdef.manifest.json',
+      size: BigInt(76_000_000),
+      checksum: '9876abcdef1234567890abcdef1234567890abcdef1234567890abcdef123456',
+      checksumAlgo: 'sha256',
+      pgVersion: '16.4',
+      gitSha: 'deadbeef12345678',
+      migrationName: '20261011000000_credentials_vault_foundation',
+      triggeredBy: 'seed:demo',
+      lastVerifiedAt: new Date(now - 3 * 24 * 60 * 60 * 1000 + 90_000),
+    },
+    {
+      type: 'DAILY',
+      status: 'FAILED',
+      environment: 'local',
+      databaseName: 'ai_dashboard',
+      startedAt: new Date(now - 5 * 24 * 60 * 60 * 1000),
+      completedAt: new Date(now - 5 * 24 * 60 * 60 * 1000 + 12_000),
+      durationMs: 12_000,
+      pgVersion: '16.4',
+      gitSha: '12345678abcdef00',
+      migrationName: '20261011000000_credentials_vault_foundation',
+      triggeredBy: 'seed:demo',
+      errorMessage:
+        'B2 upload failed: 503 service unavailable from Backblaze (retried 2 times)',
+    },
+    {
+      type: 'PRE_SEED',
+      status: 'SUCCEEDED',
+      environment: 'local',
+      databaseName: 'ai_dashboard',
+      startedAt: new Date(now - 7 * 24 * 60 * 60 * 1000),
+      completedAt: new Date(now - 7 * 24 * 60 * 60 * 1000 + 46_000),
+      durationMs: 46_000,
+      artifactKey: 'pre-seed/2026-09-24_1105_cafebabe12.dump',
+      manifestKey: 'pre-seed/2026-09-24_1105_cafebabe12.manifest.json',
+      size: BigInt(72_000_000),
+      checksum: 'cafebabe123456789012345678901234567890abcdef1234567890abcdef1234',
+      checksumAlgo: 'sha256',
+      pgVersion: '16.4',
+      gitSha: 'cafebabedeadbeef',
+      migrationName: '20261010000000_drop_linkedin_array_defaults',
+      triggeredBy: 'seed:demo',
+    },
+  ];
+
+  for (const data of rows) {
+    await prisma.backupRun.create({ data });
+  }
+  console.log(`Seeded ${rows.length} demo backup runs.`);
+}
+
+function daysFromNow(days: number): Date {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + days);
+  d.setUTCHours(9, 0, 0, 0);
+  return d;
+}
+
+/**
+ * Idempotent demo audit events for the Audit Log UI. We tag every row
+ * with `metadata.seed === 'demo'` so repeat runs can detect prior
+ * seed presence and skip. Secrets never land here — only shape info
+ * (field names, status transitions, permission adds/removes).
+ */
+async function seedAuditDemoEvents(opts: {
+  ownerId: string;
+  adminManagerId: string;
+  regularManagerId: string;
+}) {
+  const already = await prisma.auditEvent.count({
+    where: {
+      metadata: { path: ['seed'], equals: 'demo' },
+    },
+  });
+  if (already > 0) {
+    console.log(
+      `Audit demo events: ${already} already present — skipping seed.`,
+    );
+    return;
+  }
+  const now = Date.now();
+  const minutesAgo = (m: number) => new Date(now - m * 60_000);
+
+  type Row = Parameters<typeof prisma.auditEvent.create>[0]['data'];
+  const events: Row[] = [
+    {
+      actorUserId: opts.ownerId,
+      actorEmail: 'admin@test.com',
+      actorName: 'Dmytro Sarafaniuk',
+      domain: 'AUTH',
+      action: 'auth.login',
+      targetType: 'User',
+      targetId: opts.ownerId,
+      targetLabel: 'admin@test.com',
+      result: 'SUCCESS',
+      severity: 'INFO',
+      metadata: { seed: 'demo' },
+      ip: '10.0.0.12',
+      userAgent: 'Mozilla/5.0 (Macintosh)',
+      occurredAt: minutesAgo(2),
+    },
+    {
+      actorUserId: null,
+      actorEmail: 'intruder@example.com',
+      domain: 'AUTH',
+      action: 'auth.login',
+      targetType: 'User',
+      targetLabel: 'intruder@example.com',
+      result: 'FAILED',
+      severity: 'WARNING',
+      metadata: { seed: 'demo', reason: 'unknown_email' },
+      ip: '203.0.113.44',
+      occurredAt: minutesAgo(7),
+    },
+    {
+      actorUserId: opts.ownerId,
+      actorEmail: 'admin@test.com',
+      actorName: 'Dmytro Sarafaniuk',
+      domain: 'RBAC',
+      action: 'user.role.assign',
+      targetType: 'User',
+      targetId: opts.adminManagerId,
+      targetLabel: 'manager@test.com',
+      result: 'SUCCESS',
+      severity: 'WARNING',
+      metadata: { seed: 'demo' },
+      changes: {
+        role: { before: 'regular_manager', after: 'admin_manager' },
+      },
+      occurredAt: minutesAgo(14),
+    },
+    {
+      actorUserId: opts.ownerId,
+      actorEmail: 'admin@test.com',
+      actorName: 'Dmytro Sarafaniuk',
+      domain: 'RBAC',
+      action: 'role.update',
+      targetType: 'Role',
+      targetId: ADMIN_MANAGER_ROLE_ID,
+      targetLabel: 'Admin manager',
+      targetHref: `/roles/${ADMIN_MANAGER_ROLE_ID}`,
+      result: 'SUCCESS',
+      severity: 'WARNING',
+      metadata: {
+        seed: 'demo',
+        permissions: {
+          added: ['invoices:delete'],
+          removed: ['payment_sources:delete'],
+        },
+      },
+      occurredAt: minutesAgo(30),
+    },
+    {
+      actorUserId: opts.ownerId,
+      actorEmail: 'admin@test.com',
+      actorName: 'Dmytro Sarafaniuk',
+      domain: 'FINANCE',
+      action: 'invoice.status.change',
+      targetType: 'Invoice',
+      targetLabel: '#INV-1042 · ACME Corp',
+      result: 'SUCCESS',
+      severity: 'WARNING',
+      metadata: { seed: 'demo' },
+      changes: {
+        status: { before: 'open', after: 'paid' },
+        amountPaid: { before: '0', after: '4200.00' },
+      },
+      occurredAt: minutesAgo(45),
+    },
+    {
+      actorUserId: opts.adminManagerId,
+      actorEmail: 'manager@test.com',
+      actorName: 'Alex Manager',
+      domain: 'FINANCE',
+      action: 'payroll.markPaid',
+      targetType: 'PayrollEntry',
+      targetLabel: 'Nikita Developer · 2026-09',
+      result: 'SUCCESS',
+      severity: 'WARNING',
+      metadata: { seed: 'demo' },
+      changes: {
+        status: { before: 'DRAFT', after: 'PAID' },
+      },
+      occurredAt: minutesAgo(80),
+    },
+    {
+      actorUserId: opts.adminManagerId,
+      actorEmail: 'manager@test.com',
+      actorName: 'Alex Manager',
+      domain: 'CREDENTIALS',
+      action: 'credentials.account.reveal',
+      targetType: 'CredentialAccount',
+      targetLabel: 'Upwork Main Account',
+      result: 'SUCCESS',
+      severity: 'INFO',
+      metadata: { seed: 'demo', field: 'password' },
+      occurredAt: minutesAgo(95),
+    },
+    {
+      actorUserId: opts.regularManagerId,
+      actorEmail: 'regular@test.com',
+      actorName: 'Reg Manager',
+      domain: 'CREDENTIALS',
+      action: 'credentials.account.reveal',
+      targetType: 'CredentialAccount',
+      targetLabel: 'Stripe Live Keys',
+      result: 'DENIED',
+      severity: 'WARNING',
+      metadata: { seed: 'demo', reason: 'insufficient_permission' },
+      occurredAt: minutesAgo(110),
+    },
+    {
+      actorUserId: opts.ownerId,
+      actorEmail: 'admin@test.com',
+      actorName: 'Dmytro Sarafaniuk',
+      domain: 'PROJECTS',
+      action: 'project.members.change',
+      targetType: 'Project',
+      targetLabel: 'Project Atlas',
+      result: 'SUCCESS',
+      severity: 'INFO',
+      metadata: {
+        seed: 'demo',
+        members: {
+          added: ['employee-alex'],
+          removed: [],
+        },
+      },
+      occurredAt: minutesAgo(140),
+    },
+    {
+      actorUserId: opts.ownerId,
+      actorEmail: 'admin@test.com',
+      actorName: 'Dmytro Sarafaniuk',
+      domain: 'CREDENTIALS',
+      action: 'credentials.account.hard_delete',
+      targetType: 'CredentialAccount',
+      targetLabel: 'Legacy Account (deleted)',
+      result: 'SUCCESS',
+      severity: 'CRITICAL',
+      metadata: { seed: 'demo', stepUp: 'mfa' },
+      occurredAt: minutesAgo(240),
+    },
+    {
+      actorUserId: opts.ownerId,
+      actorEmail: 'admin@test.com',
+      actorName: 'Dmytro Sarafaniuk',
+      domain: 'EMPLOYEES',
+      action: 'employee.status.change',
+      targetType: 'Employee',
+      targetLabel: 'Jane Example',
+      result: 'SUCCESS',
+      severity: 'WARNING',
+      metadata: { seed: 'demo' },
+      changes: {
+        status: { before: 'active', after: 'archived' },
+      },
+      occurredAt: minutesAgo(360),
+    },
+    {
+      actorUserId: opts.ownerId,
+      actorEmail: 'admin@test.com',
+      actorName: 'Dmytro Sarafaniuk',
+      domain: 'FINANCE',
+      action: 'paymentSource.archive',
+      targetType: 'PaymentSource',
+      targetLabel: 'Old Wise USD',
+      result: 'SUCCESS',
+      severity: 'INFO',
+      metadata: { seed: 'demo' },
+      changes: {
+        isActive: { before: true, after: false },
+      },
+      occurredAt: minutesAgo(500),
+    },
+  ];
+
+  for (const data of events) {
+    await prisma.auditEvent.create({ data });
+  }
+  console.log(`Seeded ${events.length} demo audit events.`);
 }
 
 main()

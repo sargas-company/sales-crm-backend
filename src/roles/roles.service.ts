@@ -4,9 +4,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { AuditResult, AuditSeverity } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogService } from '../audit/audit-log.service';
+import { AuditEventService } from '../audit-event/audit-event.service';
+import { permissionDiff, safeDiff } from '../audit-event/audit-sanitizer';
 import { CreateRoleDto } from './dto/create-role.dto';
 import { UpdateRoleDto } from './dto/update-role.dto';
 
@@ -19,7 +22,22 @@ export class RolesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditLogService,
+    private readonly auditEvent: AuditEventService,
   ) {}
+
+  /** Snapshot of actor name/email for audit survivability. */
+  private async actorSnapshot(actorId: string | null) {
+    if (!actorId) return { email: null, name: null };
+    const u = await this.prisma.user.findUnique({
+      where: { id: actorId },
+      select: { email: true, firstName: true, lastName: true },
+    });
+    return {
+      email: u?.email ?? null,
+      name:
+        `${u?.firstName ?? ''} ${u?.lastName ?? ''}`.trim() || null,
+    };
+  }
 
   // ── Reads ──────────────────────────────────────────────────────────────
 
@@ -118,6 +136,24 @@ export class RolesService {
         permissionKeys: permissions.map((p) => p.key).sort(),
       },
     });
+    const snap = await this.actorSnapshot(actorId);
+    await this.auditEvent.recordSafe({
+      actorUserId: actorId,
+      actorEmail: snap.email,
+      actorName: snap.name,
+      domain: 'RBAC',
+      action: 'role.create',
+      targetType: 'Role',
+      targetId: created.id,
+      targetLabel: created.label,
+      targetHref: `/roles/${created.id}`,
+      result: AuditResult.SUCCESS,
+      severity: AuditSeverity.INFO,
+      metadata: {
+        name: created.name,
+        permissions: permissions.map((p) => p.key).sort(),
+      },
+    });
     return { ...created, permissions, userCount: 0 };
   }
 
@@ -206,6 +242,35 @@ export class RolesService {
       summary,
     });
 
+    const changes = safeDiff(
+      { label: role.label, description: role.description },
+      {
+        label: dto.label ?? role.label,
+        description: dto.description ?? role.description,
+      },
+    );
+    const permDiff =
+      nextKeys !== null
+        ? permissionDiff(Array.from(currentKeys), Array.from(nextKeys))
+        : undefined;
+
+    const snap = await this.actorSnapshot(actorId);
+    await this.auditEvent.recordSafe({
+      actorUserId: actorId,
+      actorEmail: snap.email,
+      actorName: snap.name,
+      domain: 'RBAC',
+      action: 'role.update',
+      targetType: 'Role',
+      targetId: id,
+      targetLabel: role.label,
+      targetHref: `/roles/${id}`,
+      result: AuditResult.SUCCESS,
+      severity: permDiff ? AuditSeverity.WARNING : AuditSeverity.INFO,
+      changes: changes ?? null,
+      metadata: permDiff ? { permissions: permDiff } : undefined,
+    });
+
     return this.readSingleRole(id);
   }
 
@@ -231,6 +296,20 @@ export class RolesService {
       targetType: 'Role',
       targetId: id,
       summary: { name: role.name, label: role.label },
+    });
+    const snap = await this.actorSnapshot(actorId);
+    await this.auditEvent.recordSafe({
+      actorUserId: actorId,
+      actorEmail: snap.email,
+      actorName: snap.name,
+      domain: 'RBAC',
+      action: 'role.delete',
+      targetType: 'Role',
+      targetId: id,
+      targetLabel: role.label,
+      result: AuditResult.SUCCESS,
+      severity: AuditSeverity.WARNING,
+      metadata: { name: role.name },
     });
   }
 
@@ -297,6 +376,28 @@ export class RolesService {
         roleName: role.name,
         previousRoleId: user.roleId,
         previousRoleName: user.roleRef?.name ?? null,
+      },
+    });
+    const snap = await this.actorSnapshot(actorId);
+    await this.auditEvent.recordSafe({
+      actorUserId: actorId,
+      actorEmail: snap.email,
+      actorName: snap.name,
+      domain: 'RBAC',
+      action: 'user.role.assign',
+      targetType: 'User',
+      targetId: userId,
+      targetLabel: user.email,
+      result: AuditResult.SUCCESS,
+      severity:
+        role.name === OWNER_SLUG || user.roleRef?.name === OWNER_SLUG
+          ? AuditSeverity.CRITICAL
+          : AuditSeverity.WARNING,
+      changes: {
+        role: {
+          before: user.roleRef?.name ?? null,
+          after: role.name,
+        },
       },
     });
     return { id: user.id, email: user.email, roleId };

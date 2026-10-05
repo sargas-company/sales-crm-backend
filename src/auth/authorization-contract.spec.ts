@@ -41,13 +41,30 @@ const PUBLIC_ALLOWLIST = new Set<string>([
   'ClientRequestsController#create',
   // Vibe Worker webhook is protected by its own shared-secret guard.
   'VibeWorkerWebhookController#captureJobPost',
+  // Discord Interactions endpoint. Protected by per-request Ed25519
+  // signature verification against DISCORD_PUBLIC_KEY — the signed
+  // raw body IS the authorization check, so JWT is not applicable.
+  'DiscordInteractionsController#handle',
 ]);
 
-// Authenticated-but-not-RBAC-gated endpoints. Currently only the
-// handlers that inspect the caller's own session belong here.
+// Authenticated-but-not-RBAC-gated endpoints. Entries here must act
+// exclusively on the caller's own session or on a workspace-wide
+// surface that every authenticated user is explicitly expected to
+// see. No endpoint that mutates another user's data or returns a
+// per-permission filtered projection belongs here.
 const AUTH_ONLY_ALLOWLIST = new Set<string>([
   'AuthController#logout',
   'AuthController#me',
+  // Avatar self-service — every handler reads/writes only
+  // `req.user.id`'s own User row and avatar storage key. There is
+  // no admin-view permission for avatars; the self-only invariant
+  // comes from the implementation using the authenticated user id
+  // as the sole subject.
+  'AuthController#updateMe',
+  'AuthController#uploadAvatar',
+  'AuthController#listAvatarPresets',
+  'AuthController#setAvatarPreset',
+  'AuthController#deleteAvatar',
 ]);
 
 const getGuards = (target: object): unknown[] => {

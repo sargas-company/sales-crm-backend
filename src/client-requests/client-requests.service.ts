@@ -1,4 +1,5 @@
 import * as path from 'path';
+import { randomUUID } from 'node:crypto';
 
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { NotificationType, Prisma } from '@prisma/client';
@@ -109,12 +110,28 @@ export class ClientRequestsService {
     const storedFiles = (request.files as unknown) as StoredFileMetadata[];
 
     return Promise.all(
-      storedFiles.map(async (f) => ({
-        originalName: f.originalName,
-        mimetype: f.mimetype,
-        size: f.size,
-        url: await this.storage.getDownloadUrl(StorageBucket.CLIENT_REQUESTS, f.fileName),
-      })),
+      storedFiles.map(async (f) => {
+        // Resolve the object key. New rows store it directly in
+        // `fileName`; very old rows may have a permanent B2 URL in
+        // `url` with no key alongside — fall back to extracting it.
+        const key =
+          f.fileName ||
+          (f.url ? this.storage.extractKeyFromLegacyUrl(f.url) : null);
+        if (!key) {
+          throw new NotFoundException(
+            `Client request file "${f.originalName}" has no resolvable key`,
+          );
+        }
+        return {
+          originalName: f.originalName,
+          mimetype: f.mimetype,
+          size: f.size,
+          url: await this.storage.getDownloadUrl(
+            StorageBucket.CLIENT_REQUESTS,
+            key,
+          ),
+        };
+      }),
     );
   }
 
@@ -139,40 +156,58 @@ export class ClientRequestsService {
       .replace(/[^\p{L}\p{N} \-_.,()]/gu, '')
       .trim();
 
-    const storedFiles: StoredFileMetadata[] = await Promise.all(
-      files.map(async (file) => {
-        const ext = path.extname(file.originalName);
-        const baseName = path
-          .basename(file.originalName, ext)
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-+|-+$/g, '')
-          .slice(0, 60);
-        const fileName = `${folderName}/${new Date().toISOString().slice(0, 10)}-${baseName}${ext}`;
+    // Compensating cleanup: if any part of the write path fails after
+    // some files have reached B2, remove the uploaded objects + the
+    // half-populated request row so we never leave B2 orphans.
+    const uploadedKeys: string[] = [];
+    let storedFiles: StoredFileMetadata[] = [];
+    try {
+      storedFiles = await Promise.all(
+        files.map(async (file) => {
+          const ext = path.extname(file.originalName);
+          const baseName = path
+            .basename(file.originalName, ext)
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '')
+            .slice(0, 60);
+          // Collision-proof suffix — Date.now() alone collided across
+          // concurrent uploads inside the same request.
+          const uniq = randomUUID().slice(0, 8);
+          const fileName = `${folderName}/${new Date()
+            .toISOString()
+            .slice(0, 10)}-${baseName}-${uniq}${ext}`;
 
-        const { fileId, url } = await this.storage.upload({
-          bucket: StorageBucket.CLIENT_REQUESTS,
-          fileName,
-          buffer: file.buffer,
-          mimeType: file.mimetype,
+          const { fileId, key } = await this.storage.upload({
+            bucket: StorageBucket.CLIENT_REQUESTS,
+            fileName,
+            buffer: file.buffer,
+            mimeType: file.mimetype,
+          });
+          uploadedKeys.push(key);
+
+          // Key is the source of truth. `url` is intentionally NOT
+          // persisted for new rows — buckets are private, so a long-
+          // lived URL would be useless and risky.
+          return {
+            originalName: file.originalName,
+            fileName: key,
+            fileId,
+            mimetype: file.mimetype,
+            size: file.size,
+          };
+        }),
+      );
+
+      if (storedFiles.length > 0) {
+        await this.prisma.clientRequest.update({
+          where: { id: request.id },
+          data: { files: storedFiles as object[] },
         });
-
-        return {
-          originalName: file.originalName,
-          fileName,
-          fileId,
-          url,
-          mimetype: file.mimetype,
-          size: file.size,
-        };
-      }),
-    );
-
-    if (storedFiles.length > 0) {
-      await this.prisma.clientRequest.update({
-        where: { id: request.id },
-        data: { files: storedFiles as object[] },
-      });
+      }
+    } catch (err) {
+      await this.cleanupOrphans(request.id, uploadedKeys);
+      throw err;
     }
 
     try {
@@ -193,5 +228,31 @@ export class ClientRequestsService {
     }
 
     return request;
+  }
+
+  /**
+   * Best-effort cleanup when the create-flow fails after some uploads
+   * have already landed in B2. We delete the uploaded objects and the
+   * half-populated request row so a retried submission starts clean.
+   */
+  private async cleanupOrphans(requestId: string, keys: string[]): Promise<void> {
+    for (const key of keys) {
+      try {
+        await this.storage.deleteByName(StorageBucket.CLIENT_REQUESTS, key);
+      } catch (err) {
+        this.logger.warn(
+          `Orphan cleanup: could not delete ${key}: ${(err as Error).message}`,
+        );
+      }
+    }
+    try {
+      await this.prisma.clientRequest.delete({ where: { id: requestId } });
+    } catch (err) {
+      this.logger.warn(
+        `Orphan cleanup: could not delete request ${requestId}: ${
+          (err as Error).message
+        }`,
+      );
+    }
   }
 }

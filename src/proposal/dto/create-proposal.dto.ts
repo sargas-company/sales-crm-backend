@@ -5,6 +5,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsUUID,
   Min,
   MinLength,
 } from 'class-validator';
@@ -18,11 +19,11 @@ export class CreateProposalDto {
   title: string;
 
   @ApiProperty({ example: 'uuid-of-account' })
-  @IsString()
+  @IsUUID()
   accountId: string;
 
   @ApiProperty({ example: 'uuid-of-platform' })
-  @IsString()
+  @IsUUID()
   platformId: string;
 
   @ApiProperty({ enum: ProposalType, example: ProposalType.Bid })

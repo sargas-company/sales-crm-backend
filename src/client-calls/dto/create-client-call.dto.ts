@@ -7,6 +7,7 @@ import {
   IsOptional,
   IsPositive,
   IsString,
+  IsUUID,
   IsUrl,
   MinLength,
   ValidateIf,
@@ -19,12 +20,12 @@ export class CreateClientCallDto {
 
   @ApiPropertyOptional({ example: 'uuid-of-lead' })
   @ValidateIf((o) => o.clientType === ClientCallClientType.lead)
-  @IsString()
+  @IsUUID()
   leadId?: string;
 
   @ApiPropertyOptional({ example: 'uuid-of-client-request' })
   @ValidateIf((o) => o.clientType === ClientCallClientType.client_request)
-  @IsString()
+  @IsUUID()
   clientRequestId?: string;
 
   @ApiProperty({ example: 'Discovery Call' })

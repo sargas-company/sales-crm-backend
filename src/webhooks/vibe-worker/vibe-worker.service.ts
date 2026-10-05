@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import {
   JobPostIngestEvent,
   JobPostIngestSource,
@@ -7,6 +7,8 @@ import {
 import { createHash } from 'crypto';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import { SettingsService } from '../../settings/settings.service';
+import { SK } from '../../settings/settings-registry';
 
 export interface CapturedEventResult {
   eventId: string;
@@ -17,12 +19,27 @@ export interface CapturedEventResult {
 export class VibeWorkerWebhookService {
   private readonly logger = new Logger(VibeWorkerWebhookService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly settings: SettingsService,
+  ) {}
 
   async captureJobPost(
     payload: unknown,
     providedEventId: string | null,
   ): Promise<CapturedEventResult> {
+    const ingestionEnabled = await this.settings.getBooleanForKey(
+      SK.SCANNER_INGESTION_ENABLED,
+      true,
+    );
+    if (!ingestionEnabled) {
+      this.logger.warn(
+        'Vibe Worker webhook: ingestion is disabled by settings — rejecting event',
+      );
+      throw new ServiceUnavailableException(
+        'Scanner ingestion is temporarily disabled',
+      );
+    }
     const idempotencyKey = providedEventId
       ? `vibe:event:${providedEventId}`
       : `vibe:sha256:${stableHash(payload)}`;

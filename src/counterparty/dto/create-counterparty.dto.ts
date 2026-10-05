@@ -16,6 +16,11 @@ export class CreateCounterpartyDto {
   @MinLength(1)
   lastName: string;
 
+  @ApiPropertyOptional({ example: 'Acme Corp' })
+  @IsOptional()
+  @IsString()
+  company?: string;
+
   @ApiProperty({ enum: CounterpartyType, example: CounterpartyType.client })
   @IsEnum(CounterpartyType)
   type: CounterpartyType;

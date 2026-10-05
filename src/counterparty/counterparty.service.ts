@@ -35,6 +35,7 @@ export class CounterpartyService {
             OR: [
               { firstName: { contains: dto.search, mode: 'insensitive' } },
               { lastName: { contains: dto.search, mode: 'insensitive' } },
+              { company: { contains: dto.search, mode: 'insensitive' } },
             ],
           }
         : {}),

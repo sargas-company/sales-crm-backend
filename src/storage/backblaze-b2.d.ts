@@ -55,6 +55,43 @@ declare module 'backblaze-b2' {
       maxFileCount?: number;
       prefix?: string;
     }): Promise<B2Response<{ files: Array<{ fileId: string; fileName: string }>; nextFileName: string | null; nextFileId: string | null }>>;
+    listFileNames(args: {
+      bucketId: string;
+      startFileName?: string;
+      maxFileCount?: number;
+      prefix?: string;
+      delimiter?: string;
+    }): Promise<
+      B2Response<{
+        files: Array<{
+          fileId: string;
+          fileName: string;
+          contentType?: string;
+          contentLength?: number;
+        }>;
+        nextFileName: string | null;
+      }>
+    >;
+    downloadFileById(args: {
+      fileId: string;
+      responseType?: 'arraybuffer' | 'stream' | 'json';
+    }): Promise<B2Response<ArrayBuffer | NodeJS.ReadableStream | unknown>>;
+    downloadFileByName(args: {
+      bucketName: string;
+      fileName: string;
+      responseType?: 'arraybuffer' | 'stream' | 'json';
+    }): Promise<B2Response<ArrayBuffer | NodeJS.ReadableStream | unknown>>;
+    listBuckets(args: {
+      accountId: string;
+    }): Promise<
+      B2Response<{
+        buckets: Array<{
+          bucketId: string;
+          bucketName: string;
+          bucketType: string;
+        }>;
+      }>
+    >;
     getDownloadAuthorization(args: {
       bucketId: string;
       fileNamePrefix: string;

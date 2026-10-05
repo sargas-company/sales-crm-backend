@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   IsArray,
   IsBoolean,
   IsDateString,
@@ -8,15 +9,19 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  IsUUID,
+  Max,
   Min,
   ValidateNested,
 } from 'class-validator';
 
 import { CreateInvoiceLineItemDto } from './create-invoice-line-item.dto';
+import { InvoiceCustomFieldDto } from './invoice-custom-field.dto';
+import { IsDueDateAfterStart } from './due-date-after-start.validator';
 
 export class CreateInvoiceDto {
   @ApiProperty({ example: 'uuid-of-counterparty' })
-  @IsString()
+  @IsUUID()
   counterpartyId: string;
 
   @ApiPropertyOptional({ example: 'INVOICE' })
@@ -48,6 +53,7 @@ export class CreateInvoiceDto {
   @IsOptional()
   @Transform(({ value }) => value || undefined)
   @IsDateString()
+  @IsDueDateAfterStart()
   dueDate?: string;
 
   @ApiPropertyOptional({ example: 'NET 30' })
@@ -85,11 +91,19 @@ export class CreateInvoiceDto {
   @IsString()
   terms?: string;
 
-  @ApiPropertyOptional({ example: 10 })
+  @ApiPropertyOptional({
+    example: 10,
+    description:
+      'Tax rate expressed as a percent, 0..100. Frontend `utils.ts` always applies ' +
+      '`subtotal * (tax / 100)` when `showTax` is true, so this field is a percent on ' +
+      'the wire regardless of the UI`s `taxMode` toggle (the toggle is UI-only and is ' +
+      'not persisted).',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
   @Min(0)
+  @Max(100)
   tax?: number;
 
   @ApiPropertyOptional({ example: 0 })
@@ -141,11 +155,15 @@ export class CreateInvoiceDto {
   labels?: Record<string, string>;
 
   @ApiPropertyOptional({
+    type: [InvoiceCustomFieldDto],
     example: [{ name: 'Project', value: 'Website Redesign' }],
   })
   @IsOptional()
   @IsArray()
-  customFields?: { name: string; value: string }[];
+  @ArrayMaxSize(32)
+  @ValidateNested({ each: true })
+  @Type(() => InvoiceCustomFieldDto)
+  customFields?: InvoiceCustomFieldDto[];
 
   @ApiPropertyOptional({ type: [CreateInvoiceLineItemDto] })
   @IsOptional()

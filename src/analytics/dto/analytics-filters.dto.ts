@@ -12,11 +12,6 @@ import {
 
 export type SalesDateRangeKey = 'today' | '7d' | '30d' | 'custom';
 export type ContractTypeFilter = 'fixed' | 'hourly' | 'unknown';
-export type ManualRelevanceFilter =
-  | 'relevant'
-  | 'not_relevant'
-  | 'very_relevant'
-  | 'unrated';
 export type NotificationStatusFilter =
   | 'sent'
   | 'failed'
@@ -112,10 +107,6 @@ export class AnalyticsFiltersDto {
   @IsArray()
   @IsString({ each: true })
   clientQuality?: string[];
-
-  @IsOptional()
-  @IsEnum(['relevant', 'not_relevant', 'very_relevant', 'unrated'])
-  manualRelevance?: ManualRelevanceFilter;
 
   @IsOptional()
   @IsEnum(['sent', 'failed', 'not_required', 'pending'])

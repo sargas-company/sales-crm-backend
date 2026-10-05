@@ -16,14 +16,18 @@ model User {
   refreshTokenHash String?
   firstName        String
   lastName         String
+  avatarUrl        String?
+  avatarKey        String?
   roleId           String?
   roleRef          Role?      @relation(fields: [roleId], references: [id])
   createdAt        DateTime   @default(now())
 
-  proposals    Proposal[]
-  accounts     Account[]
-  clientCalls  ClientCall[]
-  auditLogs    AuditLog[] @relation("AuditLogActor")
+  proposals       Proposal[]
+  accounts        Account[]
+  clientCalls     ClientCall[]
+  auditLogs       AuditLog[] @relation("AuditLogActor")
+  employeeLink    Employee?
+  timeOffsCreated TimeOff[]  @relation("TimeOffCreatedBy")
 }
 
 model Role {
@@ -314,12 +318,14 @@ model Counterparty {
   id        String          @id @default(uuid())
   firstName String
   lastName  String
+  company   String?
   type      CounterpartyType
   info      String?
   createdAt DateTime        @default(now())
   updatedAt DateTime        @updatedAt
 
   invoices Invoice[]
+  projects Project[]
 
   @@index([type])
 }
@@ -608,4 +614,1053 @@ model SettingValue {
   updatedAt DateTime @updatedAt
 
   setting Setting @relation(fields: [settingId], references: [id], onDelete: Cascade)
+}
+
+// ─── Employees ───────────────────────────────────────────────────────────────
+
+enum EmployeeStatus {
+  active
+  inactive
+}
+
+model Employee {
+  id        String         @id @default(uuid())
+  firstName String
+  lastName  String
+  email     String         @unique
+  phone     String?
+  positions String[]
+  status    EmployeeStatus @default(active)
+  hiredAt   DateTime?
+  // Day/Month only matter for the birthday notification; the year is
+  // kept for display convenience. Nullable so legacy rows survive.
+  dateOfBirth DateTime?    @db.Date
+  userId    String?        @unique
+  user      User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  memberships       ProjectMember[]
+  reports           ProjectReport[]
+  timeOffs          TimeOff[]
+  compensationRates EmployeeCompensationRate[]
+  payrollEntries    PayrollEntry[]
+  salaryReviews     SalaryReview[]
+  linkedInAccounts  LinkedInAccount[]
+  linkedInIdeas     LinkedInIdea[]
+  linkedInPosts     LinkedInPost[]
+  credentialProfiles CredentialProfile[]
+  heldPhoneNumbers   PhoneNumber[]      @relation("PhoneHolder")
+
+  @@index([status])
+}
+
+// ─── Projects ────────────────────────────────────────────────────────────────
+
+enum ProjectStatus {
+  planned
+  active
+  paused
+  completed
+  archived
+}
+
+model Project {
+  id               String        @id @default(uuid())
+  name             String
+  clientId         String?
+  client           Counterparty? @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  status           ProjectStatus @default(planned)
+  description      String?
+  startDate        DateTime?
+  endDate          DateTime?
+  // Discord channel id (snowflake). When set, members of this channel
+  // can file a `/report` from inside the channel; see
+  // `src/discord-integration/*`. Nullable to keep existing projects
+  // untouched. Unique so one Discord channel maps to at most one
+  // Project.
+  discordChannelId String?       @unique
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  members       ProjectMember[]
+  reports       ProjectReport[]
+  statusHistory ProjectStatusHistory[]
+  weeklyEntries WeeklyEntry[]
+  paymentRules  ProjectPaymentRule[]
+
+  @@index([status])
+  @@index([clientId])
+}
+
+model ProjectStatusHistory {
+  id          String        @id @default(uuid())
+  projectId   String
+  status      ProjectStatus
+  effectiveAt DateTime
+  createdAt   DateTime      @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, effectiveAt])
+  @@index([effectiveAt])
+}
+
+model ProjectMember {
+  projectId  String
+  employeeId String
+  assignedAt DateTime @default(now())
+
+  project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, employeeId])
+  @@index([employeeId])
+}
+
+// ─── Project Reports ─────────────────────────────────────────────────────────
+
+model ProjectReport {
+  id              String              @id @default(uuid())
+  projectId       String
+  // NULL only for `source = DISCORD`. The DB-level
+  // `ProjectReport_source_shape_chk` enforces that MANUAL rows always
+  // carry an employeeId and DISCORD rows never do.
+  employeeId      String?
+  reportDate      DateTime            @db.Date
+  hours           Float
+  content         String
+  source          ProjectReportSource @default(MANUAL)
+  // Discord provenance — present iff `source = DISCORD`. Not an FK:
+  // we deliberately avoid linking a Discord identity to an Employee
+  // row (the Discord-flow is per-project, not per-person).
+  discordUserId   String?
+  discordUsername String?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  project  Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  employee Employee? @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  // Uniqueness lives in partial indexes `ProjectReport_manual_uq` and
+  // `ProjectReport_discord_uq` — see the 20261020 migration. Prisma
+  // cannot express `WHERE` clauses on `@@unique`, so this model has
+  // no `@@unique` block; service-layer logic consults the indexes
+  // via `pg_advisory_xact_lock` + explicit cross-source collision
+  // checks.
+  @@index([projectId])
+  @@index([employeeId])
+  @@index([reportDate])
+}
+
+enum ProjectReportSource {
+  MANUAL
+  DISCORD
+}
+
+// ─── Time Off ────────────────────────────────────────────────────────────────
+
+enum TimeOffType {
+  VACATION
+  SICK_LEAVE
+  UNPAID_LEAVE
+}
+
+model TimeOff {
+  id             String      @id @default(uuid())
+  employeeId     String
+  type           TimeOffType
+  startDate      DateTime    @db.Date
+  endDate        DateTime    @db.Date
+  workingDays    Int
+  note           String?
+  attachmentKey  String?
+  attachmentName String?
+  attachmentSize Int?
+  attachmentMime String?
+  createdById    String
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  employee  Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  createdBy User     @relation("TimeOffCreatedBy", fields: [createdById], references: [id])
+
+  @@index([employeeId, startDate])
+  @@index([type])
+  @@index([startDate])
+  @@index([endDate])
+}
+
+// ─── Compensation ────────────────────────────────────────────────────────────
+//
+// A single Employee can be paid HOURLY (rate × manually entered hours) or
+// MONTHLY (fixed monthly rate). EmployeeCompensationRate stores the
+// effective-dated history so future payroll runs can look up the rate active
+// on any date without rewriting past PayrollEntry rows (which snapshot their
+// own rate at the moment the entry is created).
+
+enum RateType {
+  HOURLY
+  MONTHLY
+}
+
+enum PayrollStatus {
+  DRAFT
+  PAID
+}
+
+enum SalaryReviewResult {
+  INCREASED
+  NO_CHANGE
+  POSTPONED
+}
+
+model EmployeeCompensationRate {
+  id            String   @id @default(uuid())
+  employeeId    String
+  rateType      RateType
+  rate          Decimal  @db.Decimal(12, 2)
+  effectiveDate DateTime @db.Date
+  note          String?
+  createdAt     DateTime @default(now())
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, effectiveDate])
+}
+
+model PayrollEntry {
+  id             String        @id @default(uuid())
+  employeeId     String
+  year           Int
+  month          Int
+  rateType       RateType
+  rate           Decimal       @db.Decimal(12, 2)
+  hours          Decimal?      @db.Decimal(10, 2)
+  baseSalary     Decimal       @db.Decimal(12, 2)
+  tax            Decimal       @db.Decimal(12, 2)
+  salaryWithTax  Decimal       @db.Decimal(12, 2)
+  bonusPercent   Decimal       @default(0) @db.Decimal(6, 2)
+  fixedBonus     Decimal       @default(0) @db.Decimal(12, 2)
+  bonusAmount    Decimal       @db.Decimal(12, 2)
+  advance        Decimal       @default(0) @db.Decimal(12, 2)
+  totalAccrued   Decimal       @db.Decimal(12, 2)
+  remainingToPay Decimal       @db.Decimal(12, 2)
+  payoneerFee    Decimal       @db.Decimal(12, 2)
+  companyCost    Decimal       @db.Decimal(12, 2)
+  note           String?
+  status         PayrollStatus @default(DRAFT)
+  paidAt         DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, year, month])
+  @@index([year, month])
+  @@index([status])
+}
+
+model SalaryReview {
+  id               String              @id @default(uuid())
+  employeeId       String
+  scheduledDate    DateTime            @db.Date
+  previousRateType RateType?
+  previousRate     Decimal?            @db.Decimal(12, 2)
+  newRateType      RateType?
+  newRate          Decimal?            @db.Decimal(12, 2)
+  effectiveDate    DateTime?           @db.Date
+  result           SalaryReviewResult?
+  note             String?
+  completedAt      DateTime?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([employeeId, scheduledDate])
+  @@index([scheduledDate])
+  @@index([result])
+}
+
+// ─── Payment Sources ─────────────────────────────────────────────────────────
+//
+// Directory of the accounts / wallets / cards the business uses to collect
+// client payments. Intentionally NOT wired into payroll, Payoneer fee, or a
+// ledger — that is a future feature.
+
+model PaymentSource {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  currency    String   @default("USD")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isActive])
+}
+
+// ─── LinkedIn ────────────────────────────────────────────────────────────────
+//
+// MVP of a manual LinkedIn content workspace: directory of accounts we
+// publish from, a bank of Ideas that can be converted into Posts, and
+// the Posts themselves (draft / ready / scheduled / published /
+// archived) with hand-entered performance metrics after publishing.
+// There is no LinkedIn API integration, no automated publishing, no AI
+// generation and no analytics/dashboard page at this stage.
+
+enum LinkedInAccountType {
+  PERSONAL
+  COMPANY
+}
+
+enum LinkedInIdeaStatus {
+  NEW
+  IN_PROGRESS
+  CONVERTED
+  ARCHIVED
+}
+
+enum LinkedInIdeaPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum LinkedInPostFormat {
+  TEXT
+  IMAGE
+  VIDEO
+  DOCUMENT
+  LINK
+  POLL
+}
+
+enum LinkedInPostStatus {
+  DRAFT
+  READY
+  SCHEDULED
+  PUBLISHED
+  ARCHIVED
+}
+
+model LinkedInAccount {
+  id          String              @id @default(uuid())
+  displayName String
+  type        LinkedInAccountType
+  profileUrl  String
+  employeeId  String?
+  avatarUrl   String?
+  isActive    Boolean             @default(true)
+  note        String?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  employee Employee?      @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  posts    LinkedInPost[]
+
+  @@index([type])
+  @@index([isActive])
+  @@index([employeeId])
+}
+
+model LinkedInIdea {
+  id              String               @id @default(uuid())
+  title           String
+  content         String
+  hook            String?
+  targetAudience  String?
+  contentPillar   String?
+  suggestedFormat LinkedInPostFormat?
+  language        String               @default("en")
+  priority        LinkedInIdeaPriority @default(MEDIUM)
+  status          LinkedInIdeaStatus   @default(NEW)
+  tags            String[]
+  referenceLinks  String[]
+  attachments     Json?
+  ownerId         String?
+  plannedDate     DateTime?            @db.Date
+  note            String?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+
+  owner Employee?      @relation(fields: [ownerId], references: [id], onDelete: SetNull)
+  posts LinkedInPost[]
+
+  @@index([status])
+  @@index([priority])
+  @@index([language])
+  @@index([plannedDate])
+}
+
+model LinkedInPost {
+  id              String             @id @default(uuid())
+  internalTitle   String
+  accountId       String
+  ideaId          String?
+  authorId        String?
+  body            String
+  hook            String?
+  firstComment    String?
+  hashtags        String[]
+  format          LinkedInPostFormat @default(TEXT)
+  language        String             @default("en")
+  targetAudience  String?
+  contentPillar   String?
+  attachments     Json?
+  externalLink    String?
+  status          LinkedInPostStatus @default(DRAFT)
+  scheduledAt     DateTime?
+  publishedAt     DateTime?
+  linkedInUrl     String?
+  note            String?
+
+  // Manual performance metrics — editable after publish.
+  impressions     Int                @default(0)
+  reactions       Int                @default(0)
+  comments        Int                @default(0)
+  reposts         Int                @default(0)
+  clicks          Int                @default(0)
+  followersGained Int                @default(0)
+  leadsGenerated  Int                @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account LinkedInAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  idea    LinkedInIdea?   @relation(fields: [ideaId], references: [id], onDelete: SetNull)
+  author  Employee?       @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([accountId])
+  @@index([ideaId])
+  @@index([status])
+  @@index([format])
+  @@index([scheduledAt])
+  @@index([publishedAt])
+}
+
+// ─── Finance Weekly Tracking ─────────────────────────────────────────────────
+
+enum PaymentStatus {
+  received
+  in_transit
+  expected_this_month
+  expected_later
+  planned_invoice
+  no_work
+}
+
+enum PaymentRuleType {
+  FIXED_DELAY
+  WEEKLY_ON_DOW
+  EVERY_N_WEEKS
+  CUSTOM
+}
+
+model FiscalMonth {
+  id             String   @id @default(uuid())
+  year           Int
+  sequenceInYear Int
+  startDate      DateTime @db.Date
+  endDate        DateTime @db.Date
+  weeksCount     Int
+  label          String
+  createdAt      DateTime @default(now())
+
+  weeks FiscalWeek[]
+
+  @@unique([year, sequenceInYear])
+  @@index([startDate])
+}
+
+model FiscalWeek {
+  id            String   @id @default(uuid())
+  fiscalMonthId String
+  indexInMonth  Int
+  startDate     DateTime @db.Date
+  endDate       DateTime @db.Date
+  label         String
+  createdAt     DateTime @default(now())
+
+  fiscalMonth FiscalMonth   @relation(fields: [fiscalMonthId], references: [id], onDelete: Cascade)
+  entries     WeeklyEntry[]
+
+  @@unique([fiscalMonthId, indexInMonth])
+  @@index([startDate])
+}
+
+model WeeklyEntry {
+  id             String        @id @default(uuid())
+  fiscalWeekId   String
+  projectId      String
+  amount         Decimal?      @db.Decimal(12, 2)
+  status         PaymentStatus
+  note           String?
+  invoiceSentAt  DateTime?     @db.Date
+  receivedAt     DateTime?     @db.Date
+  updatedById    String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  fiscalWeek FiscalWeek @relation(fields: [fiscalWeekId], references: [id], onDelete: Cascade)
+  project    Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([fiscalWeekId, projectId])
+  @@index([projectId])
+  @@index([status])
+}
+
+model ProjectPaymentRule {
+  id            String          @id @default(uuid())
+  projectId     String
+  type          PaymentRuleType
+  delayDays     Int?
+  dayOfWeek     Int?
+  intervalWeeks Int?
+  note          String?
+  effectiveFrom DateTime        @db.Date
+  createdAt     DateTime        @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, effectiveFrom])
+}
+
+// ─── Credentials vault (Phase 1 · Foundation) ───────────────────────────────
+//
+// Human-account vault. Owner + Admin Manager only, gated by permissions and
+// step-up MFA (WebAuthn preferred, TOTP fallback, hashed recovery codes).
+// Secrets are AES-256-GCM encrypted at the application layer before writing;
+// the DB never sees plaintext. See src/credentials/encryption.service.ts.
+
+enum CredentialProfileType {
+  PERSON
+  COMPANY
+  OTHER
+}
+
+enum CredentialProfileStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum CredentialAccountStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum MfaFactorType {
+  WEBAUTHN
+  TOTP
+  RECOVERY
+}
+
+model CredentialProfile {
+  id             String                  @id @default(uuid())
+  name           String
+  slug           String                  @unique
+  type           CredentialProfileType
+  status         CredentialProfileStatus @default(ACTIVE)
+  employeeId     String?
+  employee       Employee?               @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  avatarUrl      String?
+  description    String?
+  tags           String[]
+  createdById    String?
+  updatedById    String?
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  accounts CredentialAccount[]
+  phoneBindings PhoneNumberBinding[] @relation("PhoneBindings")
+
+  @@index([status])
+  @@index([type])
+  @@index([employeeId])
+}
+
+model CredentialAccount {
+  id                 String                  @id @default(uuid())
+  profileId          String
+  profile            CredentialProfile       @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  // Safe metadata — searchable, never leaks secrets.
+  serviceName        String
+  category           String
+  serviceUrl         String?
+  iconUrl            String?
+  tags               String[]
+  usernameHint       String?   // masked, e.g. "va*****@gmail.com" — display only.
+  status             CredentialAccountStatus @default(ACTIVE)
+
+  // Encrypted secret payload (username, password, TOTP seed, recovery
+  // codes, PIN, security answers, secure note, custom fields). See
+  // EncryptedPayload type; never returned in list/profile responses.
+  encPayload         Bytes
+  encIv              Bytes
+  encAuthTag         Bytes
+  encKeyVersion      Int      @default(1)
+  encAlgorithm       String   @default("AES-256-GCM")
+
+  lastRotatedAt      DateTime?
+  rotationReminderAt DateTime?
+  createdById        String?
+  updatedById        String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  attachments CredentialAttachment[]
+
+  @@index([profileId, status])
+  @@index([category])
+  @@index([serviceName])
+}
+
+model CredentialAttachment {
+  id            String   @id @default(uuid())
+  accountId     String
+  account       CredentialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  // Two independent encrypted blobs — each with its own IV + auth tag —
+  // because AES-GCM requires a unique IV per encryption. `encMeta` holds
+  // JSON `{filename, mime}` for the listing UI; `encContent` holds the raw
+  // file bytes. Both use the same key version so rotation stays cheap.
+  //
+  // `encStorageRef` is reserved for a future switch to an encrypted
+  // object-store backing (Phase 5); null in Phase 2 (fully inline).
+  encMeta          Bytes
+  encMetaIv        Bytes
+  encMetaAuthTag   Bytes
+  encContent       Bytes
+  encContentIv     Bytes
+  encContentAuthTag Bytes
+  encStorageRef    Bytes?
+  encKeyVersion    Int      @default(1)
+  encAlgorithm     String   @default("AES-256-GCM")
+
+  size          Int
+  uploadedById  String?
+  createdAt     DateTime @default(now())
+
+  @@index([accountId])
+}
+
+// ─── MFA foundation (used by Vault Session step-up in Phase 3) ──────────────
+
+model UserMfaCredential {
+  id            String        @id @default(uuid())
+  userId        String
+  type          MfaFactorType
+
+  // WebAuthn credential fields (nullable for non-WebAuthn rows).
+  credentialId  Bytes?        @unique
+  publicKey     Bytes?
+  counter       BigInt?
+  transports    String[]
+  deviceLabel   String?
+
+  // TOTP factor fields (nullable for non-TOTP rows). Seed is encrypted
+  // at rest with the same vault master key.
+  encTotpSeed   Bytes?
+  totpIv        Bytes?
+  totpAuthTag   Bytes?
+  totpKeyVersion Int?
+  totpAlgorithm String?
+
+  // Recovery codes are stored one row per code with a bcrypt/argon hash.
+  // usedAt marks single-use consumption; the plaintext code is only
+  // shown to the user once at generation.
+  codeHash      String?
+  codeIndex     Int?
+  usedAt        DateTime?
+
+  createdAt     DateTime @default(now())
+  lastUsedAt    DateTime?
+
+  @@index([userId, type])
+}
+
+// ─── Vault Session (Phase 3 will hydrate lifecycle) ────────────────────────
+
+model VaultSession {
+  id            String    @id @default(uuid())
+  userId        String
+  authSessionId String?   // Bound to the caller's JWT session identifier.
+  tokenHash     String    @unique
+  createdAt     DateTime  @default(now())
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  revokedReason String?
+  lastUsedAt    DateTime?
+  ip            String?
+  userAgent     String?
+
+  @@index([userId, expiresAt])
+}
+
+// ─── Audit Event (append-only application-wide) ────────────────────────────
+
+enum AuditResult {
+  SUCCESS
+  DENIED
+  FAILED
+}
+
+model AuditEvent {
+  id             String        @id @default(uuid())
+  actorUserId    String?
+  actorType      AuditActorType @default(USER)
+  actorEmail     String?       // snapshot — survives user deletion
+  actorName      String?       // snapshot — survives user deletion
+  domain         String
+  action         String
+  targetType     String?
+  targetId       String?
+  targetLabel    String?       // sanitized snapshot for display after target may disappear
+  targetHref     String?       // optional deep-link path for the UI (e.g. "/invoices/edit/abc")
+  result         AuditResult
+  severity       AuditSeverity @default(INFO)
+  changes        Json?         // structured sanitized before/after diff
+  metadata       Json?
+  ip             String?
+  userAgent      String?
+  requestId      String?
+  occurredAt     DateTime      @default(now())
+
+  @@index([domain, occurredAt])
+  @@index([actorUserId, occurredAt])
+  @@index([targetType, targetId, occurredAt])
+  @@index([result, occurredAt])
+  @@index([severity, occurredAt])
+  @@index([domain, action, occurredAt])
+}
+
+enum AuditActorType {
+  USER
+  SYSTEM
+}
+
+enum AuditSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+// ─── Phone Numbers / SIM management ──────────────────────────────────────────
+
+model PhoneNumber {
+  id                        String         @id @default(uuid())
+  number                    String         @unique // E.164 normalized
+  operator                  PhoneOperator  @default(OTHER)
+  status                    PhoneStatus    @default(ACTIVE)
+  holderEmployeeId          String?
+  holder                    Employee?      @relation("PhoneHolder", fields: [holderEmployeeId], references: [id], onDelete: SetNull)
+  /// Free-text holder label (name or short note). Takes precedence
+  /// over the Employee relation when both are present.
+  holderName                String?
+  maintenanceRequired       Boolean        @default(true)
+  lastTopUpAt               DateTime?
+  lastNetworkRegistrationAt DateTime?
+  nextMaintenanceAt         DateTime?
+  notes                     String?
+  createdAt                 DateTime       @default(now())
+  updatedAt                 DateTime       @updatedAt
+
+  bindings                  PhoneNumberBinding[]
+  maintenances              PhoneMaintenance[]
+
+  @@index([operator])
+  @@index([status])
+  @@index([maintenanceRequired, nextMaintenanceAt])
+}
+
+enum PhoneOperator {
+  VODAFONE
+  KYIVSTAR
+  LIFECELL
+  OTHER
+}
+
+enum PhoneStatus {
+  ACTIVE
+  HOLD
+  DISABLED
+}
+
+model PhoneNumberBinding {
+  id                    String             @id @default(uuid())
+  phoneNumberId         String
+  phoneNumber           PhoneNumber        @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
+  serviceId             String
+  service               PhoneService       @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  credentialProfileId   String?
+  credentialProfile     CredentialProfile? @relation("PhoneBindings", fields: [credentialProfileId], references: [id], onDelete: SetNull)
+  status                PhoneStatus        @default(ACTIVE)
+  notes                 String?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  @@index([phoneNumberId])
+  @@index([serviceId])
+  @@index([credentialProfileId])
+}
+
+/// Catalogue of services phone numbers can be bound to (e.g. "WhatsApp",
+/// "Google 2FA"). Managed from Settings → Phone services.
+model PhoneService {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bindings  PhoneNumberBinding[]
+
+  @@index([name])
+}
+
+model PhoneMaintenance {
+  id                      String                   @id @default(uuid())
+  phoneNumberId           String
+  phoneNumber             PhoneNumber              @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
+  dueAt                   DateTime
+  status                  PhoneMaintenanceStatus   @default(DUE)
+  networkRegisteredAt     DateTime?
+  toppedUpAt              DateTime?
+  topUpAmount             Decimal?                 @db.Decimal(10, 2)
+  completedAt             DateTime?
+  completedByUserId       String?
+  lastReminderAt          DateTime?
+  reminderCount           Int                      @default(0)
+  notes                   String?
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+
+  @@unique([phoneNumberId, dueAt])
+  @@index([status, dueAt])
+  @@index([dueAt])
+}
+
+enum PhoneMaintenanceStatus {
+  DUE
+  OVERDUE
+  COMPLETED
+  SKIPPED
+}
+
+// Audit for which calendar day the consolidated Discord reminder was sent.
+// One row per date ensures idempotency even across node restarts.
+model PhoneReminderLog {
+  id        String   @id @default(uuid())
+  sentOn    DateTime @db.Date // calendar day in reminder timezone
+  taskCount Int
+  success   Boolean
+  error     String?
+  createdAt DateTime @default(now())
+
+  @@unique([sentOn])
+}
+
+// ─── Portfolio ───────────────────────────────────────────────────────────────
+
+model PortfolioItem {
+  id              String             @id @default(uuid())
+  slug            String             @unique
+  title           String
+  shortSummary    String?
+  status          PortfolioStatus    @default(DRAFT)
+  isNda           Boolean            @default(false)
+  contentMarkdown String             @default("")
+  coverAssetId    String?            @unique
+  coverAsset      PortfolioAsset?    @relation("Cover", fields: [coverAssetId], references: [id], onDelete: SetNull)
+  createdById     String?
+  updatedById     String?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  tags            PortfolioItemTag[]
+  assets          PortfolioAsset[]   @relation("ItemAssets")
+
+  @@index([status])
+  @@index([isNda])
+}
+
+enum PortfolioStatus {
+  DRAFT
+  READY
+  ARCHIVED
+}
+
+model PortfolioTag {
+  id          String             @id @default(uuid())
+  normalized  String             @unique // lowercased
+  displayName String             // canonical casing
+  createdAt   DateTime           @default(now())
+
+  items       PortfolioItemTag[]
+}
+
+model PortfolioItemTag {
+  itemId  String
+  tagId   String
+  item    PortfolioItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  tag     PortfolioTag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([itemId, tagId])
+  @@index([tagId])
+}
+
+model PortfolioAsset {
+  id          String         @id @default(uuid())
+  itemId      String?
+  item        PortfolioItem? @relation("ItemAssets", fields: [itemId], references: [id], onDelete: Cascade)
+  kind        PortfolioAssetKind
+  fileName    String
+  storageKey  String
+  mimeType    String
+  size        Int
+  createdAt   DateTime       @default(now())
+
+  coverFor    PortfolioItem? @relation("Cover")
+
+  @@index([itemId])
+}
+
+enum PortfolioAssetKind {
+  COVER
+  IMAGE
+  FILE
+}
+
+// ─── Backup runs ─────────────────────────────────────────────────────────────
+
+model BackupRun {
+  id             String         @id @default(uuid())
+  type           BackupType
+  status         BackupStatus
+  environment    String         @default("unknown")
+  databaseName   String
+  startedAt      DateTime
+  completedAt    DateTime?
+  durationMs     Int?
+  artifactKey    String?
+  manifestKey    String?
+  size           BigInt?
+  checksum       String?
+  checksumAlgo   String?        @default("sha256")
+  pgVersion      String?
+  gitSha         String?
+  migrationName  String?
+  triggeredBy    String?        // "cron" / "pre-migration" / "manual:<userId>" / "pre-seed"
+  errorMessage   String?
+  lastVerifiedAt DateTime?
+
+  @@index([type, startedAt])
+  @@index([status])
+}
+
+enum BackupType {
+  DAILY
+  PRE_MIGRATION
+  PRE_SEED
+  MANUAL
+}
+
+enum BackupStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+  VERIFIED
+}
+
+// ─── Discord integration ─────────────────────────────────────────────────
+//
+// Two long-lived profiles (TEST, PRODUCTION). Exactly one is `active`
+// at any time (enforced at the service layer). Secrets (bot token,
+// public key) live in env; this table only holds the operator-tunable
+// routing: guild + channel + role IDs + enabled flags + cutoffs.
+
+model DiscordProfile {
+  id             String   @id @default(uuid())
+  name           DiscordProfileName @unique
+  active         Boolean  @default(false)
+  guildId        String?
+  pmsChannelId   String?
+  generalChannelId String?
+  salesChannelId String?
+  opsChannelId   String?
+  managerRoleId  String?
+
+  reportsEnabled  Boolean @default(true)
+  birthdaysEnabled Boolean @default(true)
+  absencesEnabled Boolean @default(true)
+  weeklyEnabled   Boolean @default(true)
+
+  // 0..23. Below this hour a `/report` without an explicit date is
+  // credited to the previous calendar day.
+  cutoffHour      Int     @default(10)
+  // HH:MM strings so operators can tweak times without new deploys.
+  reminderAt      String  @default("18:00")
+  dailyDigestAt   String  @default("19:00")
+  weeklyDigestDay Int     @default(1)
+  weeklyDigestAt  String  @default("09:00")
+  birthdayAt      String  @default("09:00")
+  absencesAt      String  @default("09:00")
+  timezone        String  @default("Europe/Kyiv")
+
+  lastVerifiedAt       DateTime?
+  lastVerificationError String?
+  lastSuccessAt        DateTime?
+  lastFailureAt        DateTime?
+  lastFailureMessage   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deliveries DiscordDelivery[]
+
+  @@index([active])
+}
+
+enum DiscordProfileName {
+  TEST
+  PRODUCTION
+}
+
+// Idempotency ledger for every scheduled / test delivery. A scheduler
+// first upserts a row with a deterministic key (job + profile + period)
+// then publishes. If the row already has `sentAt`, publishing is
+// skipped. Separate from AuditEvent so unique-constraint invariants
+// are explicit.
+model DiscordDelivery {
+  id          String   @id @default(uuid())
+  profileId   String
+  profile     DiscordProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  deliveryKey String   @unique
+  jobType     DiscordJobType
+  periodKey   String
+  status      DiscordDeliveryStatus @default(PENDING)
+  attempts    Int      @default(0)
+  sentAt      DateTime?
+  lastError   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([jobType, periodKey])
+}
+
+enum DiscordJobType {
+  REMINDER_18
+  DAILY_DIGEST_19
+  WEEKLY_DIGEST
+  BIRTHDAY
+  ABSENCES
+  LATE_REPORT
+  TEST
+}
+
+enum DiscordDeliveryStatus {
+  PENDING
+  SENT
+  FAILED
 }

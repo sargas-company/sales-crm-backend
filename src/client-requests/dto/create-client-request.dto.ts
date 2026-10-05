@@ -1,6 +1,14 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import { IsArray, IsEmail, IsOptional, IsString, MinLength } from 'class-validator';
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsEmail,
+  IsOptional,
+  IsString,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
 
 export class CreateClientRequestDto {
   @ApiProperty({ example: 'John Doe' })
@@ -48,6 +56,8 @@ export class CreateClientRequestDto {
     }
   })
   @IsArray()
+  @ArrayMaxSize(32)
   @IsString({ each: true })
+  @MaxLength(120, { each: true })
   services?: string[];
 }

@@ -14,6 +14,8 @@ import { NotificationService } from '../notification/notification.service';
 import { NotificationType } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { SettingsService } from '../settings/settings.service';
+import { SK } from '../settings/settings-registry';
 import { AiJobEvaluatorService } from './ai-job-evaluator.service';
 import { JOB_POST_PROCESS, JOB_POST_QUEUE } from './job-post.constants';
 
@@ -28,6 +30,7 @@ export class JobPostProcessorService implements OnModuleInit, OnModuleDestroy {
     private readonly config: ConfigService,
     private readonly aiEvaluator: AiJobEvaluatorService,
     private readonly notificationService: NotificationService,
+    private readonly settings: SettingsService,
   ) {}
 
   onModuleInit() {
@@ -72,6 +75,24 @@ export class JobPostProcessorService implements OnModuleInit, OnModuleDestroy {
 
     if (count === 0) {
       this.logger.warn(`JobPost ${jobPostId} already taken, skipping`);
+      return;
+    }
+
+    // Settings kill-switch: if analysis is paused, roll the status
+    // back to NEW so the row stays in the queue for later and nothing
+    // runs through the AI.
+    const analysisEnabled = await this.settings.getBooleanForKey(
+      SK.SCANNER_ANALYSIS_ENABLED,
+      true,
+    );
+    if (!analysisEnabled) {
+      this.logger.warn(
+        `JobPost ${jobPostId}: analysis disabled by settings — leaving as NEW`,
+      );
+      await this.prisma.jobPost.update({
+        where: { id: jobPostId },
+        data: { status: 'NEW' },
+      });
       return;
     }
 

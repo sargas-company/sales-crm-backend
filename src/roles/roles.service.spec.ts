@@ -3,6 +3,7 @@ import { BadRequestException, ForbiddenException } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogService } from '../audit/audit-log.service';
+import { AuditEventService } from '../audit-event/audit-event.service';
 import { RolesService } from './roles.service';
 
 // Fully-mocked unit tests for the RBAC invariants documented in the
@@ -47,11 +48,15 @@ const noopAudit: AuditLogService = {
   log: async () => undefined,
 } as unknown as AuditLogService;
 
+const noopAuditEvent: AuditEventService = {
+  recordSafe: async () => undefined,
+} as unknown as AuditEventService;
+
 describe('RolesService — Owner + system invariants', () => {
   let svc: RolesService;
 
   const buildSvc = (o: Overrides = {}) => {
-    svc = new RolesService(makePrisma(o), noopAudit);
+    svc = new RolesService(makePrisma(o), noopAudit, noopAuditEvent);
   };
 
   beforeEach(() => buildSvc());
