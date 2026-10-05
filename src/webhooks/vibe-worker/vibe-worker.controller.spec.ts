@@ -1,14 +1,14 @@
 /**
- * Controller-level regression: calling the handler without any
- * secret headers and without any custom event id still reaches the
- * service and produces a 202-shaped response. If a future change
- * re-attaches a guard, this spec will fail because the service mock
- * would never be invoked.
+ * Controller contract after the durability refactor:
+ *   - no secret headers required;
+ *   - the handler only persists the ingest event and returns 202;
+ *   - mapping / JobPost / queue work is NOT invoked synchronously
+ *     or fire-and-forget from the controller.
  */
 import { describe, expect, it, jest } from '@jest/globals';
 import { VibeWorkerWebhookController } from './vibe-worker.controller';
 
-describe('VibeWorkerWebhookController — no-auth contract', () => {
+describe('VibeWorkerWebhookController — persist-only contract', () => {
   it('invokes the service with no event id when neither header nor body carry one', async () => {
     const captureJobPost = jest.fn(
       async (_payload: unknown, _providedEventId: string | null) => ({
@@ -57,5 +57,24 @@ describe('VibeWorkerWebhookController — no-auth contract', () => {
     );
     const resp = await ctrl.captureJobPost(undefined, { ref: 'same' });
     expect(resp).toEqual({ accepted: true, eventId: 'evt-dup', duplicate: true });
+  });
+
+  it('does NOT invoke mapping/queue from the handler — the scheduler owns that', async () => {
+    const captureJobPost = jest.fn(async () => ({
+      eventId: 'evt-persist-only',
+      duplicate: false,
+    }));
+    const ctrl = new VibeWorkerWebhookController(
+      { captureJobPost } as never,
+    );
+
+    const resp = await ctrl.captureJobPost(undefined, {
+      event: 'job.matched',
+      job: { id: 'x' },
+    });
+    expect(resp.eventId).toBe('evt-persist-only');
+    // Only the capture call ran; nothing else should be running in the
+    // background against the controller.
+    expect(captureJobPost).toHaveBeenCalledTimes(1);
   });
 });

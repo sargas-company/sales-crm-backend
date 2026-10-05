@@ -129,6 +129,9 @@ enum JobPostIngestSource {
 
 enum JobPostIngestStatus {
   RECEIVED
+  PROCESSED
+  FAILED
+  SKIPPED
 }
 
 // ─── Platform ────────────────────────────────────────────────────────────────
@@ -215,8 +218,17 @@ model Proposal {
 
 model JobPost {
   id               String           @id @default(uuid())
-  chatId           String
-  messageId        Int
+  // Legacy Telegram staging fields — nullable since the Scanner Core
+  // path (Vibe Worker) does not carry a Telegram chat/message pair.
+  // The `(chatId, messageId)` partial-unique semantics for Telegram
+  // posts still hold because Postgres treats NULLs as non-equal.
+  chatId           String?
+  messageId        Int?
+  // Scanner Core idempotency key: the external provider's job id
+  // (e.g. Upwork vacancy identifier returned by Vibe Worker). UNIQUE
+  // so a repeat delivery of the same vacancy never creates a second
+  // row.
+  providerJobId    String?          @unique
   rawText          String
   rawPayload       Json
   status           JobPostStatus    @default(NEW)

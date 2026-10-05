@@ -21,11 +21,18 @@ export class VibeWorkerWebhookController {
 
   // No auth guard: the real Vibe Worker UI only configures a URL (no
   // custom headers), so the shared-secret header check used to drop
-  // every real event. Protection against stray traffic now lives at
-  // two layers: Nginx can rate-limit the path, and the
-  // `scanner.ingestionEnabled` setting is a hard kill-switch inside
-  // `VibeWorkerWebhookService.captureJobPost`. The route is still
-  // in `PUBLIC_ALLOWLIST` in authorization-contract.spec.ts.
+  // every real event. The route stays in PUBLIC_ALLOWLIST
+  // (authorization-contract.spec.ts), and the only runtime gate is
+  // the `scanner.ingestionEnabled` kill-switch inside
+  // VibeWorkerWebhookService.
+  //
+  // The handler is intentionally durable-only: it persists the ingest
+  // event and returns 202. The mapping / JobPost / queue work is
+  // driven by VibeIngestScheduler on a cron tick — a crash between
+  // the 202 and the first tick never loses an event (it stays
+  // RECEIVED and is picked up on the next tick), and operations like
+  // flipping `scanner.analysisEnabled` back on drain the accumulated
+  // backlog without a backend restart.
   @Post('job-post')
   @HttpCode(HttpStatus.ACCEPTED)
   async captureJobPost(
