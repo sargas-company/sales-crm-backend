@@ -1,7 +1,6 @@
 import {
   Injectable,
   Logger,
-  OnModuleInit,
 } from '@nestjs/common';
 import {
   JobPostIngestStatus,
@@ -34,12 +33,14 @@ import { mapVibeJobPayload } from './vibe-ingest-mapper';
  *   - `enqueue` is called AFTER the transaction. If Redis is down,
  *     the JobPost stays `NEW` and `JobPostQueueService.recover()`
  *     (which runs on module init) picks it up on next backend start.
- *   - On module init, this service drains every `RECEIVED` ingest
- *     event in receivedAt order so a backend restart safely
- *     continues from where it left off.
+ *   - Inbox recovery runs ONLY from `VibeIngestScheduler` (every 30s
+ *     after `app.listen()` is reached). This service deliberately
+ *     does NOT implement `OnModuleInit`, so a large RECEIVED backlog
+ *     cannot block Nest from opening the HTTP port on boot — the
+ *     scheduler drains the backlog once the app is already serving.
  */
 @Injectable()
-export class VibeIngestProcessorService implements OnModuleInit {
+export class VibeIngestProcessorService {
   private readonly logger = new Logger(VibeIngestProcessorService.name);
 
   constructor(
@@ -47,21 +48,6 @@ export class VibeIngestProcessorService implements OnModuleInit {
     private readonly queue: JobPostQueueService,
     private readonly settings: SettingsService,
   ) {}
-
-  async onModuleInit(): Promise<void> {
-    try {
-      const n = await this.drainReceived();
-      if (n > 0) {
-        this.logger.log(`Recovery: processed ${n} pending RECEIVED ingest events`);
-      }
-    } catch (err) {
-      // Recovery MUST NOT crash boot — individual failures already
-      // mark their rows FAILED; a top-level crash would prevent that.
-      this.logger.error(
-        `Recovery drain failed, pending events stay RECEIVED and will be retried on next boot: ${(err as Error).message}`,
-      );
-    }
-  }
 
   /** Entry point used by the webhook controller for the hot path. */
   async processEvent(eventId: string): Promise<void> {
