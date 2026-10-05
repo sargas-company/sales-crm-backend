@@ -19,9 +19,14 @@ import { VibeIngestProcessorService } from './vibe-ingest-processor.service';
  *      into the existing `job-post-processing` BullMQ queue. BullMQ
  *      dedup by `jobId=jobPostId` makes this a no-op for rows that
  *      are already queued; the point is to recover from a transient
- *      Redis outage WITHOUT a backend restart. It never touches
- *      `PROCESSING` rows — the startup recovery in
- *      `JobPostQueueService.onModuleInit` still owns that cleanup.
+ *      Redis outage WITHOUT a backend restart. The FIRST tick after
+ *      process boot ALSO performs the one-off PROCESSING → NEW
+ *      cleanup that used to live in
+ *      `JobPostQueueService.onModuleInit` — moving it out of
+ *      `onModuleInit` is what lets Nest reach `app.listen()` even
+ *      under a non-trivial backlog. The reset is bounded by a
+ *      conservative `createdAt` age floor so an already-running
+ *      second instance's in-flight rows are not disturbed.
  *
  * Mutual exclusion:
  *
@@ -39,16 +44,22 @@ import { VibeIngestProcessorService } from './vibe-ingest-processor.service';
  *     advisory-lock surprises) while still giving the single-job
  *     guarantee.
  *
- * On-boot recovery stays owned by the existing OnModuleInit hooks:
- *   - `VibeIngestProcessorService.onModuleInit` → `drainReceived()`
- *   - `JobPostQueueService.onModuleInit` → flips zombie PROCESSING
- *     rows back to NEW and enqueues them.
+ * On-boot recovery is deferred to the FIRST scheduler tick after
+ * startup. No service's `onModuleInit` scans or enqueues rows any
+ * more, so bootstrap can reach `app.listen()` regardless of backlog
+ * size or Redis latency after Queue construction.
  */
 @Injectable()
 export class VibeIngestScheduler {
   private readonly logger = new Logger(VibeIngestScheduler.name);
   private draining = false;
   private reconciling = false;
+  // Boot-recovery one-shot latch. The first `queueReconcileTick`
+  // after process start flips genuinely-stuck PROCESSING rows to
+  // NEW; every tick after that only re-enqueues NEW rows. Scoped
+  // per Node process — a rolling deploy re-runs recovery once per
+  // new instance, which is intentional.
+  private firstReconcileDone = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -76,6 +87,23 @@ export class VibeIngestScheduler {
     if (this.reconciling) return;
     this.reconciling = true;
     try {
+      // One-off boot recovery lives inside the first tick, NOT in
+      // JobPostQueueService.onModuleInit, so Nest can reach
+      // app.listen() even when there is a large PROCESSING / NEW
+      // backlog. Age-bounded so another live instance's in-flight
+      // rows are left alone.
+      if (!this.firstReconcileDone) {
+        try {
+          await this.queue.resetStuckProcessing();
+        } catch (err) {
+          this.logger.warn(
+            `first-tick resetStuckProcessing failed: ${(err as Error).message} — will retry on next tick`,
+          );
+          // Leave the latch down so the next tick retries the reset.
+          return;
+        }
+        this.firstReconcileDone = true;
+      }
       await this.reconcileNewJobPosts();
     } catch (err) {
       this.logger.warn(

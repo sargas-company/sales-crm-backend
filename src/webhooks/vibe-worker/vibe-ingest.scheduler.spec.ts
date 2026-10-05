@@ -40,10 +40,16 @@ function makeQueue(opts?: { fail?: Error | null }) {
     calls.push(id);
     if (opts?.fail) throw opts.fail;
   });
+  // `resetStuckProcessing` is the deferred boot-recovery hook the
+  // scheduler calls on its first tick. In mocked suites we never
+  // seed stuck PROCESSING rows, so this returns 0 and lets the
+  // reconcile branch proceed exactly as before the refactor.
+  const resetStuckProcessing = jest.fn(async () => 0);
   return {
     calls,
     enqueue,
-    service: { enqueue } as unknown as JobPostQueueService,
+    resetStuckProcessing,
+    service: { enqueue, resetStuckProcessing } as unknown as JobPostQueueService,
   };
 }
 
