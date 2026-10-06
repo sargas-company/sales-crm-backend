@@ -154,6 +154,7 @@ const PERMISSION_CATALOGUE: PermissionSeed[] = [
   // Backups (Owner-only).
   { module: 'backups', action: 'view',   key: 'backups:view',   label: 'View database backups' },
   { module: 'backups', action: 'create', key: 'backups:create', label: 'Create a database backup' },
+  { module: 'backups', action: 'download', key: 'backups:download', label: 'Download database backup artifact' },
   { module: 'audit_logs',         action: 'view',   key: 'audit_logs:view',         label: 'View Audit Log' },
   { module: 'linkedin_accounts',  action: 'view',   key: 'linkedin_accounts:view',   label: 'View LinkedIn accounts' },
   { module: 'linkedin_accounts',  action: 'create', key: 'linkedin_accounts:create', label: 'Create LinkedIn accounts' },

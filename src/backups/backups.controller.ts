@@ -3,9 +3,10 @@ import {
   Get,
   Param,
   Query,
+  Request,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PermissionGuard } from '../auth/permission.guard';
@@ -47,5 +48,39 @@ export class BackupsController {
   @RequirePermission('backups:view')
   get(@Param('id') id: string) {
     return this.svc.get(id);
+  }
+
+  /**
+   * Issue a short-lived (120s) B2 signed URL for the backup artifact.
+   * The CRM access token stays in the Authorization header; the
+   * signed URL in the response body carries its own object-scoped
+   * token and expires shortly after issue. Every call is written to
+   * the audit stream regardless of outcome.
+   */
+  @Get(':id/download')
+  @RequirePermission('backups:download')
+  @ApiOperation({ summary: 'Get a short-lived signed URL to download the backup artifact.' })
+  @ApiResponse({
+    status: 200,
+    description: 'Returns { url, expiresAt, fileName }',
+  })
+  @ApiResponse({ status: 400, description: 'Run has no artifact to download' })
+  @ApiResponse({ status: 404, description: 'Backup run not found' })
+  download(@Param('id') id: string, @Request() req) {
+    const u = req.user ?? {};
+    return this.svc.getDownloadUrl(
+      id,
+      {
+        userId: u.id,
+        email: u.email ?? null,
+        name:
+          [u.firstName, u.lastName].filter(Boolean).join(' ').trim() || null,
+      },
+      {
+        ip: req.ip ?? null,
+        userAgent: req.get?.('user-agent') ?? null,
+        requestId: req.get?.('x-request-id') ?? null,
+      },
+    );
   }
 }

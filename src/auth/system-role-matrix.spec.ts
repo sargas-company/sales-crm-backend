@@ -92,7 +92,7 @@ const ADMIN_FORBIDDEN = new Set<string>([
   // Owner-only administration.
   'roles:view', 'roles:create', 'roles:update', 'roles:delete', 'roles:assign',
   'credentials:hard_delete',
-  'backups:view', 'backups:create',
+  'backups:view', 'backups:create', 'backups:download',
   // Employees mutation stays Owner.
   'employees:create', 'employees:update', 'employees:delete',
   // Discord integration — Owner-only.
@@ -115,7 +115,7 @@ const REGULAR_FORBIDDEN = new Set<string>([
   'leads:view', 'invoices:view', 'counterparties:view', 'employees:view',
   'credentials:view', 'phone_numbers:view', 'portfolio:view',
   'settings:view', 'settings:update',
-  'audit_logs:view', 'backups:view',
+  'audit_logs:view', 'backups:view', 'backups:download',
   'salaries:view', 'salaries:reopen',
   'finances_weekly:view', 'linkedin_posts:view',
   // Notification Bell / Notifications pages must stay hidden for
@@ -175,5 +175,24 @@ describe('System-role preset matrix', () => {
       REGULAR_MANAGER_PRESET_KEYS.has(k),
     );
     expect(leaked).toEqual([]);
+  });
+
+  describe('backups:download — Owner-only guarantee', () => {
+    // Owner's RolePermission set is a full-sync against the catalogue
+    // on every seed run — if `backups:download` is in the catalogue,
+    // Owner carries it. The catalogue entry is covered by the seed
+    // and by the dedicated 20261022000000 migration; the forbidden
+    // list below is what keeps the two manager roles from ever
+    // acquiring it, now or on a future preset refresh.
+    it('is NOT in Admin Manager preset', () => {
+      expect(ADMIN_MANAGER_PRESET_KEYS.has('backups:download')).toBe(false);
+    });
+    it('is NOT in Regular Manager preset', () => {
+      expect(REGULAR_MANAGER_PRESET_KEYS.has('backups:download')).toBe(false);
+    });
+    it('is listed in the Admin / Regular forbidden sets', () => {
+      expect(ADMIN_FORBIDDEN.has('backups:download')).toBe(true);
+      expect(REGULAR_FORBIDDEN.has('backups:download')).toBe(true);
+    });
   });
 });
