@@ -1,5 +1,5 @@
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
-import B2 from 'backblaze-b2';
+import B2 = require('backblaze-b2');
 
 import { resolveBackupB2Credentials } from './backup-credentials';
 
