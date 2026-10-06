@@ -39,13 +39,38 @@ const JOB_POST_SELECT = {
   proposal: { select: { id: true } },
 } satisfies Prisma.JobPostSelect;
 
+const withViewSelect = (userId: string) =>
+  ({
+    ...JOB_POST_SELECT,
+    views: {
+      where: { userId },
+      select: { viewedAt: true },
+      take: 1,
+    },
+  }) satisfies Prisma.JobPostSelect;
+
+/** Shape returned to the API: flatten `views[0].viewedAt` into a top-level
+ * nullable string so callers see one record per post, same shape as before
+ * with one extra field. */
+type JobPostRow = Prisma.JobPostGetPayload<{
+  select: ReturnType<typeof withViewSelect>;
+}>;
+
+const flattenViewedAt = <R extends JobPostRow>({
+  views,
+  ...rest
+}: R): Omit<R, 'views'> & { viewedAt: string | null } => ({
+  ...rest,
+  viewedAt: views?.[0]?.viewedAt?.toISOString() ?? null,
+});
+
 @Injectable()
 export class JobPostService {
   private readonly logger = new Logger(JobPostService.name);
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async findAll(dto: ListJobPostsDto) {
+  async findAll(dto: ListJobPostsDto, userId: string) {
     const {
       decision,
       priority,
@@ -98,14 +123,14 @@ export class JobPostService {
         orderBy,
         skip: offset,
         take: limit,
-        select: JOB_POST_SELECT,
+        select: withViewSelect(userId),
       }),
       this.prisma.jobPost.count({ where }),
     ]);
 
     this.logger.log(`findAll: returned ${data.length} of ${total}`);
 
-    return { data, meta: { total, limit, offset } };
+    return { data: data.map(flattenViewedAt), meta: { total, limit, offset } };
   }
 
   private buildOrderBy(
@@ -237,15 +262,43 @@ export class JobPostService {
     };
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, userId: string) {
     const jobPost = await this.prisma.jobPost.findUnique({
       where: { id },
-      include: { proposal: { select: { id: true } } },
+      include: {
+        proposal: { select: { id: true } },
+        views: {
+          where: { userId },
+          select: { viewedAt: true },
+          take: 1,
+        },
+      },
     });
 
     if (!jobPost) throw new NotFoundException(`JobPost ${id} not found`);
 
-    return jobPost;
+    const { views, ...rest } = jobPost;
+    return {
+      ...rest,
+      viewedAt: views?.[0]?.viewedAt?.toISOString() ?? null,
+    };
+  }
+
+  async markViewed(id: string, userId: string) {
+    const exists = await this.prisma.jobPost.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!exists) throw new NotFoundException(`JobPost ${id} not found`);
+
+    const row = await this.prisma.jobPostView.upsert({
+      where: { userId_jobPostId: { userId, jobPostId: id } },
+      update: { viewedAt: new Date() },
+      create: { userId, jobPostId: id },
+      select: { viewedAt: true },
+    });
+
+    return { viewedAt: row.viewedAt.toISOString() };
   }
 
   async remove(id: string) {

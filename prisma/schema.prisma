@@ -28,6 +28,7 @@ model User {
   auditLogs       AuditLog[] @relation("AuditLogActor")
   employeeLink    Employee?
   timeOffsCreated TimeOff[]  @relation("TimeOffCreatedBy")
+  jobPostViews    JobPostView[]
 }
 
 model Role {
@@ -253,10 +254,28 @@ model JobPost {
 
   proposal     Proposal?
   ingestEvents JobPostIngestEvent[]
+  views        JobPostView[]
 
   @@unique([chatId, messageId])
   @@index([status])
   @@index([decision])
+}
+
+/// Per-user "I've opened this job post" record. Used to show a tiny
+/// viewed-dot in the job post list and to display the previous view
+/// timestamp on the detail page. One row per (user, jobPost); `viewedAt`
+/// is the most-recent view time, set explicitly on each mark so the
+/// semantics stay "last viewed by this user".
+model JobPostView {
+  userId    String
+  jobPostId String
+  viewedAt  DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobPost JobPost @relation(fields: [jobPostId], references: [id], onDelete: Cascade)
+
+  @@id([userId, jobPostId])
+  @@index([userId, viewedAt])
 }
 
 model JobPostIngestEvent {

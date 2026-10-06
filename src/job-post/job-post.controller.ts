@@ -38,8 +38,8 @@ export class JobPostController {
   @ApiOperation({
     summary: 'Get job posts with filters, sorting and pagination',
   })
-  findAll(@Query() dto: ListJobPostsDto) {
-    return this.jobPostService.findAll(dto);
+  findAll(@Query() dto: ListJobPostsDto, @Request() req) {
+    return this.jobPostService.findAll(dto, req.user.id);
   }
 
   @Get('stats')
@@ -52,8 +52,19 @@ export class JobPostController {
   @Get(':id')
   @RequirePermission('job_posts:view')
   @ApiOperation({ summary: 'Get job post by id with full AI response' })
-  findOne(@Param('id') id: string) {
-    return this.jobPostService.findOne(id);
+  findOne(@Param('id') id: string, @Request() req) {
+    return this.jobPostService.findOne(id, req.user.id);
+  }
+
+  @Post(':id/view')
+  @RequirePermission('job_posts:view')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Mark the job post as viewed by the current user (idempotent upsert; bumps viewedAt).',
+  })
+  markViewed(@Param('id') id: string, @Request() req) {
+    return this.jobPostService.markViewed(id, req.user.id);
   }
 
   @Post(':id/to-proposal')
