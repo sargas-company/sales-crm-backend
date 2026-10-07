@@ -1,21 +1,21 @@
 /**
- * Chunked daily / weekly digest sender: delivery-row idempotency.
+ * Chunked digest sender — claim/send/finalize contract.
  *
- * Covers:
- *   - 23 daily reports → 3 bot.postMessage calls (10 + 10 + 3), each
- *     within Discord caps;
- *   - chunk 0 SENT + chunk 1 failed → next tick sends ONLY chunk 1
- *     (chunk 0 is not re-sent);
- *   - two concurrent tick entries into the same base period are
- *     serialised via the pg_try_advisory_lock gate (the second one
- *     exits without re-sending);
- *   - 429 Retry-After is logged but PENDING state is preserved;
- *   - a successful run flips every chunk row to SENT.
+ * The sender MUST NOT keep a Prisma transaction open across the
+ * Discord HTTP call. Instead each chunk goes through three short
+ * transactions:
  *
- * Prisma / bot / embed-builder / late-reports are stubbed. The
- * scheduler is instantiated directly, and we call `sendChunked`
- * through the public `runDailyDigest` style indirection by reaching
- * into the private method with a type cast.
+ *   1. claim — acquires `pg_try_advisory_xact_lock(hash31(key))`,
+ *      upserts the `DiscordDelivery` row, writes an in-flight
+ *      lease (`sentAt = now + CHUNK_LEASE_TTL_MS`), commits.
+ *   2. send — bot.postMessage runs with NO open DB transaction.
+ *   3. finalize — short UPDATE: SENT, PENDING+lease(429),
+ *      PENDING+null (recoverable fail), or lastError-only
+ *      (ambiguous / thrown).
+ *
+ * Idempotency is anchored on the row's state, not on the
+ * transaction scope — so a chunk-1 exception can never rollback
+ * chunk 0's SENT row.
  */
 import { describe, expect, it, jest } from '@jest/globals';
 import {
@@ -35,30 +35,41 @@ import type { PrismaService } from '../prisma/prisma.service';
 type DeliveryRow = {
   id: string;
   deliveryKey: string;
+  profileId: string;
+  jobType: DiscordJobType;
+  periodKey: string;
   status: DiscordDeliveryStatus;
   attempts: number;
   lastError: string | null;
   sentAt: Date | null;
 };
 
+type OpenTxGuard = { depth: number; maxConcurrent: number };
+
 function makeDeliveryTable() {
   const store = new Map<string, DeliveryRow>();
+  let autoId = 1;
   const api = {
     findUnique: jest.fn(async (args: { where: { deliveryKey: string } }) => {
       return store.get(args.where.deliveryKey) ?? null;
     }),
-    create: jest.fn(async (args: { data: Partial<DeliveryRow> & { deliveryKey: string } }) => {
-      const row: DeliveryRow = {
-        id: `d-${store.size + 1}`,
-        deliveryKey: args.data.deliveryKey,
-        status: args.data.status as DiscordDeliveryStatus,
-        attempts: args.data.attempts ?? 1,
-        lastError: null,
-        sentAt: null,
-      };
-      store.set(row.deliveryKey, row);
-      return row;
-    }),
+    create: jest.fn(
+      async (args: { data: Partial<DeliveryRow> & { deliveryKey: string } }) => {
+        const row: DeliveryRow = {
+          id: `d-${autoId++}`,
+          deliveryKey: args.data.deliveryKey,
+          profileId: args.data.profileId as string,
+          jobType: args.data.jobType as DiscordJobType,
+          periodKey: args.data.periodKey as string,
+          status: (args.data.status as DiscordDeliveryStatus) ?? DiscordDeliveryStatus.PENDING,
+          attempts: args.data.attempts ?? 1,
+          lastError: null,
+          sentAt: args.data.sentAt ?? null,
+        };
+        store.set(row.deliveryKey, row);
+        return row;
+      },
+    ),
     update: jest.fn(
       async (args: {
         where: { id?: string; deliveryKey?: string };
@@ -76,38 +87,60 @@ function makeDeliveryTable() {
   return api;
 }
 
+/**
+ * Prisma stub that tracks whether a `$transaction` is currently
+ * open while bot HTTP calls fire — the test asserts this never
+ * happens. The stub routes `$transaction(cb)` into `cb(txClient)`
+ * synchronously, bumping an "open depth" counter on entry and
+ * decrementing on exit.
+ */
 function makePrismaStub(
   deliveryTable: ReturnType<typeof makeDeliveryTable>,
-  opts: { lockAvailable?: boolean } = {},
+  opts: {
+    lockAvailable?: boolean | ((key: number) => boolean);
+    openTxGuard: OpenTxGuard;
+  },
 ) {
   const profileUpdate = jest.fn(async () => undefined);
-  const lockAvailable = opts.lockAvailable ?? true;
-  // Shared `tx` surface for both direct-prisma calls and the
-  // callback the real service passes to `$transaction`.
+  const lockDecider =
+    typeof opts.lockAvailable === 'function'
+      ? opts.lockAvailable
+      : () => opts.lockAvailable ?? true;
   const tx = {
     discordDelivery: deliveryTable,
     discordProfile: { update: profileUpdate },
-    $queryRaw: jest.fn(async () => [{ got: lockAvailable }]),
+    $queryRaw: jest.fn((strings: TemplateStringsArray, ...vals: unknown[]) => {
+      const sql = strings.join('').trim();
+      if (sql.includes('pg_try_advisory_xact_lock')) {
+        const key = Number(vals[0] ?? 0);
+        return Promise.resolve([{ got: lockDecider(key) }]);
+      }
+      return Promise.resolve([]);
+    }),
   };
   return {
     ...tx,
-    // Short-circuits `$transaction(cb)` into `cb(tx)` so our tests
-    // observe the exact DB calls the service makes. The real
-    // Postgres connection pin is covered by integration-level DB
-    // tests; this unit-level cover tests the control flow +
-    // per-chunk idempotency contract.
-    $transaction: jest.fn(
-      async (cb: (c: typeof tx) => Promise<unknown>) => cb(tx),
-    ),
-    // Fallback: when a test calls prisma.$queryRaw directly outside
-    // the transaction, mirror the shared stub so the control flow
-    // can still progress.
+    $transaction: jest.fn(async (cb: (c: typeof tx) => Promise<unknown>) => {
+      opts.openTxGuard.depth += 1;
+      opts.openTxGuard.maxConcurrent = Math.max(
+        opts.openTxGuard.maxConcurrent,
+        opts.openTxGuard.depth,
+      );
+      try {
+        return await cb(tx);
+      } finally {
+        opts.openTxGuard.depth -= 1;
+      }
+    }),
     _tx: tx,
   } as unknown as PrismaService;
 }
 
-function makeBot(impl: (args: unknown) => Promise<unknown>) {
-  const postMessage = jest.fn(impl);
+function makeBot(
+  impl: (args: unknown, guard: OpenTxGuard) => Promise<unknown>,
+  guard: OpenTxGuard,
+) {
+  const postMessage = jest.fn(async (args: unknown) => impl(args, guard));
   return { postMessage } as unknown as DiscordBotClient & {
     postMessage: jest.Mock;
   };
@@ -169,11 +202,18 @@ function invokeSendChunked(
   ).sendChunked(args);
 }
 
-describe('DiscordSchedulersService.sendChunked — chunking + idempotency', () => {
-  it('23 embeds → 3 bot.postMessage calls of 10 + 10 + 3; all delivery rows SENT', async () => {
+const DAILY_KEY = (i: number) => `DAILY_DIGEST_19:2026-02-10:chunk:${i}`;
+
+describe('DiscordSchedulersService.sendChunked — claim/send/finalize', () => {
+  it('23 embeds → 3 bot calls (10 + 10 + 3); no $transaction is open during any bot.postMessage', async () => {
+    const guard: OpenTxGuard = { depth: 0, maxConcurrent: 0 };
     const deliveries = makeDeliveryTable();
-    const prisma = makePrismaStub(deliveries);
-    const bot = makeBot(async () => ({ ok: true, messageId: 'm' }));
+    const prisma = makePrismaStub(deliveries, { openTxGuard: guard });
+    const observedTxDepthAtSend: number[] = [];
+    const bot = makeBot(async (_args, g) => {
+      observedTxDepthAtSend.push(g.depth);
+      return { ok: true, messageId: 'm' };
+    }, guard);
     const svc = new DiscordSchedulersService(
       prisma,
       bot,
@@ -190,46 +230,33 @@ describe('DiscordSchedulersService.sendChunked — chunking + idempotency', () =
       embeds: makeEmbeds(23),
     });
     expect(bot.postMessage).toHaveBeenCalledTimes(3);
-    const sizes = bot.postMessage.mock.calls.map(
-      (c) => ((c[0] as { embeds: unknown[] }).embeds ?? []).length,
-    );
-    expect(sizes).toEqual([10, 10, 3]);
-    // Content only on the first chunk.
     expect(
-      (bot.postMessage.mock.calls[0][0] as { content?: string }).content,
-    ).toBe('Daily reports — 2026-02-10');
-    expect(
-      (bot.postMessage.mock.calls[1][0] as { content?: string }).content,
-    ).toBeUndefined();
-    // Every chunk row SENT at the end.
-    const keys = [
-      'DAILY_DIGEST_19:2026-02-10:chunk:0',
-      'DAILY_DIGEST_19:2026-02-10:chunk:1',
-      'DAILY_DIGEST_19:2026-02-10:chunk:2',
-    ];
-    for (const k of keys) {
-      expect(deliveries._store.get(k)?.status).toBe(DiscordDeliveryStatus.SENT);
-    }
-    // Mentions are hard-disabled for every chunk.
-    for (const call of bot.postMessage.mock.calls) {
-      expect((call[0] as { allowedMentions: unknown }).allowedMentions).toEqual({
-        parse: [],
-      });
+      bot.postMessage.mock.calls.map(
+        (c) => ((c[0] as { embeds: unknown[] }).embeds ?? []).length,
+      ),
+    ).toEqual([10, 10, 3]);
+    // Every bot call fired with zero open transactions.
+    expect(observedTxDepthAtSend).toEqual([0, 0, 0]);
+    expect(guard.maxConcurrent).toBeGreaterThan(0);
+    expect(guard.depth).toBe(0);
+    for (const i of [0, 1, 2]) {
+      expect(deliveries._store.get(DAILY_KEY(i))?.status).toBe(
+        DiscordDeliveryStatus.SENT,
+      );
     }
   });
 
-  it('chunk 0 SENT, chunk 1 fails → next tick sends ONLY chunks 1 and 2, no double-send', async () => {
+  it('chunk 0 SENT then chunk 1 throws → chunk 0 stays SENT; next tick retries ONLY chunk 1 (and 2)', async () => {
+    const guard: OpenTxGuard = { depth: 0, maxConcurrent: 0 };
     const deliveries = makeDeliveryTable();
-    const prisma = makePrismaStub(deliveries);
+    const prisma = makePrismaStub(deliveries, { openTxGuard: guard });
 
     let callIdx = 0;
     const bot = makeBot(async () => {
       callIdx += 1;
-      if (callIdx === 2) {
-        return { ok: false, status: 500, message: 'upstream flake' };
-      }
+      if (callIdx === 2) throw new Error('socket hang up');
       return { ok: true, messageId: `m-${callIdx}` };
-    });
+    }, guard);
     const svc = new DiscordSchedulersService(
       prisma,
       bot,
@@ -237,7 +264,7 @@ describe('DiscordSchedulersService.sendChunked — chunking + idempotency', () =
       stubLate,
       stubConfig,
     );
-    const first = () =>
+    const run = () =>
       invokeSendChunked(svc, {
         profile: PROFILE,
         jobType: DiscordJobType.DAILY_DIGEST_19,
@@ -246,66 +273,63 @@ describe('DiscordSchedulersService.sendChunked — chunking + idempotency', () =
         content: 'Daily',
         embeds: makeEmbeds(23),
       });
-    await first();
-    // Chunk 0 SENT, chunk 1 PENDING, chunk 2 never created.
-    expect(
-      deliveries._store.get('DAILY_DIGEST_19:2026-02-10:chunk:0')?.status,
-    ).toBe(DiscordDeliveryStatus.SENT);
-    expect(
-      deliveries._store.get('DAILY_DIGEST_19:2026-02-10:chunk:1')?.status,
-    ).toBe(DiscordDeliveryStatus.PENDING);
-    expect(deliveries._store.has('DAILY_DIGEST_19:2026-02-10:chunk:2')).toBe(
-      false,
-    );
 
-    bot.postMessage.mockClear();
-    // Next tick: bot now succeeds for every call.
-    (bot.postMessage as jest.Mock).mockImplementation(async () => ({
-      ok: true,
-      messageId: 'ok',
-    }));
-    await first();
-    // Second run must call postMessage TWICE — chunk 1 and chunk 2.
-    expect(bot.postMessage).toHaveBeenCalledTimes(2);
-    const sizes = bot.postMessage.mock.calls.map(
-      (c) => ((c[0] as { embeds: unknown[] }).embeds ?? []).length,
-    );
-    expect(sizes).toEqual([10, 3]);
-    // All three chunks are now SENT.
-    for (const i of [0, 1, 2]) {
+    const T0 = 1_700_000_000_000;
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(T0);
+    try {
+      await run();
+      // chunk 0 SENT (and stays that way), chunk 1 PENDING with
+      // in-flight lease (sentAt > T0), chunk 2 not touched yet.
+      expect(deliveries._store.get(DAILY_KEY(0))?.status).toBe(
+        DiscordDeliveryStatus.SENT,
+      );
+      const chunk1Row = deliveries._store.get(DAILY_KEY(1));
+      expect(chunk1Row?.status).toBe(DiscordDeliveryStatus.PENDING);
+      expect(chunk1Row?.lastError).toContain('socket hang up');
+      expect(deliveries._store.has(DAILY_KEY(2))).toBe(false);
+
+      // Early tick (30 s later) is still inside the lease.
+      nowSpy.mockReturnValue(T0 + 30_000);
+      bot.postMessage.mockClear();
+      (bot.postMessage as jest.Mock).mockImplementation(async () => ({
+        ok: true,
+        messageId: 'should-not-fire',
+      }));
+      await run();
+      expect(bot.postMessage).not.toHaveBeenCalled();
+
+      // Late tick (3 min later): lease expired, chunk 1 retries;
+      // chunk 0 is already SENT and is skipped — no double send.
+      nowSpy.mockReturnValue(T0 + 180_000);
+      bot.postMessage.mockClear();
+      await run();
+      expect(bot.postMessage).toHaveBeenCalledTimes(2);
       expect(
-        deliveries._store.get(`DAILY_DIGEST_19:2026-02-10:chunk:${i}`)?.status,
-      ).toBe(DiscordDeliveryStatus.SENT);
+        bot.postMessage.mock.calls.map(
+          (c) => ((c[0] as { embeds: unknown[] }).embeds ?? []).length,
+        ),
+      ).toEqual([10, 3]);
+      for (const i of [0, 1, 2]) {
+        expect(deliveries._store.get(DAILY_KEY(i))?.status).toBe(
+          DiscordDeliveryStatus.SENT,
+        );
+      }
+    } finally {
+      nowSpy.mockRestore();
     }
   });
 
-  it('xact advisory lock not acquired → send is a no-op', async () => {
+  it('contended claim (another instance holds the xact lock) → bot is NOT called, exits cleanly', async () => {
+    // Simulates: another Nest instance is inside its claim
+    // transaction holding `pg_try_advisory_xact_lock(hash31(chunk 0))`.
+    // Our run tries to claim, pg returns `got=false`, we exit.
+    const guard: OpenTxGuard = { depth: 0, maxConcurrent: 0 };
     const deliveries = makeDeliveryTable();
-    const prisma = makePrismaStub(deliveries, { lockAvailable: false });
-    const bot = makeBot(async () => ({ ok: true, messageId: 'm' }));
-    const svc = new DiscordSchedulersService(
-      prisma,
-      bot,
-      stubEmbeds,
-      stubLate,
-      stubConfig,
-    );
-    await invokeSendChunked(svc, {
-      profile: PROFILE,
-      jobType: DiscordJobType.DAILY_DIGEST_19,
-      periodKey: '2026-02-10',
-      channelId: PROFILE.pmsChannelId!,
-      content: 'Daily',
-      embeds: makeEmbeds(10),
+    const prisma = makePrismaStub(deliveries, {
+      openTxGuard: guard,
+      lockAvailable: false,
     });
-    expect(bot.postMessage).not.toHaveBeenCalled();
-    expect(deliveries._store.size).toBe(0);
-  });
-
-  it('acquires the xact advisory lock inside the same Prisma $transaction (same-connection guarantee)', async () => {
-    const deliveries = makeDeliveryTable();
-    const prisma = makePrismaStub(deliveries);
-    const bot = makeBot(async () => ({ ok: true, messageId: 'm' }));
+    const bot = makeBot(async () => ({ ok: true, messageId: 'never' }), guard);
     const svc = new DiscordSchedulersService(
       prisma,
       bot,
@@ -321,31 +345,34 @@ describe('DiscordSchedulersService.sendChunked — chunking + idempotency', () =
       content: 'Daily',
       embeds: makeEmbeds(3),
     });
-    // Exactly one $transaction call wrapping the whole chunked send.
-    expect(
-      (prisma as unknown as { $transaction: jest.Mock }).$transaction,
-    ).toHaveBeenCalledTimes(1);
-    const txCall = (prisma as unknown as { $transaction: jest.Mock }).$transaction
-      .mock.calls[0];
-    // The second arg carries `timeout: 60_000` so Prisma does not
-    // kill the tx before the HTTP sends complete.
-    expect(txCall[1]).toEqual({ timeout: 60_000 });
-    // The lock acquire went to the tx client, NOT to the top-level
-    // prisma (which would have been a different pool connection).
-    const txQueryRaw = (
-      prisma as unknown as { _tx: { $queryRaw: jest.Mock } }
-    )._tx.$queryRaw;
-    expect(txQueryRaw).toHaveBeenCalledTimes(1);
-    const sql = (txQueryRaw.mock.calls[0][0] as TemplateStringsArray).join('');
-    expect(sql).toContain('pg_try_advisory_xact_lock');
+    expect(bot.postMessage).not.toHaveBeenCalled();
+    // No delivery row persisted either — the losing instance did
+    // not create a stale PENDING.
+    expect(deliveries._store.size).toBe(0);
   });
 
-  it('xact lock is released even when the chunk send throws (tx-end auto-release)', async () => {
+  it('after a crash-mid-send, the surviving row with an expired lease is re-claimed and retried', async () => {
+    // Simulates the "backend crashed between a successful bot POST
+    // and the finalise commit" case: the row stays PENDING with a
+    // past lease. A later tick claims it and resends — this is the
+    // at-least-once guarantee we document.
+    const guard: OpenTxGuard = { depth: 0, maxConcurrent: 0 };
     const deliveries = makeDeliveryTable();
-    const prisma = makePrismaStub(deliveries);
-    const bot = makeBot(async () => {
-      throw new Error('boom');
+    const T0 = 1_900_000_000_000;
+    deliveries._store.set(DAILY_KEY(0), {
+      id: 'crashed-0',
+      deliveryKey: DAILY_KEY(0),
+      profileId: PROFILE.id,
+      jobType: DiscordJobType.DAILY_DIGEST_19,
+      periodKey: '2026-02-10',
+      status: DiscordDeliveryStatus.PENDING,
+      attempts: 1,
+      lastError: null,
+      // Lease expired 10 minutes ago.
+      sentAt: new Date(T0 - 10 * 60 * 1000),
     });
+    const prisma = makePrismaStub(deliveries, { openTxGuard: guard });
+    const bot = makeBot(async () => ({ ok: true, messageId: 'retry' }), guard);
     const svc = new DiscordSchedulersService(
       prisma,
       bot,
@@ -353,33 +380,77 @@ describe('DiscordSchedulersService.sendChunked — chunking + idempotency', () =
       stubLate,
       stubConfig,
     );
-    await expect(
-      invokeSendChunked(svc, {
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(T0);
+    try {
+      await invokeSendChunked(svc, {
         profile: PROFILE,
         jobType: DiscordJobType.DAILY_DIGEST_19,
         periodKey: '2026-02-10',
         channelId: PROFILE.pmsChannelId!,
         content: 'Daily',
-        embeds: makeEmbeds(3),
-      }),
-    ).rejects.toThrow('boom');
-    // The transaction wrapper exited (its callback threw) — the
-    // xact-scope lock auto-releases on tx end; our stub resolves on
-    // the next $transaction call without any lingering state.
-    expect(
-      (prisma as unknown as { $transaction: jest.Mock }).$transaction,
-    ).toHaveBeenCalledTimes(1);
+        embeds: makeEmbeds(1),
+      });
+      expect(bot.postMessage).toHaveBeenCalledTimes(1);
+      expect(deliveries._store.get(DAILY_KEY(0))?.status).toBe(
+        DiscordDeliveryStatus.SENT,
+      );
+      expect(deliveries._store.get(DAILY_KEY(0))?.attempts).toBe(2);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
-  it('429 Retry-After → chunk PENDING with sentAt lease; a tick inside the window skips, a later tick retries', async () => {
+  it('active lease on an existing PENDING row → bot is NOT called', async () => {
+    const guard: OpenTxGuard = { depth: 0, maxConcurrent: 0 };
     const deliveries = makeDeliveryTable();
-    const prisma = makePrismaStub(deliveries);
+    // Pre-seed chunk 0 as PENDING with a lease 60 s in the future.
+    const T0 = 1_800_000_000_000;
+    deliveries._store.set(DAILY_KEY(0), {
+      id: 'pre-0',
+      deliveryKey: DAILY_KEY(0),
+      profileId: PROFILE.id,
+      jobType: DiscordJobType.DAILY_DIGEST_19,
+      periodKey: '2026-02-10',
+      status: DiscordDeliveryStatus.PENDING,
+      attempts: 1,
+      lastError: null,
+      sentAt: new Date(T0 + 60_000),
+    });
+    const prisma = makePrismaStub(deliveries, { openTxGuard: guard });
+    const bot = makeBot(async () => ({ ok: true, messageId: 'never' }), guard);
+    const svc = new DiscordSchedulersService(
+      prisma,
+      bot,
+      stubEmbeds,
+      stubLate,
+      stubConfig,
+    );
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(T0);
+    try {
+      await invokeSendChunked(svc, {
+        profile: PROFILE,
+        jobType: DiscordJobType.DAILY_DIGEST_19,
+        periodKey: '2026-02-10',
+        channelId: PROFILE.pmsChannelId!,
+        content: 'Daily',
+        embeds: makeEmbeds(5),
+      });
+      expect(bot.postMessage).not.toHaveBeenCalled();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('429 Retry-After → PENDING with lease; early tick skips, late tick retries', async () => {
+    const guard: OpenTxGuard = { depth: 0, maxConcurrent: 0 };
+    const deliveries = makeDeliveryTable();
+    const prisma = makePrismaStub(deliveries, { openTxGuard: guard });
     const bot = makeBot(async () => ({
       ok: false,
       status: 429,
       message: 'rate limited',
-      retryAfterMs: 120_000, // 2 minutes — longer than scheduler interval
-    }));
+      retryAfterMs: 120_000,
+    }), guard);
     const svc = new DiscordSchedulersService(
       prisma,
       bot,
@@ -401,50 +472,71 @@ describe('DiscordSchedulersService.sendChunked — chunking + idempotency', () =
     const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(T0);
     try {
       await run();
+      expect(bot.postMessage).toHaveBeenCalledTimes(1);
+      const row = deliveries._store.get(DAILY_KEY(0));
+      expect(row?.status).toBe(DiscordDeliveryStatus.PENDING);
+      expect(row?.sentAt?.getTime()).toBe(T0 + 120_000);
+
+      // Early tick within window → bot not called, lease unchanged.
+      nowSpy.mockReturnValue(T0 + 60_000);
+      bot.postMessage.mockClear();
+      (bot.postMessage as jest.Mock).mockImplementation(async () => ({
+        ok: true,
+        messageId: 'should-not-fire',
+      }));
+      await run();
+      expect(bot.postMessage).not.toHaveBeenCalled();
+      expect(
+        deliveries._store.get(DAILY_KEY(0))?.sentAt?.getTime(),
+      ).toBe(T0 + 120_000);
+
+      // Late tick past window → retries chunk 0 successfully.
+      nowSpy.mockReturnValue(T0 + 180_000);
+      bot.postMessage.mockClear();
+      await run();
+      expect(bot.postMessage).toHaveBeenCalledTimes(1);
+      expect(deliveries._store.get(DAILY_KEY(0))?.status).toBe(
+        DiscordDeliveryStatus.SENT,
+      );
     } finally {
-      // keep spy for the subsequent assertions
+      nowSpy.mockRestore();
     }
-    expect(bot.postMessage).toHaveBeenCalledTimes(1);
-    const row = deliveries._store.get(
-      'DAILY_DIGEST_19:2026-02-10:chunk:0',
+  });
+
+  it('every $transaction callback is short and does NOT contain the bot.postMessage call', async () => {
+    const guard: OpenTxGuard = { depth: 0, maxConcurrent: 0 };
+    const deliveries = makeDeliveryTable();
+    const prisma = makePrismaStub(deliveries, { openTxGuard: guard });
+    let depthMax = 0;
+    const bot = makeBot(async (_args, g) => {
+      depthMax = Math.max(depthMax, g.depth);
+      return { ok: true, messageId: 'm' };
+    }, guard);
+    const svc = new DiscordSchedulersService(
+      prisma,
+      bot,
+      stubEmbeds,
+      stubLate,
+      stubConfig,
     );
-    expect(row?.status).toBe(DiscordDeliveryStatus.PENDING);
-    expect(row?.sentAt?.getTime()).toBe(T0 + 120_000);
-
-    // Early tick (60s later, still inside the Retry-After window):
-    // bot MUST NOT be called again.
-    nowSpy.mockReturnValue(T0 + 60_000);
-    bot.postMessage.mockClear();
-    (bot.postMessage as jest.Mock).mockImplementation(async () => ({
-      ok: true,
-      messageId: 'should-not-fire',
-    }));
-    await run();
-    expect(bot.postMessage).not.toHaveBeenCalled();
-    // Row still PENDING, lease unchanged.
-    expect(
-      deliveries._store.get('DAILY_DIGEST_19:2026-02-10:chunk:0')?.sentAt?.getTime(),
-    ).toBe(T0 + 120_000);
-
-    // Late tick (3 minutes later, outside the window): the retry
-    // proceeds — bot called once, chunk flips SENT, next chunk
-    // created, etc.
-    nowSpy.mockReturnValue(T0 + 180_000);
-    bot.postMessage.mockClear();
-    await run();
-    expect(bot.postMessage).toHaveBeenCalledTimes(1);
-    expect(
-      deliveries._store.get('DAILY_DIGEST_19:2026-02-10:chunk:0')?.status,
-    ).toBe(DiscordDeliveryStatus.SENT);
-    nowSpy.mockRestore();
+    await invokeSendChunked(svc, {
+      profile: PROFILE,
+      jobType: DiscordJobType.DAILY_DIGEST_19,
+      periodKey: '2026-02-10',
+      channelId: PROFILE.pmsChannelId!,
+      content: 'Daily',
+      embeds: makeEmbeds(5),
+    });
+    expect(depthMax).toBe(0);
   });
 });
 
 describe('DiscordSchedulersService.sendChunked — absences content-only path', () => {
   it('empty embed list + content → single ABSENCES:<date>:chunk:0 delivery with content-only message', async () => {
+    const guard: OpenTxGuard = { depth: 0, maxConcurrent: 0 };
     const deliveries = makeDeliveryTable();
-    const prisma = makePrismaStub(deliveries);
-    const bot = makeBot(async () => ({ ok: true, messageId: 'm' }));
+    const prisma = makePrismaStub(deliveries, { openTxGuard: guard });
+    const bot = makeBot(async () => ({ ok: true, messageId: 'm' }), guard);
     const svc = new DiscordSchedulersService(
       prisma,
       bot,

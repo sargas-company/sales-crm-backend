@@ -4,17 +4,24 @@ import { Cron } from '@nestjs/schedule';
 import {
   DiscordDeliveryStatus,
   DiscordJobType,
-  Prisma,
   type DiscordProfile,
 } from '@prisma/client';
 
 /**
- * Prisma client-or-tx shape — accepts both the top-level
- * `PrismaService` and the `tx` argument of `$transaction(async(tx)
- * => ...)`. Used for helpers that must run on the same pinned
- * connection as a surrounding transaction (lock scope).
+ * In-flight lease window: the time a claimed chunk is considered
+ * "being sent right now" by another worker. Must be longer than
+ * the worst-case Discord HTTP round-trip (bot client timeout +
+ * finalise commit) but short enough that a crashed sender does not
+ * block a healthy one for too long. 2 minutes covers a 10s HTTP
+ * timeout + rate-limit back-off + GC pauses with plenty of slack.
  */
-type TxLike = Pick<Prisma.TransactionClient, 'discordProfile'> | import('../prisma/prisma.service').PrismaService;
+const CHUNK_LEASE_TTL_MS = 2 * 60 * 1000;
+
+type ChunkClaim =
+  | { outcome: 'claimed'; deliveryId: string }
+  | { outcome: 'already_sent' }
+  | { outcome: 'leased'; leaseUntil: Date }
+  | { outcome: 'contended' };
 
 import { PrismaService } from '../prisma/prisma.service';
 import { chunkEmbeds, type DiscordEmbed } from './discord-chunking';
@@ -407,35 +414,42 @@ export class DiscordSchedulersService {
   /**
    * Chunked, per-chunk-idempotent send.
    *
-   * Each chunk gets its own `DiscordDelivery(deliveryKey =
-   * JOB:periodKey:chunk:N)`. On entry we:
-   *   1. slice `embeds` into Discord-safe chunks via `chunkEmbeds`
-   *      (empty + non-empty content both produce ≥1 chunk);
-   *   2. walk them in order inside ONE Prisma `$transaction` so the
-   *      acquire + per-chunk UPDATEs + unlock all run on the same
-   *      PostgreSQL connection — session-scope advisory lock would
-   *      otherwise leak across pool connections. We use
-   *      `pg_try_advisory_xact_lock` so the lock auto-releases on
-   *      transaction end, success or failure, with no manual unlock
-   *      step to forget;
-   *   3. for each chunk — SKIP if SENT, SKIP if PENDING with
-   *      `sentAt` in the future (429 backoff lease), SEND otherwise.
-   *      On success flip to SENT; on failure leave PENDING with
-   *      `sentAt = now + retryAfterMs` so the next tick that fires
-   *      before the Retry-After window elapses will skip and bail.
+   * The three phases are strictly separated so NO transaction is
+   * ever open across a Discord HTTP call:
    *
-   * The order of embeds is stable (callers sort before passing them
-   * in), so chunk N on retry contains the same slice as before. The
-   * `content` text is attached to chunk 0 only; later chunks are
-   * pure-embed messages so Discord doesn't repeat the header.
+   *   1. **claim** — short `$transaction` that takes
+   *      `pg_try_advisory_xact_lock(hash31(deliveryKey))`, upserts
+   *      the `DiscordDelivery(deliveryKey = JOB:periodKey:chunk:N)`
+   *      row, bumps `attempts`, writes an in-flight lease
+   *      (`sentAt = now + LEASE_TTL_MS`), and commits. The
+   *      transactional advisory lock auto-releases on commit, which
+   *      also releases the same-connection guarantee instantly.
    *
-   * Transaction timeout is lifted to 60s because the chunk loop
-   * includes Discord HTTP calls (axios ≤10s per POST, up to ~24
-   * chunks of 10 embeds would be the realistic ceiling). This holds
-   * one Prisma connection for the duration of the send — the trade-
-   * off is intentional: correctness of cross-instance mutual
-   * exclusion requires same-connection acquire+release, and the
-   * daily/weekly cadence makes a once-a-day held connection cheap.
+   *   2. **send** — no DB transaction, no advisory lock. The chunk
+   *      lease on the row is what blocks other instances. On a
+   *      successful HTTP response the chunk is finalised; on
+   *      failure the row's state is reset so a later tick (after
+   *      the lease elapses) can retry it.
+   *
+   *   3. **finalize** — another short `$transaction` with a plain
+   *      UPDATE: SENT + sentAt=now on success, PENDING + sentAt =
+   *      Retry-After deadline on 429, PENDING + sentAt=null (lease
+   *      released) on other recoverable errors. On a thrown error
+   *      we leave the row with the in-flight lease — the next tick
+   *      after the lease expires retries from this chunk; earlier
+   *      chunks that already flipped SENT are NOT touched.
+   *
+   * Delivery semantics are **at-least-once**: Discord does not
+   * accept a client idempotency key, so a crash between a
+   * successful Discord POST and the SENT commit will re-send on
+   * the next tick after the lease expires. Everything we control
+   * (duplicate delivery rows, double-send inside one tick,
+   * cross-instance race) is defended against by the lease + lock +
+   * SENT short-circuit.
+   *
+   * Order of embeds is stable (callers sort before passing them
+   * in), so chunk N on retry contains the same slice. `content`
+   * attaches to chunk 0 only; later chunks are pure-embed messages.
    */
   private async sendChunked(args: {
     profile: DiscordProfile;
@@ -456,103 +470,198 @@ export class DiscordSchedulersService {
           : [];
     if (!chunks.length) return;
     const baseKey = `${args.jobType}:${args.periodKey}`;
-    const lockKey = this.hash31(`chunked:${baseKey}`);
 
-    await this.prisma.$transaction(
-      async (tx) => {
-        const [row] = await tx.$queryRaw<Array<{ got: boolean }>>`
-          SELECT pg_try_advisory_xact_lock(${lockKey}) AS got
-        `;
-        if (!row?.got) return;
+    for (let i = 0; i < chunks.length; i++) {
+      const chunkKey = `${baseKey}:chunk:${i}`;
+      const claim = await this.claimChunk(args.profile.id, args.jobType, {
+        periodKey: args.periodKey,
+        chunkKey,
+      });
+      if (claim.outcome === 'already_sent') continue;
+      if (claim.outcome === 'leased') {
+        this.logger.debug(
+          `chunked ${args.jobType}: chunk ${i} leased until ${claim.leaseUntil.toISOString()}, skipping`,
+        );
+        return;
+      }
+      if (claim.outcome === 'contended') {
+        this.logger.debug(
+          `chunked ${args.jobType}: chunk ${i} contended by another claim, skipping`,
+        );
+        return;
+      }
 
-        for (let i = 0; i < chunks.length; i++) {
-          const chunkKey = `${baseKey}:chunk:${i}`;
-          const existing = await tx.discordDelivery.findUnique({
-            where: { deliveryKey: chunkKey },
-          });
-          if (existing?.status === DiscordDeliveryStatus.SENT) continue;
+      // ─── Discord HTTP — explicitly OUTSIDE any Prisma transaction.
+      let resp: Awaited<ReturnType<DiscordBotClient['postMessage']>>;
+      try {
+        resp = await this.bot.postMessage({
+          channelId: args.channelId,
+          content: i === 0 && args.content ? args.content : undefined,
+          embeds: chunks[i].length
+            ? (chunks[i] as Record<string, unknown>[])
+            : undefined,
+          allowedMentions: { parse: [] },
+        });
+      } catch (err) {
+        // Ambiguous / thrown transport error — Discord may or may
+        // not have accepted the POST. Leave the in-flight lease on
+        // the row; after lease expiry a later tick will retry this
+        // same chunk slice. Previous SENT chunks are untouched.
+        const errMsg = this.scrub(err instanceof Error ? err.message : String(err));
+        await this.finaliseAmbiguous(claim.deliveryId, errMsg);
+        await this.recordProfileFailure(args.profile.id, errMsg);
+        return;
+      }
 
-          // Rate-limit lease on `sentAt`: when a 429 landed, we set
-          // sentAt to the next permissible attempt time. PENDING +
-          // sentAt in the future ⇒ do not try yet and do not touch
-          // later chunks (they can't jump ahead).
-          if (
-            existing?.status === DiscordDeliveryStatus.PENDING &&
-            existing.sentAt &&
-            existing.sentAt.getTime() > Date.now()
-          ) {
-            this.logger.debug(
-              `chunked ${args.jobType}: chunk ${i} backoff until ${existing.sentAt.toISOString()}`,
-            );
-            return;
-          }
+      if (resp.ok) {
+        await this.finaliseSuccess(claim.deliveryId);
+        await this.recordProfileSuccess(args.profile.id);
+        continue;
+      }
 
-          const delivery = existing
-            ? await tx.discordDelivery.update({
-                where: { id: existing.id },
-                data: {
-                  status: DiscordDeliveryStatus.PENDING,
-                  attempts: existing.attempts + 1,
-                  // Clear the lease marker; we are retrying now.
-                  sentAt: null,
-                },
-              })
-            : await tx.discordDelivery.create({
-                data: {
-                  profileId: args.profile.id,
-                  deliveryKey: chunkKey,
-                  jobType: args.jobType,
-                  periodKey: args.periodKey,
-                  status: DiscordDeliveryStatus.PENDING,
-                  attempts: 1,
-                },
-              });
+      const errMsg = this.scrub(`${resp.status}: ${resp.message}`);
+      if (resp.retryAfterMs) {
+        const leaseUntil = new Date(Date.now() + resp.retryAfterMs);
+        await this.finaliseRateLimited(claim.deliveryId, errMsg, leaseUntil);
+        await this.recordProfileFailure(args.profile.id, errMsg);
+        this.logger.warn(
+          `chunked ${args.jobType}: rate-limited, honouring Retry-After ${resp.retryAfterMs}ms (until ${leaseUntil.toISOString()})`,
+        );
+        return;
+      }
 
-          const resp = await this.bot.postMessage({
-            channelId: args.channelId,
-            content: i === 0 && args.content ? args.content : undefined,
-            embeds: chunks[i].length
-              ? (chunks[i] as Record<string, unknown>[])
-              : undefined,
-            allowedMentions: { parse: [] },
-          });
-          if (resp.ok) {
-            await tx.discordDelivery.update({
-              where: { id: delivery.id },
-              data: {
-                status: DiscordDeliveryStatus.SENT,
-                sentAt: new Date(),
-                lastError: null,
-              },
-            });
-            await this.recordProfileSuccess(args.profile.id, tx);
-            continue;
-          }
-          const errMsg = this.scrub(`${resp.status}: ${resp.message}`);
-          // 429 backoff: lease sentAt forward by retryAfterMs so
-          // ticks inside the window skip this chunk entirely.
-          const leaseUntil = resp.retryAfterMs
-            ? new Date(Date.now() + resp.retryAfterMs)
-            : null;
-          await tx.discordDelivery.update({
-            where: { id: delivery.id },
+      await this.finaliseRecoverableFailure(claim.deliveryId, errMsg);
+      await this.recordProfileFailure(args.profile.id, errMsg);
+      return;
+    }
+  }
+
+  // ─── Chunk claim / finalize — SHORT transactions only ───────────
+
+  /**
+   * Short-transaction claim for one chunk's `DiscordDelivery` row.
+   * Takes a per-chunk `pg_try_advisory_xact_lock` so two parallel
+   * callers racing the same `deliveryKey` serialise on that lock;
+   * the loser sees the winner's lease on exit and returns
+   * `'contended'` (or `'leased'` on the next iteration).
+   *
+   * The in-flight lease (`sentAt = now + LEASE_TTL_MS`) is persisted
+   * so even after the lock is released by tx commit, any other
+   * instance that read the row sees "someone else is sending"
+   * until the lease expires. Only `status === SENT` is a hard
+   * short-circuit.
+   */
+  private async claimChunk(
+    profileId: string,
+    jobType: DiscordJobType,
+    args: { periodKey: string; chunkKey: string },
+  ): Promise<ChunkClaim> {
+    const lockKey = this.hash31(args.chunkKey);
+    const leaseUntil = new Date(Date.now() + CHUNK_LEASE_TTL_MS);
+    return this.prisma.$transaction(async (tx) => {
+      const [row] = await tx.$queryRaw<Array<{ got: boolean }>>`
+        SELECT pg_try_advisory_xact_lock(${lockKey}) AS got
+      `;
+      if (!row?.got) return { outcome: 'contended' } as const;
+
+      const existing = await tx.discordDelivery.findUnique({
+        where: { deliveryKey: args.chunkKey },
+      });
+      if (existing?.status === DiscordDeliveryStatus.SENT) {
+        return { outcome: 'already_sent' } as const;
+      }
+      if (
+        existing?.status === DiscordDeliveryStatus.PENDING &&
+        existing.sentAt &&
+        existing.sentAt.getTime() > Date.now()
+      ) {
+        return {
+          outcome: 'leased',
+          leaseUntil: existing.sentAt,
+        } as const;
+      }
+      const delivery = existing
+        ? await tx.discordDelivery.update({
+            where: { id: existing.id },
             data: {
               status: DiscordDeliveryStatus.PENDING,
-              lastError: errMsg,
+              attempts: existing.attempts + 1,
+              sentAt: leaseUntil,
+            },
+          })
+        : await tx.discordDelivery.create({
+            data: {
+              profileId,
+              deliveryKey: args.chunkKey,
+              jobType,
+              periodKey: args.periodKey,
+              status: DiscordDeliveryStatus.PENDING,
+              attempts: 1,
               sentAt: leaseUntil,
             },
           });
-          await this.recordProfileFailure(args.profile.id, errMsg, tx);
-          if (leaseUntil) {
-            this.logger.warn(
-              `chunked ${args.jobType}: rate-limited, honouring Retry-After ${resp.retryAfterMs}ms (until ${leaseUntil.toISOString()})`,
-            );
-          }
-          return;
-        }
+      return { outcome: 'claimed', deliveryId: delivery.id } as const;
+    });
+  }
+
+  private finaliseSuccess(deliveryId: string): Promise<unknown> {
+    return this.prisma.discordDelivery.update({
+      where: { id: deliveryId },
+      data: {
+        status: DiscordDeliveryStatus.SENT,
+        sentAt: new Date(),
+        lastError: null,
       },
-      { timeout: 60_000 },
-    );
+    });
+  }
+
+  private finaliseRateLimited(
+    deliveryId: string,
+    error: string,
+    leaseUntil: Date,
+  ): Promise<unknown> {
+    return this.prisma.discordDelivery.update({
+      where: { id: deliveryId },
+      data: {
+        status: DiscordDeliveryStatus.PENDING,
+        lastError: error,
+        sentAt: leaseUntil,
+      },
+    });
+  }
+
+  /**
+   * Recoverable (non-429, non-thrown) failure: release the
+   * in-flight lease so the next tick can claim and retry. The
+   * `attempts` counter was already bumped during claim; this does
+   * not advance it further for a single failed response.
+   */
+  private finaliseRecoverableFailure(
+    deliveryId: string,
+    error: string,
+  ): Promise<unknown> {
+    return this.prisma.discordDelivery.update({
+      where: { id: deliveryId },
+      data: {
+        status: DiscordDeliveryStatus.PENDING,
+        lastError: error,
+        sentAt: null,
+      },
+    });
+  }
+
+  /**
+   * Thrown / ambiguous error (axios timeout, DNS, etc. — the
+   * Discord POST may or may not have been accepted). We keep the
+   * in-flight lease intact so no other tick re-sends inside the
+   * lease window. After the lease expires, a later tick will claim
+   * and retry.
+   */
+  private finaliseAmbiguous(deliveryId: string, error: string): Promise<unknown> {
+    return this.prisma.discordDelivery.update({
+      where: { id: deliveryId },
+      data: { lastError: error },
+    });
   }
 
   /**
@@ -634,11 +743,8 @@ export class DiscordSchedulersService {
 
   // ─── Housekeeping ──────────────────────────────────────────────
 
-  private async recordProfileSuccess(
-    profileId: string,
-    client: TxLike = this.prisma,
-  ): Promise<void> {
-    await client.discordProfile.update({
+  private async recordProfileSuccess(profileId: string): Promise<void> {
+    await this.prisma.discordProfile.update({
       where: { id: profileId },
       data: { lastSuccessAt: new Date() },
     });
@@ -647,9 +753,8 @@ export class DiscordSchedulersService {
   private async recordProfileFailure(
     profileId: string,
     message: string,
-    client: TxLike = this.prisma,
   ): Promise<void> {
-    await client.discordProfile.update({
+    await this.prisma.discordProfile.update({
       where: { id: profileId },
       data: {
         lastFailureAt: new Date(),
