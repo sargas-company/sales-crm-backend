@@ -6,7 +6,13 @@ import { DiscordSchedulersService } from './discord-schedulers.service';
 // helper directly through a tiny subclass.
 class TestScheduler extends DiscordSchedulersService {
   constructor() {
-    super(null as never, null as never, null as never, null as never);
+    super(
+      null as never,
+      null as never,
+      null as never,
+      null as never,
+      null as never,
+    );
   }
   reached(now: string, sched: string): boolean {
     return (this as unknown as { timeReached: (a: string, b: string) => boolean })

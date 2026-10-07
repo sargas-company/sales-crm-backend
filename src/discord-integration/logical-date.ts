@@ -111,24 +111,68 @@ export function localCalendarDate(
 }
 
 /**
- * `true` iff the submission at `now` would be considered a late
- * report under the policy: either it's past `cutoffHour` on its own
- * logical day's calendar day — i.e. the report is attached to today
- * but sent after the digest window — or its logical date is strictly
- * before the current local date.
+ * Local-wall-clock minute-of-day at the given moment in `timezone`.
+ * Returned as `hour * 60 + minute` so the caller can compare against
+ * a `HH:MM` deadline without parsing round-trips.
+ */
+function localMinuteOfDay(d: Date, timezone: string): number {
+  const fmt = new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone,
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  const parts = fmt.formatToParts(d);
+  const h = Number.parseInt(
+    parts.find((p) => p.type === 'hour')?.value ?? '0',
+    10,
+  );
+  const m = Number.parseInt(
+    parts.find((p) => p.type === 'minute')?.value ?? '0',
+    10,
+  );
+  return (h === 24 ? 0 : h) * 60 + m;
+}
+
+/**
+ * Parse a `HH:MM` 24-hour string into minute-of-day. Any malformed
+ * input falls back to 19:00 — the long-standing operational default.
+ */
+export function parseHHMM(hhmm: string): number {
+  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(hhmm ?? '');
+  if (!m) return 19 * 60;
+  return Number.parseInt(m[1], 10) * 60 + Number.parseInt(m[2], 10);
+}
+
+/**
+ * `true` iff `now` is on or after `deadline` on its own local
+ * calendar day, OR `now`'s logical report date is strictly before
+ * today's local calendar day. The `deadline` is the daily-digest
+ * cutoff from the active profile (`dailyDigestAt`, e.g. "19:00") and
+ * the predicate is the single source of truth for "late vs. normal":
  *
- * `deliveryHour` optionally overrides the hour used to decide "late
- * on the same day" and defaults to 19 (the daily-digest hour from the
- * active profile).
+ *   now < deadline              → NOT late (digest will pick it up)
+ *   now >= deadline              → late     (digest has already fired
+ *                                            or is about to; this
+ *                                            report is after the cut)
+ *   logical(reportDate) < today → late     (back-dated report)
+ *
+ * Using a HH:MM deadline (not just an hour) and routing through the
+ * profile's own timezone keeps DST correct and keeps late-callers and
+ * daily-digest-callers in lockstep — no 59-second race window where
+ * one path thinks it's late and the other picks it up anyway.
  */
 export function isLateReport(
   now: Date,
   timezone: string = DEFAULT_TZ,
-  deliveryHour: number = 19,
+  deliveryAt: string | number = '19:00',
 ): boolean {
-  const parts = localDateParts(now, timezone);
   const logical = logicalReportDate({ now, timezone });
   const today = localCalendarDate(now, timezone);
   if (logical.getTime() < today.getTime()) return true;
-  return parts.hour >= deliveryHour;
+  const deadlineMinutes =
+    typeof deliveryAt === 'number'
+      ? Math.max(0, Math.min(23 * 60 + 59, deliveryAt * 60))
+      : parseHHMM(deliveryAt);
+  return localMinuteOfDay(now, timezone) >= deadlineMinutes;
 }

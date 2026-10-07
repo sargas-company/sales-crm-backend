@@ -146,7 +146,7 @@ export class DiscordInteractionsController {
 
     const profile = await this.prisma.discordProfile.findFirst({
       where: { active: true },
-      select: { cutoffHour: true, timezone: true },
+      select: { cutoffHour: true, timezone: true, dailyDigestAt: true },
     });
     if (!profile) {
       return this.replyError(
@@ -166,6 +166,7 @@ export class DiscordInteractionsController {
         now: new Date(),
         cutoffHour: profile.cutoffHour,
         timezone: profile.timezone,
+        dailyDigestAt: profile.dailyDigestAt,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Could not save the report.';

@@ -25,7 +25,7 @@ const noopLateReports = {
 } as unknown as DiscordLateReportService;
 
 const discord = new DiscordReportService(prismaSvc, noopLateReports);
-const manual = new ProjectReportService(prismaSvc);
+const manual = new ProjectReportService(prismaSvc, noopLateReports);
 
 const TAG = `cross-${randomUUID().slice(0, 8)}`;
 let projectId: string;
@@ -102,6 +102,7 @@ describe('cross-source invariant: MANUAL ↔ DISCORD', () => {
         text: 'discord-after',
         now: new Date(`${date}T12:00:00+03:00`),
         cutoffHour: 10,
+        dailyDigestAt: '19:00',
         timezone: 'Europe/Kyiv',
       }),
     ).rejects.toBeInstanceOf(ConflictException);
@@ -117,6 +118,7 @@ describe('cross-source invariant: MANUAL ↔ DISCORD', () => {
       text: 'discord-first',
       now: new Date(`${date}T12:00:00+03:00`),
       cutoffHour: 10,
+        dailyDigestAt: '19:00',
       timezone: 'Europe/Kyiv',
     });
     const u = authUser();
@@ -148,6 +150,7 @@ describe('concurrent DISCORD create for the same (project, date)', () => {
         text: 'first',
         now,
         cutoffHour: 10,
+        dailyDigestAt: '19:00',
         timezone: 'Europe/Kyiv',
       }),
       discord.createFromDiscord({
@@ -158,6 +161,7 @@ describe('concurrent DISCORD create for the same (project, date)', () => {
         text: 'second',
         now,
         cutoffHour: 10,
+        dailyDigestAt: '19:00',
         timezone: 'Europe/Kyiv',
       }),
     ]);

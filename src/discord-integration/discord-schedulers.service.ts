@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import {
   DiscordDeliveryStatus,
@@ -7,10 +8,11 @@ import {
 } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { chunkEmbeds, type DiscordEmbed } from './discord-chunking';
 import { DiscordBotClient } from './discord-bot.client';
 import { DiscordEmbedBuilderService } from './discord-embed-builder.service';
 import { DiscordLateReportService } from './discord-late-report.service';
-import { logicalReportDate, localCalendarDate } from './logical-date';
+import { logicalReportDate, localCalendarDate, parseHHMM } from './logical-date';
 
 /**
  * Scheduled Discord notifications.
@@ -37,6 +39,7 @@ export class DiscordSchedulersService {
     private readonly bot: DiscordBotClient,
     private readonly embeds: DiscordEmbedBuilderService,
     private readonly lateReports: DiscordLateReportService,
+    private readonly config: ConfigService,
   ) {}
 
   @Cron('0 * * * * *', { name: 'discord-tick' })
@@ -69,16 +72,31 @@ export class DiscordSchedulersService {
       }
     }
     if (profile.reportsEnabled && this.timeReached(nowHM, profile.dailyDigestAt)) {
-      await this.runOnce(profile, DiscordJobType.DAILY_DIGEST_19, todayKey, () =>
-        this.runDailyDigest(profile),
-      );
+      // Chunked jobs own their per-chunk DiscordDelivery rows + their
+      // own advisory lock; the single-row `runOnce` dedup gate is not
+      // used here.
+      try {
+        await this.runDailyDigest(profile);
+      } catch (err) {
+        await this.handleChunkedError(
+          profile,
+          DiscordJobType.DAILY_DIGEST_19,
+          err,
+        );
+      }
     }
     if (profile.weeklyEnabled) {
       const dow = this.currentDow(profile.timezone);
       if (dow === profile.weeklyDigestDay && this.timeReached(nowHM, profile.weeklyDigestAt)) {
-        await this.runOnce(profile, DiscordJobType.WEEKLY_DIGEST, todayKey, () =>
-          this.runWeeklyDigest(profile),
-        );
+        try {
+          await this.runWeeklyDigest(profile);
+        } catch (err) {
+          await this.handleChunkedError(
+            profile,
+            DiscordJobType.WEEKLY_DIGEST,
+            err,
+          );
+        }
       }
     }
 
@@ -203,22 +221,36 @@ export class DiscordSchedulersService {
       },
       include: { employee: { select: { firstName: true, lastName: true } } },
     });
-    const embeds = offs.length
-      ? this.embeds.absencesEmbeds(
-          offs.map((o) => ({
-            type: o.type,
-            firstName: o.employee.firstName,
-            lastName: o.employee.lastName,
-            endDate: o.endDate,
-          })),
-        )
-      : undefined;
-    const resp = await this.bot.postMessage({
-      channelId: profile.pmsChannelId,
-      content: offs.length ? 'Who is off today' : 'Everyone is working today.',
-      embeds,
-    });
-    if (!resp.ok) throw new Error(`${resp.status}: ${resp.message}`);
+    if (!offs.length) {
+      const resp = await this.bot.postMessage({
+        channelId: profile.pmsChannelId,
+        content: 'Everyone is working today.',
+        allowedMentions: { parse: [] },
+      });
+      if (!resp.ok) throw new Error(`${resp.status}: ${resp.message}`);
+      return;
+    }
+    const embeds = this.embeds.absencesEmbeds(
+      offs.map((o) => ({
+        type: o.type,
+        firstName: o.employee.firstName,
+        lastName: o.employee.lastName,
+        endDate: o.endDate,
+      })),
+    );
+    // Absences rarely exceed the 10-embed cap, but a long holiday
+    // stretch across a big team could; chunk defensively through the
+    // shared helper so the same budgeting + truncation applies.
+    const chunks = chunkEmbeds(embeds);
+    for (let i = 0; i < chunks.length; i++) {
+      const resp = await this.bot.postMessage({
+        channelId: profile.pmsChannelId,
+        content: i === 0 ? 'Who is off today' : undefined,
+        embeds: chunks[i] as Record<string, unknown>[],
+        allowedMentions: { parse: [] },
+      });
+      if (!resp.ok) throw new Error(`${resp.status}: ${resp.message}`);
+    }
   }
 
   private async runReminder(profile: DiscordProfile): Promise<void> {
@@ -246,69 +278,294 @@ export class DiscordSchedulersService {
       }
     }
     if (!shouldPing) return;
+    const reportsUrl = this.reportsUrl();
+    const content = this.embeds.reminderContent(
+      profile.managerRoleId,
+      reportsUrl,
+    );
+    // Strict mention policy: pass the single managerRoleId through
+    // allowedMentions.roles. parse:[] blocks @everyone, @here, any
+    // user mention and any other role id that might sneak into the
+    // body (none here, but defensive).
     const resp = await this.bot.postMessage({
       channelId: profile.pmsChannelId,
-      content: this.embeds.reminderContent(profile.managerRoleId),
-      allowedMentions: profile.managerRoleId ? { parse: ['roles'] } : undefined,
+      content,
+      allowedMentions: profile.managerRoleId
+        ? { parse: [], roles: [profile.managerRoleId] }
+        : { parse: [] },
     });
     if (!resp.ok) throw new Error(`${resp.status}: ${resp.message}`);
   }
 
   private async runDailyDigest(profile: DiscordProfile): Promise<void> {
     if (!profile.pmsChannelId) throw new Error('pmsChannelId missing');
+    const now = new Date();
     const logical = logicalReportDate({
-      now: new Date(),
+      now,
       cutoffHour: profile.cutoffHour,
       timezone: profile.timezone,
     });
+    // Catch-up safety: when the scheduler runs after a long downtime
+    // we must not scoop up reports that have already been flipped to
+    // the late-report path. The deadline is `dailyDigestAt` on the
+    // logical calendar day in the profile's timezone — any
+    // `createdAt >= deadline` row is owned by the late-report queue.
+    const deadlineUtc = this.deadlineForLogicalDate(
+      logical,
+      profile.dailyDigestAt,
+      profile.timezone,
+    );
     const reports = await this.prisma.projectReport.findMany({
-      where: { reportDate: logical },
+      where: {
+        reportDate: logical,
+        createdAt: { lt: deadlineUtc },
+      },
       include: {
         project: { select: { name: true } },
         employee: { select: { firstName: true, lastName: true } },
       },
+      // Stable order so chunk slices are deterministic across retries.
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     });
     if (!reports.length) return;
-    const resp = await this.bot.postMessage({
-      channelId: profile.pmsChannelId,
-      content: `Daily reports — ${logical.toISOString().slice(0, 10)}`,
-      embeds: this.embeds.dailyDigestEmbeds({
-        reportDate: logical,
-        rows: reports.map((r) => ({
-          projectName: r.project.name,
-          authorName: r.employee
-            ? `${r.employee.firstName} ${r.employee.lastName}`
-            : (r.discordUsername ?? 'Discord user'),
-          hours: r.hours,
-        })),
-      }),
+    const embeds = this.embeds.dailyDigestEmbeds({
+      reportDate: logical,
+      rows: reports.map((r) => ({
+        projectName: r.project.name,
+        authorName: r.employee
+          ? `${r.employee.firstName} ${r.employee.lastName}`
+          : (r.discordUsername ?? 'Discord user'),
+        hours: r.hours,
+      })),
     });
-    if (!resp.ok) throw new Error(`${resp.status}: ${resp.message}`);
+    const periodKey = logical.toISOString().slice(0, 10);
+    await this.sendChunked({
+      profile,
+      jobType: DiscordJobType.DAILY_DIGEST_19,
+      periodKey,
+      channelId: profile.pmsChannelId,
+      content: `Daily reports — ${periodKey}`,
+      embeds,
+    });
   }
 
   private async runWeeklyDigest(profile: DiscordProfile): Promise<void> {
     if (!profile.pmsChannelId) throw new Error('pmsChannelId missing');
     const prev = this.previousWeekRange(profile.timezone);
-    const totals = await this.prisma.$queryRaw<Array<{ name: string; hours: number }>>`
-      SELECT p.name, SUM(r.hours)::float AS hours
-        FROM "ProjectReport" r
-        JOIN "Project" p ON p.id = r."projectId"
-       WHERE r."reportDate" >= ${prev.start}::date
+    // LEFT JOIN semantics: every active/planned project appears,
+    // even when it has no reports for the previous week (0.00 hours
+    // + red). Stable `ORDER BY name, id` tie-break matches the
+    // chunk-idempotency contract.
+    const totals = await this.prisma.$queryRaw<
+      Array<{ id: string; name: string; hours: number }>
+    >`
+      SELECT p.id,
+             p.name,
+             COALESCE(SUM(r.hours), 0)::float AS hours
+        FROM "Project" p
+        LEFT JOIN "ProjectReport" r
+          ON r."projectId" = p.id
+         AND r."reportDate" >= ${prev.start}::date
          AND r."reportDate" <= ${prev.end}::date
+       WHERE p.status IN ('active', 'planned')
        GROUP BY p.id, p.name
-       ORDER BY p.name
+       ORDER BY p.name ASC, p.id ASC
     `;
     if (!totals.length) return;
-    const resp = await this.bot.postMessage({
+    const embeds = this.embeds.weeklyDigestEmbeds(
+      totals.map((t) => ({ projectName: t.name, hours: Number(t.hours) })),
+    );
+    await this.sendChunked({
+      profile,
+      jobType: DiscordJobType.WEEKLY_DIGEST,
+      periodKey: `${prev.start.toISOString().slice(0, 10)}..${prev.end
+        .toISOString()
+        .slice(0, 10)}`,
       channelId: profile.pmsChannelId,
       content: `Weekly reports — ${prev.start.toISOString().slice(0, 10)}…${prev.end
         .toISOString()
         .slice(0, 10)}`,
-      embeds: this.embeds.weeklyDigestEmbeds(
-        totals.map((t) => ({ projectName: t.name, hours: Number(t.hours) })),
-      ),
+      embeds,
     });
-    if (!resp.ok) throw new Error(`${resp.status}: ${resp.message}`);
+  }
+
+  /**
+   * Chunked, per-chunk-idempotent send.
+   *
+   * Each chunk gets its own `DiscordDelivery(deliveryKey =
+   * JOB:periodKey:chunk:N)`. On entry we:
+   *   1. slice `embeds` into Discord-safe chunks via `chunkEmbeds`;
+   *   2. walk them in order under one advisory lock keyed by the
+   *      base `JOB:periodKey` (so two scheduler ticks never race on
+   *      the same digest);
+   *   3. for each chunk — SKIP if its row is SENT, SEND otherwise.
+   *      On success flip to SENT and continue; on failure STOP and
+   *      leave the row PENDING for the next tick to retry.
+   *
+   * The order of embeds is stable (callers sort before passing them
+   * in), so chunk N on retry contains the same slice as before. The
+   * `content` text is attached to chunk 0 only; later chunks are
+   * pure-embed messages so Discord doesn't repeat the header.
+   */
+  private async sendChunked(args: {
+    profile: DiscordProfile;
+    jobType: DiscordJobType;
+    periodKey: string;
+    channelId: string;
+    content: string;
+    embeds: readonly DiscordEmbed[];
+  }): Promise<void> {
+    const chunks = chunkEmbeds(args.embeds);
+    if (!chunks.length) return;
+    const baseKey = `${args.jobType}:${args.periodKey}`;
+    const lockKey = this.hash31(`chunked:${baseKey}`);
+    const [row] = await this.prisma.$queryRaw<Array<{ got: boolean }>>`
+      SELECT pg_try_advisory_lock(${lockKey}) AS got
+    `;
+    if (!row?.got) return;
+    try {
+      for (let i = 0; i < chunks.length; i++) {
+        const chunkKey = `${baseKey}:chunk:${i}`;
+        const existing = await this.prisma.discordDelivery.findUnique({
+          where: { deliveryKey: chunkKey },
+        });
+        if (existing?.status === DiscordDeliveryStatus.SENT) continue;
+
+        const delivery = existing
+          ? await this.prisma.discordDelivery.update({
+              where: { id: existing.id },
+              data: {
+                status: DiscordDeliveryStatus.PENDING,
+                attempts: existing.attempts + 1,
+              },
+            })
+          : await this.prisma.discordDelivery.create({
+              data: {
+                profileId: args.profile.id,
+                deliveryKey: chunkKey,
+                jobType: args.jobType,
+                periodKey: args.periodKey,
+                status: DiscordDeliveryStatus.PENDING,
+                attempts: 1,
+              },
+            });
+
+        const resp = await this.bot.postMessage({
+          channelId: args.channelId,
+          content: i === 0 ? args.content : undefined,
+          embeds: chunks[i] as Record<string, unknown>[],
+          allowedMentions: { parse: [] },
+        });
+        if (resp.ok) {
+          await this.prisma.discordDelivery.update({
+            where: { id: delivery.id },
+            data: {
+              status: DiscordDeliveryStatus.SENT,
+              sentAt: new Date(),
+              lastError: null,
+            },
+          });
+          await this.recordProfileSuccess(args.profile.id);
+          continue;
+        }
+        // Failure: leave this chunk PENDING, bail out of the loop so
+        // subsequent chunks are NOT sent until this one lands. The
+        // outer `runOnce` wrapper (gate) is NOT used by chunked jobs
+        // — the per-chunk key is the dedup token here.
+        const errMsg = this.scrub(`${resp.status}: ${resp.message}`);
+        await this.prisma.discordDelivery.update({
+          where: { id: delivery.id },
+          data: {
+            status: DiscordDeliveryStatus.PENDING,
+            lastError: errMsg,
+          },
+        });
+        await this.recordProfileFailure(args.profile.id, errMsg);
+        if (resp.retryAfterMs) {
+          this.logger.warn(
+            `chunked ${args.jobType}: rate-limited, honouring Retry-After ${resp.retryAfterMs}ms`,
+          );
+        }
+        return;
+      }
+    } finally {
+      await this.releaseLock(lockKey);
+    }
+  }
+
+  /**
+   * Non-fatal error handler for chunked jobs. The chunk-send loop
+   * records per-chunk failure state on `DiscordDelivery` itself, so
+   * this is only reached when something outside the send loop blew
+   * up (DB query, embed builder). Record it on the profile and
+   * surface via the Ops channel like `runOnce` does.
+   */
+  private async handleChunkedError(
+    profile: DiscordProfile,
+    jobType: DiscordJobType,
+    err: unknown,
+  ): Promise<void> {
+    const msg = this.scrub(err instanceof Error ? err.message : String(err));
+    await this.recordProfileFailure(profile.id, msg);
+    if (profile.opsChannelId) {
+      try {
+        await this.bot.postMessage({
+          channelId: profile.opsChannelId,
+          content: `⚠️ Discord job \`${jobType}\` failed on profile \`${profile.name}\`:\n\`\`\`\n${msg}\n\`\`\``,
+          allowedMentions: { parse: [] },
+        });
+      } catch {
+        /* don't recurse */
+      }
+    }
+  }
+
+  /**
+   * `${APP_UI_URL}/projects/reports` with trailing-slash normalisation.
+   * Empty string when APP_UI_URL is not configured — callers surface
+   * this as "no link" rather than crashing.
+   */
+  private reportsUrl(): string {
+    const raw = this.config.get<string>('APP_UI_URL') ?? '';
+    if (!raw) return '';
+    return `${raw.replace(/\/+$/, '')}/projects/reports`;
+  }
+
+  /**
+   * UTC `Date` for the `HH:MM` deadline on the given logical calendar
+   * day in `timezone`. Rendered against the local calendar day so the
+   * daily-digest filter and the late-report predicate agree down to
+   * the minute, even across DST transitions.
+   */
+  private deadlineForLogicalDate(
+    logicalMidnightUtc: Date,
+    hhmm: string,
+    timezone: string,
+  ): Date {
+    const minutes = parseHHMM(hhmm);
+    // Walk minute by minute from local-noon of the logical day until
+    // the local wall clock matches the deadline minute. Local noon is
+    // on the correct calendar day under every IANA zone (DST shifts
+    // never exceed 2h); binary-searching the UTC range avoids any
+    // offset-math landmines.
+    const anchor = new Date(logicalMidnightUtc.getTime() + 12 * 60 * 60 * 1000);
+    const target = minutes;
+    const anchorMinutes = this.localMinuteOfDay(anchor, timezone);
+    const deltaMinutes = target - anchorMinutes;
+    return new Date(anchor.getTime() + deltaMinutes * 60 * 1000);
+  }
+
+  private localMinuteOfDay(d: Date, timezone: string): number {
+    const fmt = new Intl.DateTimeFormat('en-GB', {
+      timeZone: timezone,
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const parts = fmt.formatToParts(d);
+    const h = Number.parseInt(parts.find((p) => p.type === 'hour')?.value ?? '0', 10);
+    const m = Number.parseInt(parts.find((p) => p.type === 'minute')?.value ?? '0', 10);
+    return (h === 24 ? 0 : h) * 60 + m;
   }
 
   // ─── Housekeeping ──────────────────────────────────────────────

@@ -104,7 +104,11 @@ export class DiscordLateReportService {
       const embed = this.embeds.lateReportEmbed(payload);
       const resp = await this.bot.postMessage({
         channelId: profile.pmsChannelId!,
-        embeds: [embed],
+        embeds: [embed as Record<string, unknown>],
+        // Content is empty for late-report tick (embed-only); still
+        // pin allowed_mentions so nothing in the author/project name
+        // or `text` can ever ping the channel.
+        allowedMentions: { parse: [] },
       });
       if (resp.ok) {
         await this.prisma.discordDelivery.update({

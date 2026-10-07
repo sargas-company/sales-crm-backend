@@ -58,6 +58,14 @@ export class DiscordReportService {
     now: Date;
     cutoffHour: number;
     timezone: string;
+    /**
+     * Daily-digest deadline from the active DiscordProfile
+     * (`dailyDigestAt`, "HH:MM"). The late-vs-normal predicate must
+     * agree with the daily-digest filter down to the minute; the
+     * daily digest and this call read the same `profile.dailyDigestAt`
+     * so there is no 59-second race around 19:00.
+     */
+    dailyDigestAt: string;
   }): Promise<DiscordReportResult> {
     const project = await this.prisma.project.findUnique({
       where: { discordChannelId: args.discordChannelId },
@@ -145,7 +153,7 @@ export class DiscordReportService {
       throw err;
     }
 
-    const isLate = isLateReport(args.now, args.timezone, 19);
+    const isLate = isLateReport(args.now, args.timezone, args.dailyDigestAt);
     const result: DiscordReportResult = {
       reportId: createdId!,
       projectId: project.id,

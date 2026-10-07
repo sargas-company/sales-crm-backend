@@ -3,11 +3,14 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, ProjectReportSource } from '@prisma/client';
 
 import { AuthUser, scopePolicy } from '../auth/auth-user';
+import { DiscordLateReportService } from '../discord-integration/discord-late-report.service';
+import { isLateReport } from '../discord-integration/logical-date';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProjectReportDto } from './dto/create-project-report.dto';
 import {
@@ -20,7 +23,12 @@ import { projectReportLockKey } from './project-report.lock';
 
 @Injectable()
 export class ProjectReportService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(ProjectReportService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly lateReports: DiscordLateReportService,
+  ) {}
 
   async create(dto: CreateProjectReportDto, user: AuthUser) {
     await this.assertProjectAndEmployeeExist(dto.projectId, dto.employeeId);
@@ -30,8 +38,11 @@ export class ProjectReportService {
     const reportDate = this.dayOnly(dto.reportDate);
     const lockKey = projectReportLockKey(dto.projectId, reportDate);
 
+    let created: Prisma.ProjectReportGetPayload<{
+      include: ReturnType<ProjectReportService['include']>;
+    }>;
     try {
-      return await this.prisma.$transaction(async (tx) => {
+      created = await this.prisma.$transaction(async (tx) => {
         // Same lock the Discord adapter takes — a MANUAL create and a
         // DISCORD create for the same (project, date) are serialised,
         // which is what the cross-source invariant depends on.
@@ -66,6 +77,75 @@ export class ProjectReportService {
     } catch (e) {
       throw this.mapWriteError(e);
     }
+
+    // Late-report notification parity with the Discord `/report`
+    // path: MANUAL creates filed after the active profile's
+    // `dailyDigestAt` deadline enqueue the same `LATE_REPORT:<id>`
+    // delivery row. Enqueue failures are swallowed with a sanitised
+    // log — the ProjectReport row is already committed; a failed
+    // Discord notification must never roll it back.
+    await this.enqueueLateDeliveryIfNeeded(created);
+
+    return created;
+  }
+
+  /**
+   * MANUAL-side late enqueue. Idempotent via `DiscordDelivery`'s
+   * `deliveryKey` UNIQUE (`LATE_REPORT:<reportId>`), so a crash-and-
+   * replay cannot create a second row.
+   *
+   * DISCORD-sourced rows never reach this method; the Discord
+   * `/report` path owns its own enqueue inside `DiscordReportService`.
+   */
+  private async enqueueLateDeliveryIfNeeded(
+    row: Prisma.ProjectReportGetPayload<{ include: ReturnType<ProjectReportService['include']> }>,
+  ): Promise<void> {
+    if (row.source !== ProjectReportSource.MANUAL) return;
+    const profile = await this.prisma.discordProfile.findFirst({
+      where: { active: true },
+      select: {
+        timezone: true,
+        dailyDigestAt: true,
+      },
+    });
+    if (!profile) return;
+    const submittedAt = row.createdAt;
+    if (!isLateReport(submittedAt, profile.timezone, profile.dailyDigestAt)) {
+      return;
+    }
+    const authorName = row.employee
+      ? `${row.employee.firstName} ${row.employee.lastName}`
+      : 'CRM user';
+    try {
+      await this.lateReports.enqueue({
+        reportId: row.id,
+        projectId: row.projectId,
+        projectName: row.project.name,
+        // MANUAL rows have no Discord user id/handle. These fields
+        // are informational — the late-report embed only renders
+        // `authorName`.
+        discordUserId: '',
+        discordUsername: authorName,
+        reportDate: row.reportDate,
+        hours: row.hours,
+        text: row.content ?? '',
+        isLate: true,
+        submittedAt,
+      });
+    } catch (err) {
+      const message = this.scrubError(err);
+      this.logger.warn(
+        `late-report enqueue failed for MANUAL report ${row.id}: ${message}`,
+      );
+    }
+  }
+
+  private scrubError(err: unknown): string {
+    const raw = err instanceof Error ? err.message : String(err);
+    return raw
+      .replace(/Bot\s+[A-Za-z0-9._-]+/g, 'Bot <redacted>')
+      .replace(/\/webhooks\/(\d{17,20})\/[^\/\s]+/g, '/webhooks/$1/<redacted>')
+      .slice(0, 240);
   }
 
   async findAll(dto: ListProjectReportsDto, user: AuthUser) {
@@ -119,6 +199,18 @@ export class ProjectReportService {
     return report;
   }
 
+  /**
+   * Updates do NOT emit a Discord notification by design.
+   *
+   * The old Laravel admin's `ReportObserver::updated()` sent a
+   * `"Report updated"` embed on every row edit, which produced
+   * channel noise (one message per silent correction, including the
+   * manager fixing their own typos). The CRM-era policy is: an edit
+   * is a correction, not a new event — nothing fires. If the business
+   * ever wants a notification on specific transitions (e.g. hours
+   * crossing some threshold), add it as a deliberate event, don't
+   * replay the Laravel-era blanket update spam.
+   */
   async update(id: string, dto: UpdateProjectReportDto, user: AuthUser) {
     const existing = await this.prisma.projectReport.findUnique({
       where: { id },
