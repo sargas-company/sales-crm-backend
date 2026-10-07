@@ -295,6 +295,12 @@ export class ProjectReportService {
         return [{ hours: dir }];
       case ProjectReportSortBy.updatedAt:
         return [{ updatedAt: dir }];
+      case ProjectReportSortBy.source:
+        // Enum ordering is alphabetical in Postgres text comparison
+        // but Prisma preserves the enum definition order; add a
+        // stable secondary sort so same-source rows do not shuffle
+        // on page boundaries.
+        return [{ source: dir }, { reportDate: dir }, { createdAt: dir }];
       case ProjectReportSortBy.createdAt:
       default:
         return [{ createdAt: dir }];

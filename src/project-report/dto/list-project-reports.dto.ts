@@ -16,6 +16,7 @@ export enum ProjectReportSortBy {
   createdAt = 'createdAt',
   updatedAt = 'updatedAt',
   hours = 'hours',
+  source = 'source',
 }
 
 export enum ProjectReportSortDirection {
