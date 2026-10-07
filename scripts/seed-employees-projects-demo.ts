@@ -492,7 +492,10 @@ async function main() {
       const reportDate = new Date(now);
       reportDate.setUTCHours(0, 0, 0, 0);
       reportDate.setUTCDate(reportDate.getUTCDate() - daysAgo);
-      const key = `${project.id}|${emp.id}|${reportDate.toISOString().slice(0, 10)}`;
+      // Project-day keying: one report per (project, date) regardless
+      // of who filed it. The seed snapshot copies the whole project
+      // team as the contributor set.
+      const key = `${project.id}|${reportDate.toISOString().slice(0, 10)}`;
       if (seen.has(key)) continue;
       seen.add(key);
       // hours: 1.0 – 9.5 in half-hour steps.
@@ -504,10 +507,19 @@ async function main() {
         await prisma.projectReport.create({
           data: {
             projectId: project.id,
-            employeeId: emp.id,
             reportDate,
             hours,
             content,
+            contributors: {
+              create: project.memberIndexes.map((idx) => {
+                const member = employees[idx];
+                return {
+                  employeeId: member.id,
+                  firstNameSnapshot: member.firstName,
+                  lastNameSnapshot: member.lastName,
+                };
+              }),
+            },
           },
         });
         inserted++;

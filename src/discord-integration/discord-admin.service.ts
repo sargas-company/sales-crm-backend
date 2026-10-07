@@ -217,7 +217,6 @@ export class DiscordAdminService {
           embeds: [
             this.embeds.reportEmbed({
               projectName: 'Example Project',
-              authorName: 'Alice Example',
               hours: 6,
               reportDate: today,
               text: 'Finished the invoicing module and reviewed two PRs.',
@@ -230,7 +229,6 @@ export class DiscordAdminService {
           embeds: [
             this.embeds.lateReportEmbed({
               projectName: 'Example Project',
-              authorName: 'Alice Example',
               hours: 3,
               reportDate: logicalReportDate({
                 now: new Date(),
@@ -272,8 +270,6 @@ export class DiscordAdminService {
           embeds: this.embeds.dailyDigestEmbeds({
             reportDate: today,
             rows: [
-              { projectName: 'Example Project A', authorName: 'Alice Example', hours: 8 },
-              { projectName: 'Example Project B', authorName: 'Bob Example', hours: 4 },
             ],
           }),
         };

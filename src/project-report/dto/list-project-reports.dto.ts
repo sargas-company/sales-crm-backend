@@ -68,11 +68,6 @@ export class ListProjectReportsDto {
   @IsUUID()
   projectId?: string;
 
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsUUID()
-  employeeId?: string;
-
   @ApiPropertyOptional({ description: 'YYYY-MM-DD, inclusive lower bound.' })
   @IsOptional()
   @IsDateString()

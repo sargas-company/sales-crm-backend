@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
@@ -87,37 +86,34 @@ export class DiscordReportService {
 
     try {
       await this.prisma.$transaction(async (tx) => {
-        // Shared with the CRM MANUAL path — serialises MANUAL ↔ DISCORD
-        // creates for the same (project, date) so cross-source rows
-        // can't both land. `pg_advisory_xact_lock` returns `void`, so
-        // we have to use `$executeRaw`.
+        // Shared with the CRM MANUAL path — serialises both creates
+        // for the same (project, date) so only one row lands. The
+        // full-unique index on (projectId, reportDate) is the final
+        // DB-level guard; this lock keeps the check-and-insert
+        // atomic even under concurrency on different processes.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
 
-        const existingSameSource = await tx.projectReport.findFirst({
+        const existing = await tx.projectReport.findUnique({
           where: {
-            projectId: project.id,
-            reportDate,
-            source: ProjectReportSource.DISCORD,
+            projectId_reportDate: { projectId: project.id, reportDate },
           },
           select: { id: true },
         });
-        if (existingSameSource) {
+        if (existing) {
           throw new ConflictException(
-            `A report for ${project.name} today already exists.`,
+            `A report for ${project.name} already exists for this date.`,
           );
         }
 
-        const manualExists = await tx.projectReport.findFirst({
-          where: {
-            projectId: project.id,
-            reportDate,
-            source: ProjectReportSource.MANUAL,
+        const members = await tx.projectMember.findMany({
+          where: { projectId: project.id },
+          include: {
+            employee: { select: { id: true, firstName: true, lastName: true } },
           },
-          select: { id: true },
         });
-        if (manualExists) {
+        if (members.length === 0) {
           throw new ConflictException(
-            `A CRM-filed report for ${project.name} already exists for this date; the Discord flow would double-count hours.`,
+            `${project.name} has no team members configured; add at least one employee to the project before filing a report.`,
           );
         }
 
@@ -128,8 +124,17 @@ export class DiscordReportService {
             hours: args.hours,
             content: args.text.trim(),
             source: ProjectReportSource.DISCORD,
+            // Technical submitter metadata — not surfaced as author
+            // in the API or any UI/embed. Retained for audit.
             discordUserId: args.discordUserId,
             discordUsername: args.discordUsername,
+            contributors: {
+              create: members.map((m) => ({
+                employeeId: m.employee.id,
+                firstNameSnapshot: m.employee.firstName,
+                lastNameSnapshot: m.employee.lastName,
+              })),
+            },
           },
           select: { id: true },
         });
@@ -141,14 +146,8 @@ export class DiscordReportService {
         err.code === 'P2002'
       ) {
         throw new ConflictException(
-          `A report for ${project.name} today already exists.`,
+          `A report for ${project.name} already exists for this date.`,
         );
-      }
-      if (
-        err instanceof Prisma.PrismaClientUnknownRequestError &&
-        err.message.includes('ProjectReport_source_shape_chk')
-      ) {
-        throw new BadRequestException('Report payload violates source shape.');
       }
       throw err;
     }

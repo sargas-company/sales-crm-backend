@@ -55,9 +55,11 @@ export class ProjectAnalyticsService {
       select: {
         id: true,
         projectId: true,
-        employeeId: true,
         reportDate: true,
         hours: true,
+        contributors: {
+          select: { employeeId: true },
+        },
       },
       orderBy: { reportDate: 'asc' },
     });
@@ -91,7 +93,11 @@ export class ProjectAnalyticsService {
 
   private async kpi(
     projects: Array<{ id: string; status: string }>,
-    reports: Array<{ employeeId: string | null; hours: number }>,
+    reports: Array<{
+      id: string;
+      hours: number;
+      contributors: Array<{ employeeId: string | null }>;
+    }>,
     _projectIds: string[],
     f: OverviewFilters,
   ) {
@@ -100,17 +106,19 @@ export class ProjectAnalyticsService {
     const paused = projects.filter((p) => p.status === 'paused').length;
     const archived = projects.filter((p) => p.status === 'archived').length;
 
-    // Reports + hours + report-authors within the range/scope. Report
-    // authors only counts Employee-authored (MANUAL) rows — the
-    // Discord flow has no Employee identity, so including those would
-    // conflate "people filing reports" with "channels that posted".
-    // Team size per project lives in `assignedToActive` below.
+    // ProjectReport is now a project-day record: one row per
+    // (project, date). `hours` is a project-level total — never
+    // multiplied by the contributor headcount. `involvedContributors`
+    // counts distinct employees who appeared in any snapshot in the
+    // range; it replaces the old `reportAuthors` KPI.
     const reportsCount = reports.length;
     let trackedHours = 0;
-    const reportAuthors = new Set<string>();
+    const involvedContributors = new Set<string>();
     for (const r of reports) {
       trackedHours += r.hours;
-      if (r.employeeId) reportAuthors.add(r.employeeId);
+      for (const c of r.contributors) {
+        if (c.employeeId) involvedContributors.add(c.employeeId);
+      }
     }
 
     // "Current employees assigned to active projects" — assignments now,
@@ -135,7 +143,7 @@ export class ProjectAnalyticsService {
       archived,
       reportsCount,
       trackedHours: Number(trackedHours.toFixed(2)),
-      reportAuthors: reportAuthors.size,
+      involvedContributors: involvedContributors.size,
       assignedToActive,
     };
   }
@@ -282,18 +290,18 @@ export class ProjectAnalyticsService {
     reports: Array<{
       projectId: string;
       hours: number;
-      employeeId: string | null;
+      contributors: Array<{ employeeId: string | null }>;
       reportDate: Date;
     }>,
   ) {
     let grandTotal = 0;
     for (const r of reports) grandTotal += r.hours;
 
-    // Aggregate per project. `reportAuthors` counts distinct Employee
-    // authors of MANUAL rows only — Discord-sourced rows have no
-    // Employee identity, so they contribute to `hours` and `reports`
-    // but not to the author head-count. Team size is a separate
-    // concept, served by ProjectMember assignments where needed.
+    // Per-project aggregate. `involvedContributors` is the distinct
+    // set of employeeIds that appear in any report's contributor
+    // snapshot — the project-day analogue of the old "report authors"
+    // KPI. `hours` is the project-level daily total; it is never
+    // multiplied by contributor headcount.
     const byProject = new Map<
       string,
       {
@@ -302,7 +310,7 @@ export class ProjectAnalyticsService {
         status: string;
         hours: number;
         reports: number;
-        reportAuthors: Set<string>;
+        involvedContributors: Set<string>;
         lastReport: Date | null;
       }
     >();
@@ -313,7 +321,7 @@ export class ProjectAnalyticsService {
         status: p.status,
         hours: 0,
         reports: 0,
-        reportAuthors: new Set(),
+        involvedContributors: new Set(),
         lastReport: null,
       });
     }
@@ -322,7 +330,9 @@ export class ProjectAnalyticsService {
       if (!b) continue;
       b.hours += r.hours;
       b.reports += 1;
-      if (r.employeeId) b.reportAuthors.add(r.employeeId);
+      for (const c of r.contributors) {
+        if (c.employeeId) b.involvedContributors.add(c.employeeId);
+      }
       if (!b.lastReport || r.reportDate > b.lastReport) {
         b.lastReport = r.reportDate;
       }
@@ -334,7 +344,7 @@ export class ProjectAnalyticsService {
         status: b.status,
         hours: Number(b.hours.toFixed(2)),
         reports: b.reports,
-        reportAuthors: b.reportAuthors.size,
+        involvedContributors: b.involvedContributors.size,
         lastReport: b.lastReport
           ? b.lastReport.toISOString().slice(0, 10)
           : null,

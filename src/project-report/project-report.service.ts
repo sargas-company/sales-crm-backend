@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { Prisma, ProjectReportSource } from '@prisma/client';
 
@@ -21,6 +22,17 @@ import {
 import { UpdateProjectReportDto } from './dto/update-project-report.dto';
 import { projectReportLockKey } from './project-report.lock';
 
+/**
+ * ProjectReport is now a **project-day** record: one row per
+ * `(projectId, reportDate)` regardless of source. The business
+ * record of "who was on the team at the moment of submission" is
+ * the immutable `ProjectReportContributor` snapshot, copied from
+ * the current `ProjectMember` set under the same advisory lock.
+ *
+ * `source`, `discordUserId`, `discordUsername` are retained as
+ * technical submitter metadata only — they are not surfaced as
+ * author anywhere in the API or UI.
+ */
 @Injectable()
 export class ProjectReportService {
   private readonly logger = new Logger(ProjectReportService.name);
@@ -31,9 +43,8 @@ export class ProjectReportService {
   ) {}
 
   async create(dto: CreateProjectReportDto, user: AuthUser) {
-    await this.assertProjectAndEmployeeExist(dto.projectId, dto.employeeId);
-    await this.assertMemberOfProject(dto.projectId, dto.employeeId);
-    await this.assertAuthorScope(user, dto.employeeId, dto.projectId);
+    await this.assertProjectExists(dto.projectId);
+    await this.assertCanWriteProject(user, dto.projectId);
 
     const reportDate = this.dayOnly(dto.reportDate);
     const lockKey = projectReportLockKey(dto.projectId, reportDate);
@@ -43,33 +54,46 @@ export class ProjectReportService {
     }>;
     try {
       created = await this.prisma.$transaction(async (tx) => {
-        // Same lock the Discord adapter takes — a MANUAL create and a
-        // DISCORD create for the same (project, date) are serialised,
-        // which is what the cross-source invariant depends on.
-        // `pg_advisory_xact_lock` returns `void`, so `$executeRaw`
-        // (which doesn't try to deserialize rows) is required.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(${lockKey})`;
-        const discordExists = await tx.projectReport.findFirst({
+
+        const existing = await tx.projectReport.findUnique({
           where: {
-            projectId: dto.projectId,
-            reportDate,
-            source: ProjectReportSource.DISCORD,
+            projectId_reportDate: { projectId: dto.projectId, reportDate },
           },
           select: { id: true },
         });
-        if (discordExists) {
+        if (existing) {
           throw new ConflictException(
-            'A Discord-sourced report already exists for this project on this date; the two sources would double-count hours.',
+            'A report for this project already exists for the given date.',
           );
         }
+
+        const members = await tx.projectMember.findMany({
+          where: { projectId: dto.projectId },
+          include: {
+            employee: { select: { id: true, firstName: true, lastName: true } },
+          },
+        });
+        if (members.length === 0) {
+          throw new UnprocessableEntityException(
+            'This project has no team members. Add at least one employee to the project before filing a report.',
+          );
+        }
+
         return tx.projectReport.create({
           data: {
             projectId: dto.projectId,
-            employeeId: dto.employeeId,
             reportDate,
             hours: dto.hours,
             content: dto.content,
             source: ProjectReportSource.MANUAL,
+            contributors: {
+              create: members.map((m) => ({
+                employeeId: m.employee.id,
+                firstNameSnapshot: m.employee.firstName,
+                lastNameSnapshot: m.employee.lastName,
+              })),
+            },
           },
           include: this.include(),
         });
@@ -78,74 +102,8 @@ export class ProjectReportService {
       throw this.mapWriteError(e);
     }
 
-    // Late-report notification parity with the Discord `/report`
-    // path: MANUAL creates filed after the active profile's
-    // `dailyDigestAt` deadline enqueue the same `LATE_REPORT:<id>`
-    // delivery row. Enqueue failures are swallowed with a sanitised
-    // log — the ProjectReport row is already committed; a failed
-    // Discord notification must never roll it back.
     await this.enqueueLateDeliveryIfNeeded(created);
-
     return created;
-  }
-
-  /**
-   * MANUAL-side late enqueue. Idempotent via `DiscordDelivery`'s
-   * `deliveryKey` UNIQUE (`LATE_REPORT:<reportId>`), so a crash-and-
-   * replay cannot create a second row.
-   *
-   * DISCORD-sourced rows never reach this method; the Discord
-   * `/report` path owns its own enqueue inside `DiscordReportService`.
-   */
-  private async enqueueLateDeliveryIfNeeded(
-    row: Prisma.ProjectReportGetPayload<{ include: ReturnType<ProjectReportService['include']> }>,
-  ): Promise<void> {
-    if (row.source !== ProjectReportSource.MANUAL) return;
-    const profile = await this.prisma.discordProfile.findFirst({
-      where: { active: true },
-      select: {
-        timezone: true,
-        dailyDigestAt: true,
-      },
-    });
-    if (!profile) return;
-    const submittedAt = row.createdAt;
-    if (!isLateReport(submittedAt, profile.timezone, profile.dailyDigestAt)) {
-      return;
-    }
-    const authorName = row.employee
-      ? `${row.employee.firstName} ${row.employee.lastName}`
-      : 'CRM user';
-    try {
-      await this.lateReports.enqueue({
-        reportId: row.id,
-        projectId: row.projectId,
-        projectName: row.project.name,
-        // MANUAL rows have no Discord user id/handle. These fields
-        // are informational — the late-report embed only renders
-        // `authorName`.
-        discordUserId: '',
-        discordUsername: authorName,
-        reportDate: row.reportDate,
-        hours: row.hours,
-        text: row.content ?? '',
-        isLate: true,
-        submittedAt,
-      });
-    } catch (err) {
-      const message = this.scrubError(err);
-      this.logger.warn(
-        `late-report enqueue failed for MANUAL report ${row.id}: ${message}`,
-      );
-    }
-  }
-
-  private scrubError(err: unknown): string {
-    const raw = err instanceof Error ? err.message : String(err);
-    return raw
-      .replace(/Bot\s+[A-Za-z0-9._-]+/g, 'Bot <redacted>')
-      .replace(/\/webhooks\/(\d{17,20})\/[^\/\s]+/g, '/webhooks/$1/<redacted>')
-      .slice(0, 240);
   }
 
   async findAll(dto: ListProjectReportsDto, user: AuthUser) {
@@ -161,7 +119,6 @@ export class ProjectReportService {
       AND: [
         scopeWhere,
         dto.projectId ? { projectId: dto.projectId } : {},
-        dto.employeeId ? { employeeId: dto.employeeId } : {},
         dto.from || dto.to
           ? {
               reportDate: {
@@ -200,48 +157,26 @@ export class ProjectReportService {
   }
 
   /**
-   * Updates do NOT emit a Discord notification by design.
-   *
-   * The old Laravel admin's `ReportObserver::updated()` sent a
-   * `"Report updated"` embed on every row edit, which produced
-   * channel noise (one message per silent correction, including the
-   * manager fixing their own typos). The CRM-era policy is: an edit
-   * is a correction, not a new event — nothing fires. If the business
-   * ever wants a notification on specific transitions (e.g. hours
-   * crossing some threshold), add it as a deliberate event, don't
-   * replay the Laravel-era blanket update spam.
+   * Updates are restricted to the two business-mutable fields:
+   * `hours` and `content`. Everything else on the row (project,
+   * date, source, Discord metadata, contributor snapshot) is
+   * immutable after create — the DTO already rejects attempts to
+   * change those at the parser layer, and we belt-and-braces the
+   * invariant here.
    */
   async update(id: string, dto: UpdateProjectReportDto, user: AuthUser) {
     const existing = await this.prisma.projectReport.findUnique({
       where: { id },
-      select: { id: true, employeeId: true, projectId: true, source: true },
+      select: { id: true, projectId: true, source: true },
     });
     if (!existing) throw new NotFoundException('Project report not found');
-    if (existing.source === ProjectReportSource.DISCORD) {
-      // Discord-sourced rows are owned by the Discord flow; CRM-side
-      // Regular Managers cannot author-scope them (there's no Employee
-      // link). Owner/Admin can only read/delete via `/remove`.
-      throw new ForbiddenException(
-        'Discord-sourced reports cannot be edited through the CRM form.',
-      );
-    }
-    if (!existing.employeeId) {
-      // Belt-and-braces — the CHECK constraint already rules this out.
-      throw new BadRequestException('MANUAL report has no author.');
-    }
-    await this.assertAuthorScope(user, existing.employeeId, existing.projectId);
-
+    await this.assertCanWriteProject(user, existing.projectId);
     try {
       return await this.prisma.projectReport.update({
         where: { id },
         data: {
-          ...(dto.reportDate !== undefined
-            ? { reportDate: this.dayOnly(dto.reportDate) }
-            : {}),
           ...(dto.hours !== undefined ? { hours: dto.hours } : {}),
           ...(dto.content !== undefined ? { content: dto.content } : {}),
-          // `source` is intentionally NOT in UpdateProjectReportDto — it
-          // can never change through the normal update flow.
         },
         include: this.include(),
       });
@@ -250,28 +185,79 @@ export class ProjectReportService {
     }
   }
 
+  /**
+   * Delete is privileged. A project-day report is a team record,
+   * not a personal one — Regular Managers cannot withdraw it.
+   */
   async remove(id: string, user: AuthUser) {
+    if (!scopePolicy.canViewAnyProject(user)) {
+      throw new ForbiddenException(
+        'Only an Owner / Admin Manager can delete a project report.',
+      );
+    }
     const existing = await this.prisma.projectReport.findUnique({
       where: { id },
-      select: { id: true, employeeId: true, projectId: true, source: true },
+      select: { id: true },
     });
     if (!existing) throw new NotFoundException('Project report not found');
-    if (existing.source === ProjectReportSource.DISCORD) {
-      if (!scopePolicy.canViewAnyProject(user)) {
-        throw new ForbiddenException(
-          'Only an Owner / Admin Manager can delete a Discord-sourced report.',
-        );
-      }
-    } else {
-      if (!existing.employeeId) {
-        throw new BadRequestException('MANUAL report has no author.');
-      }
-      await this.assertAuthorScope(user, existing.employeeId, existing.projectId);
-    }
     await this.prisma.projectReport.delete({ where: { id } });
   }
 
   // ── helpers ────────────────────────────────────────────────────────────
+
+  /**
+   * MANUAL-side late enqueue. Idempotent via `DiscordDelivery`'s
+   * `deliveryKey` UNIQUE (`LATE_REPORT:<reportId>`). Discord-sourced
+   * rows own their own enqueue inside `DiscordReportService`.
+   */
+  private async enqueueLateDeliveryIfNeeded(
+    row: Prisma.ProjectReportGetPayload<{
+      include: ReturnType<ProjectReportService['include']>;
+    }>,
+  ): Promise<void> {
+    if (row.source !== ProjectReportSource.MANUAL) return;
+    const profile = await this.prisma.discordProfile.findFirst({
+      where: { active: true },
+      select: { timezone: true, dailyDigestAt: true },
+    });
+    if (!profile) return;
+    const submittedAt = row.createdAt;
+    if (!isLateReport(submittedAt, profile.timezone, profile.dailyDigestAt)) {
+      return;
+    }
+    const headAuthor = row.contributors[0];
+    const authorName = headAuthor
+      ? `${headAuthor.firstNameSnapshot} ${headAuthor.lastNameSnapshot}`.trim() ||
+        'CRM team'
+      : 'CRM team';
+    try {
+      await this.lateReports.enqueue({
+        reportId: row.id,
+        projectId: row.projectId,
+        projectName: row.project.name,
+        discordUserId: '',
+        discordUsername: authorName,
+        reportDate: row.reportDate,
+        hours: row.hours,
+        text: row.content ?? '',
+        isLate: true,
+        submittedAt,
+      });
+    } catch (err) {
+      const message = this.scrubError(err);
+      this.logger.warn(
+        `late-report enqueue failed for MANUAL report ${row.id}: ${message}`,
+      );
+    }
+  }
+
+  private scrubError(err: unknown): string {
+    const raw = err instanceof Error ? err.message : String(err);
+    return raw
+      .replace(/Bot\s+[A-Za-z0-9._-]+/g, 'Bot <redacted>')
+      .replace(/\/webhooks\/(\d{17,20})\/[^\/\s]+/g, '/webhooks/$1/<redacted>')
+      .slice(0, 240);
+  }
 
   private dayOnly(iso: string): Date {
     const d = new Date(iso);
@@ -280,19 +266,22 @@ export class ProjectReportService {
     );
   }
 
-  private include(): Prisma.ProjectReportInclude {
+  private include() {
     return {
       project: { select: { id: true, name: true, status: true } },
-      employee: {
-        select: {
-          id: true,
-          firstName: true,
-          lastName: true,
-          positions: true,
-          userId: true,
+      contributors: {
+        orderBy: [
+          { lastNameSnapshot: Prisma.SortOrder.asc },
+          { firstNameSnapshot: Prisma.SortOrder.asc },
+          { createdAt: Prisma.SortOrder.asc },
+        ],
+        include: {
+          employee: {
+            select: { id: true, firstName: true, lastName: true },
+          },
         },
       },
-    };
+    } satisfies Prisma.ProjectReportInclude;
   }
 
   private buildOrderBy(
@@ -312,105 +301,113 @@ export class ProjectReportService {
     }
   }
 
+  /**
+   * Regular Manager scope: a report is visible iff the caller is
+   * currently a member of the project OR appears in the historical
+   * contributor snapshot. Owner / Admin Manager (any-scope) see
+   * everything.
+   */
   private async buildScopeWhere(
     user: AuthUser,
   ): Promise<Prisma.ProjectReportWhereInput> {
     if (scopePolicy.canViewAnyProject(user)) return {};
-    const employee = await this.prisma.employee.findUnique({
-      where: { userId: user.id },
-      select: { id: true },
-    });
-    if (!employee) return { id: { in: [] } };
-    // Regular Managers see their own MANUAL reports. Discord-sourced
-    // rows have no Employee link and are only visible to users who
-    // can view any project (checked above).
-    return { employeeId: employee.id };
+    const employeeId = await this.resolveSelfEmployeeId(user);
+    if (!employeeId) return { id: { in: [] } };
+    return {
+      OR: [
+        { project: { members: { some: { employeeId } } } },
+        { contributors: { some: { employeeId } } },
+      ],
+    };
   }
 
   private async assertCanReadReport(
-    report: { employeeId: string | null; projectId: string; source: ProjectReportSource },
+    report: {
+      projectId: string;
+      contributors: Array<{ employeeId: string | null }>;
+    },
     user: AuthUser,
   ): Promise<void> {
     if (scopePolicy.canViewAnyProject(user)) return;
-    if (report.source === ProjectReportSource.DISCORD) {
+    const employeeId = await this.resolveSelfEmployeeId(user);
+    if (!employeeId) {
       throw new NotFoundException('Project report not found');
     }
-    const employee = await this.prisma.employee.findUnique({
-      where: { userId: user.id },
-      select: { id: true },
-    });
-    if (!employee || employee.id !== report.employeeId) {
+    const isCurrentMember = await this.isCurrentProjectMember(
+      report.projectId,
+      employeeId,
+    );
+    const isSnapshotContributor = report.contributors.some(
+      (c) => c.employeeId === employeeId,
+    );
+    if (!isCurrentMember && !isSnapshotContributor) {
       throw new NotFoundException('Project report not found');
     }
   }
 
-  private async assertAuthorScope(
+  /**
+   * Create and update authorisation share one rule: the caller must
+   * be a current `ProjectMember` of the target project. Snapshot
+   * contributors can still READ, but once removed from the team
+   * they lose write access — consistent with "the team at
+   * submission is historical; the team now owns new state".
+   */
+  private async assertCanWriteProject(
     user: AuthUser,
-    employeeId: string,
     projectId: string,
   ): Promise<void> {
     if (scopePolicy.canViewAnyProject(user)) return;
-    const employee = await this.prisma.employee.findUnique({
-      where: { userId: user.id },
-      select: { id: true },
-    });
-    if (!employee) {
+    const employeeId = await this.resolveSelfEmployeeId(user);
+    if (!employeeId) {
       throw new ForbiddenException('PROJECT_REPORT_ACCESS_DENIED');
     }
-    if (employee.id !== employeeId) {
-      throw new ForbiddenException('You can only manage your own reports');
-    }
-    const membership = await this.prisma.projectMember.findUnique({
-      where: {
-        projectId_employeeId: { projectId, employeeId: employee.id },
-      },
-      select: { projectId: true },
-    });
-    if (!membership) {
-      throw new ForbiddenException('You are not assigned to this project');
-    }
-  }
-
-  private async assertProjectAndEmployeeExist(
-    projectId: string,
-    employeeId: string,
-  ): Promise<void> {
-    const [project, employee] = await Promise.all([
-      this.prisma.project.findUnique({
-        where: { id: projectId },
-        select: { id: true },
-      }),
-      this.prisma.employee.findUnique({
-        where: { id: employeeId },
-        select: { id: true },
-      }),
-    ]);
-    if (!project) throw new BadRequestException('Project not found');
-    if (!employee) throw new BadRequestException('Employee not found');
-  }
-
-  private async assertMemberOfProject(
-    projectId: string,
-    employeeId: string,
-  ): Promise<void> {
-    const membership = await this.prisma.projectMember.findUnique({
-      where: {
-        projectId_employeeId: { projectId, employeeId },
-      },
-      select: { projectId: true },
-    });
-    if (!membership) {
-      throw new BadRequestException(
-        'Employee is not assigned to this project',
+    const isMember = await this.isCurrentProjectMember(projectId, employeeId);
+    if (!isMember) {
+      throw new ForbiddenException(
+        'You are not assigned to this project.',
       );
     }
   }
 
+  private async resolveSelfEmployeeId(
+    user: AuthUser,
+  ): Promise<string | null> {
+    const employee = await this.prisma.employee.findUnique({
+      where: { userId: user.id },
+      select: { id: true },
+    });
+    return employee?.id ?? null;
+  }
+
+  private async isCurrentProjectMember(
+    projectId: string,
+    employeeId: string,
+  ): Promise<boolean> {
+    const membership = await this.prisma.projectMember.findUnique({
+      where: { projectId_employeeId: { projectId, employeeId } },
+      select: { projectId: true },
+    });
+    return !!membership;
+  }
+
+  private async assertProjectExists(projectId: string): Promise<void> {
+    const project = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      select: { id: true },
+    });
+    if (!project) throw new BadRequestException('Project not found');
+  }
+
   private mapWriteError(e: unknown): Error {
+    if (e instanceof ConflictException) return e;
+    if (e instanceof UnprocessableEntityException) return e;
+    if (e instanceof BadRequestException) return e;
+    if (e instanceof ForbiddenException) return e;
+    if (e instanceof NotFoundException) return e;
     if (e instanceof Prisma.PrismaClientKnownRequestError) {
       if (e.code === 'P2002') {
         return new ConflictException(
-          'A report already exists for this employee, project and date',
+          'A report for this project already exists for the given date.',
         );
       }
       if (e.code === 'P2003') {

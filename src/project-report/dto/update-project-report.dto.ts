@@ -1,7 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
-  IsDateString,
   IsNumber,
   IsOptional,
   IsString,
@@ -13,12 +12,13 @@ import {
 
 const trim = (v: unknown) => (typeof v === 'string' ? v.trim() : v);
 
+/**
+ * Update is restricted to the two business-mutable fields. The row's
+ * identity (`projectId`, `reportDate`), its source badge, its
+ * Discord metadata, and its contributor snapshot are immutable
+ * after create — see migration 20261023000000 for the model shift.
+ */
 export class UpdateProjectReportDto {
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsDateString()
-  reportDate?: string;
-
   @ApiPropertyOptional({ minimum: 0.1, maximum: 24 })
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })

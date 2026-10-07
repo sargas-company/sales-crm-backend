@@ -3,17 +3,21 @@ import { DiscordEmbedBuilderService } from './discord-embed-builder.service';
 
 const svc = new DiscordEmbedBuilderService();
 
-describe('daily digest row rendering — null employee', () => {
-  it('falls back to discordUsername when employee is null', () => {
+/**
+ * Daily digest no longer carries a per-report author byline — the
+ * contributors-snapshot refactor made the row a project-day record,
+ * not an authored one. The embed description must therefore be
+ * strictly "<hours> hours" with no name interpolation and no
+ * accidental `undefined` fallthrough.
+ */
+describe('daily digest row rendering — no author byline', () => {
+  it('renders `<hours> hours` only; no author name is interpolated', () => {
     const embeds = svc.dailyDigestEmbeds({
       reportDate: new Date('2026-10-04T00:00:00Z'),
-      rows: [
-        { projectName: 'Acme', authorName: 'alice-discord', hours: 4 },
-      ],
+      rows: [{ projectName: 'Acme', hours: 4 }],
     });
     expect(embeds).toHaveLength(1);
-    expect(embeds[0].description).toContain('alice-discord');
-    // Does not interpolate `undefined undefined`.
+    expect(embeds[0].description).toBe('4 hours');
     expect(JSON.stringify(embeds[0])).not.toContain('undefined');
   });
 });

@@ -46,7 +46,6 @@ export class DiscordLateReportService {
     const dedupKey = `LATE_REPORT:${result.reportId}`;
     const snapshot = JSON.stringify({
       projectName: result.projectName,
-      authorName: result.discordUsername,
       hours: result.hours,
       reportDate: result.reportDate.toISOString(),
       text: result.text,
@@ -149,7 +148,6 @@ export class DiscordLateReportService {
   private decodeSnapshot(raw: string) {
     const o = JSON.parse(raw) as {
       projectName: string;
-      authorName: string;
       hours: number;
       reportDate: string;
       text: string;
@@ -157,7 +155,6 @@ export class DiscordLateReportService {
     };
     return {
       projectName: o.projectName,
-      authorName: o.authorName,
       hours: o.hours,
       reportDate: new Date(o.reportDate),
       text: o.text,

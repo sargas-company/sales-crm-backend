@@ -672,7 +672,7 @@ model Employee {
   updatedAt DateTime       @updatedAt
 
   memberships       ProjectMember[]
-  reports           ProjectReport[]
+  reportContributions ProjectReportContributor[]
   timeOffs          TimeOff[]
   compensationRates EmployeeCompensationRate[]
   payrollEntries    PayrollEntry[]
@@ -752,36 +752,57 @@ model ProjectMember {
 // ─── Project Reports ─────────────────────────────────────────────────────────
 
 model ProjectReport {
-  id              String              @id @default(uuid())
-  projectId       String
-  // NULL only for `source = DISCORD`. The DB-level
-  // `ProjectReport_source_shape_chk` enforces that MANUAL rows always
-  // carry an employeeId and DISCORD rows never do.
-  employeeId      String?
-  reportDate      DateTime            @db.Date
-  hours           Float
-  content         String
-  source          ProjectReportSource @default(MANUAL)
-  // Discord provenance — present iff `source = DISCORD`. Not an FK:
-  // we deliberately avoid linking a Discord identity to an Employee
-  // row (the Discord-flow is per-project, not per-person).
+  id         String              @id @default(uuid())
+  projectId  String
+  reportDate DateTime            @db.Date
+  hours      Float
+  content    String
+  // Kept as technical metadata to distinguish CRM-filed vs. Discord-
+  // filed submissions; NOT a business author. UI never surfaces the
+  // submitter as the report's author.
+  source     ProjectReportSource @default(MANUAL)
+  // Discord provenance for DISCORD-source rows. NOT business data —
+  // retained for audit trail only; UI treats DISCORD source as "team
+  // report" with a "Posted via Discord" badge and does not render
+  // the submitter name.
   discordUserId   String?
   discordUsername String?
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
 
-  project  Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  employee Employee? @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  // Hard-delete Project with existing reports is refused. Projects
+  // with reports must be archived — the historical record stays
+  // intact.
+  project      Project                     @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  contributors ProjectReportContributor[]
 
-  // Uniqueness lives in partial indexes `ProjectReport_manual_uq` and
-  // `ProjectReport_discord_uq` — see the 20261020 migration. Prisma
-  // cannot express `WHERE` clauses on `@@unique`, so this model has
-  // no `@@unique` block; service-layer logic consults the indexes
-  // via `pg_advisory_xact_lock` + explicit cross-source collision
-  // checks.
+  @@unique([projectId, reportDate])
   @@index([projectId])
-  @@index([employeeId])
   @@index([reportDate])
+}
+
+/// Immutable snapshot of the project team at the moment a
+/// ProjectReport was created. Rows are copied from `ProjectMember`
+/// in the same transaction as the report insert, and NEVER rewritten
+/// afterwards — the business invariant is "the team at submission",
+/// not "the current team".
+///
+/// On Employee hard-delete the row stays and `employeeId` is nulled;
+/// `firstNameSnapshot`/`lastNameSnapshot` keep the historical display
+/// value. Rename on Employee does not touch snapshot columns.
+model ProjectReportContributor {
+  id                String   @id @default(uuid())
+  reportId          String
+  employeeId        String?
+  firstNameSnapshot String
+  lastNameSnapshot  String
+  createdAt         DateTime @default(now())
+
+  report   ProjectReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  employee Employee?     @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+
+  @@unique([reportId, employeeId])
+  @@index([employeeId])
 }
 
 enum ProjectReportSource {

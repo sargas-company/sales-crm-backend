@@ -18,13 +18,9 @@ export class CreateProjectReportDto {
   @IsUUID()
   projectId: string;
 
-  @ApiProperty()
-  @IsUUID()
-  employeeId: string;
-
   @ApiProperty({
     description:
-      'Date the work was performed (YYYY-MM-DD). Only one report per employee per project per day is allowed.',
+      'Date the work was performed (YYYY-MM-DD). Only one report per project per day is allowed regardless of source. Contributors are snapshotted from the current ProjectMember set at submission time.',
   })
   @IsDateString()
   reportDate: string;

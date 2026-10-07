@@ -344,7 +344,6 @@ export class DiscordSchedulersService {
       },
       include: {
         project: { select: { name: true } },
-        employee: { select: { firstName: true, lastName: true } },
       },
       // Stable order so chunk slices are deterministic across retries.
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
@@ -354,9 +353,6 @@ export class DiscordSchedulersService {
       reportDate: logical,
       rows: reports.map((r) => ({
         projectName: r.project.name,
-        authorName: r.employee
-          ? `${r.employee.firstName} ${r.employee.lastName}`
-          : (r.discordUsername ?? 'Discord user'),
         hours: r.hours,
       })),
     });

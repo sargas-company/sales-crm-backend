@@ -1,13 +1,23 @@
 /**
- * Integration tests for the DB-level invariants on ProjectReport:
- *   - CHECK constraint `ProjectReport_source_shape_chk`
- *   - partial unique index `ProjectReport_manual_uq`
- *   - partial unique index `ProjectReport_discord_uq`
+ * Integration tests for the DB-level invariants on ProjectReport
+ * after the contributor-snapshot refactor (migration
+ * 20261023000000_project_report_contributors):
  *
- * These talk to the live local Postgres (localhost:5433/ai_dashboard).
- * Each test seeds and cleans up its own rows under a unique prefix.
+ *   - full UNIQUE (projectId, reportDate) across sources;
+ *   - ProjectReport→Project FK is RESTRICT, so hard-deleting a
+ *     project with reports is refused at the DB layer;
+ *   - ProjectReportContributor.employeeId FK is SET NULL on
+ *     Employee hard-delete so the snapshot row survives with its
+ *     name columns intact.
  */
-import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+} from '@jest/globals';
 import { PrismaClient, ProjectReportSource } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 
@@ -46,9 +56,23 @@ beforeAll(async () => {
   });
   employeeIdA = a.id;
   employeeIdB = b.id;
+  await prisma.projectMember.createMany({
+    data: [
+      { projectId, employeeId: employeeIdA },
+      { projectId, employeeId: employeeIdB },
+    ],
+  });
+});
+
+afterEach(async () => {
+  await prisma.projectReportContributor.deleteMany({
+    where: { report: { projectId } },
+  });
+  await prisma.projectReport.deleteMany({ where: { projectId } });
 });
 
 afterAll(async () => {
+  await prisma.projectMember.deleteMany({ where: { projectId } });
   await prisma.projectReport.deleteMany({ where: { projectId } });
   await prisma.project.delete({ where: { id: projectId } });
   await prisma.employee.deleteMany({
@@ -57,134 +81,94 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-const day = (iso: string): Date => new Date(`${iso}T00:00:00.000Z`);
+const date = (iso: string) => new Date(`${iso}T00:00:00.000Z`);
 
-describe('ProjectReport_source_shape_chk', () => {
-  it('MANUAL requires non-null employeeId and null discord fields', async () => {
-    const bad = prisma.$executeRawUnsafe(
-      `INSERT INTO "ProjectReport" (id, "projectId", "employeeId", "reportDate", hours, content, source, "discordUserId", "updatedAt")
-       VALUES ($1,$2,NULL,$3::date,1,'x','MANUAL',NULL,now())`,
-      randomUUID(),
-      projectId,
-      '2026-01-01',
-    );
-    await expect(bad).rejects.toThrow(/source_shape_chk|violates check constraint/);
-  });
-
-  it('MANUAL rejects a non-null discordUserId', async () => {
-    const bad = prisma.$executeRawUnsafe(
-      `INSERT INTO "ProjectReport" (id, "projectId", "employeeId", "reportDate", hours, content, source, "discordUserId", "updatedAt")
-       VALUES ($1,$2,$3,$4::date,1,'x','MANUAL','123456789012345678',now())`,
-      randomUUID(),
-      projectId,
-      employeeIdA,
-      '2026-01-02',
-    );
-    await expect(bad).rejects.toThrow(/source_shape_chk|violates check constraint/);
-  });
-
-  it('DISCORD requires null employeeId and non-null discordUserId', async () => {
-    const bad = prisma.$executeRawUnsafe(
-      `INSERT INTO "ProjectReport" (id, "projectId", "employeeId", "reportDate", hours, content, source, "discordUserId", "updatedAt")
-       VALUES ($1,$2,$3,$4::date,1,'x','DISCORD','123456789012345678',now())`,
-      randomUUID(),
-      projectId,
-      employeeIdA,
-      '2026-01-03',
-    );
-    await expect(bad).rejects.toThrow(/source_shape_chk|violates check constraint/);
-  });
-
-  it('DISCORD rejects a null discordUserId', async () => {
-    const bad = prisma.$executeRawUnsafe(
-      `INSERT INTO "ProjectReport" (id, "projectId", "employeeId", "reportDate", hours, content, source, "discordUserId", "updatedAt")
-       VALUES ($1,$2,NULL,$3::date,1,'x','DISCORD',NULL,now())`,
-      randomUUID(),
-      projectId,
-      '2026-01-04',
-    );
-    await expect(bad).rejects.toThrow(/source_shape_chk|violates check constraint/);
-  });
-});
-
-describe('ProjectReport partial unique indexes', () => {
-  it('MANUAL — second row for same (project, employee, date) is rejected', async () => {
-    const date = day('2026-02-01');
+describe('ProjectReport invariants — contributor-snapshot era', () => {
+  it('UNIQUE(projectId, reportDate) rejects a second row on the same project-day', async () => {
     await prisma.projectReport.create({
       data: {
         projectId,
-        employeeId: employeeIdA,
-        reportDate: date,
-        hours: 1,
+        reportDate: date('2026-11-01'),
+        hours: 5,
         content: 'first',
         source: ProjectReportSource.MANUAL,
+        contributors: {
+          create: {
+            employeeId: employeeIdA,
+            firstNameSnapshot: 'Test',
+            lastNameSnapshot: 'A',
+          },
+        },
       },
     });
     await expect(
       prisma.projectReport.create({
         data: {
           projectId,
+          reportDate: date('2026-11-01'),
+          hours: 3,
+          content: 'second',
+          source: ProjectReportSource.MANUAL,
+          contributors: {
+            create: {
+              employeeId: employeeIdB,
+              firstNameSnapshot: 'Test',
+              lastNameSnapshot: 'B',
+            },
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'P2002' });
+  });
+
+  it('ProjectReport→Project FK is RESTRICT: hard-delete with reports fails', async () => {
+    await prisma.projectReport.create({
+      data: {
+        projectId,
+        reportDate: date('2026-11-02'),
+        hours: 4,
+        content: 'with-report',
+        source: ProjectReportSource.MANUAL,
+        contributors: {
+          create: {
+            employeeId: employeeIdA,
+            firstNameSnapshot: 'Test',
+            lastNameSnapshot: 'A',
+          },
+        },
+      },
+    });
+    await expect(
+      prisma.project.delete({ where: { id: projectId } }),
+    ).rejects.toMatchObject({ code: 'P2003' });
+  });
+
+  it('ProjectReportContributor UNIQUE(reportId, employeeId) rejects duplicates', async () => {
+    const report = await prisma.projectReport.create({
+      data: {
+        projectId,
+        reportDate: date('2026-11-03'),
+        hours: 2,
+        content: 'dup',
+        source: ProjectReportSource.MANUAL,
+        contributors: {
+          create: {
+            employeeId: employeeIdA,
+            firstNameSnapshot: 'Test',
+            lastNameSnapshot: 'A',
+          },
+        },
+      },
+    });
+    await expect(
+      prisma.projectReportContributor.create({
+        data: {
+          reportId: report.id,
           employeeId: employeeIdA,
-          reportDate: date,
-          hours: 2,
-          content: 'dup',
-          source: ProjectReportSource.MANUAL,
+          firstNameSnapshot: 'Dup',
+          lastNameSnapshot: 'A',
         },
       }),
-    ).rejects.toThrow();
-  });
-
-  it('MANUAL — different employee on same (project, date) is allowed', async () => {
-    const date = day('2026-02-02');
-    await prisma.projectReport.create({
-      data: {
-        projectId,
-        employeeId: employeeIdA,
-        reportDate: date,
-        hours: 1,
-        content: 'A',
-        source: ProjectReportSource.MANUAL,
-      },
-    });
-    await expect(
-      prisma.projectReport.create({
-        data: {
-          projectId,
-          employeeId: employeeIdB,
-          reportDate: date,
-          hours: 1,
-          content: 'B',
-          source: ProjectReportSource.MANUAL,
-        },
-      }),
-    ).resolves.toBeTruthy();
-  });
-
-  it('DISCORD — second row for same (project, date) is rejected', async () => {
-    const date = day('2026-02-03');
-    await prisma.projectReport.create({
-      data: {
-        projectId,
-        reportDate: date,
-        hours: 1,
-        content: 'first',
-        source: ProjectReportSource.DISCORD,
-        discordUserId: '123456789012345678',
-        discordUsername: 'alice',
-      },
-    });
-    await expect(
-      prisma.projectReport.create({
-        data: {
-          projectId,
-          reportDate: date,
-          hours: 2,
-          content: 'dup',
-          source: ProjectReportSource.DISCORD,
-          discordUserId: '234567890123456789',
-          discordUsername: 'bob',
-        },
-      }),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({ code: 'P2002' });
   });
 });

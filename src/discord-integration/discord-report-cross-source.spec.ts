@@ -79,14 +79,13 @@ function authUser() {
   };
 }
 
-describe('cross-source invariant: MANUAL ↔ DISCORD', () => {
-  it('MANUAL first → DISCORD create rejected', async () => {
+describe('one-report-per-project-day invariant', () => {
+  it('MANUAL first → DISCORD create rejected (409)', async () => {
     const date = '2027-01-10';
     const u = authUser();
     await manual.create(
       {
         projectId,
-        employeeId,
         reportDate: date,
         hours: 2,
         content: 'manual-first',
@@ -108,7 +107,7 @@ describe('cross-source invariant: MANUAL ↔ DISCORD', () => {
     ).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('DISCORD first → MANUAL create rejected', async () => {
+  it('DISCORD first → MANUAL create rejected (409)', async () => {
     const date = '2027-01-11';
     await discord.createFromDiscord({
       discordChannelId: projectDiscordChannelId,
@@ -118,7 +117,7 @@ describe('cross-source invariant: MANUAL ↔ DISCORD', () => {
       text: 'discord-first',
       now: new Date(`${date}T12:00:00+03:00`),
       cutoffHour: 10,
-        dailyDigestAt: '19:00',
+      dailyDigestAt: '19:00',
       timezone: 'Europe/Kyiv',
     });
     const u = authUser();
@@ -126,7 +125,6 @@ describe('cross-source invariant: MANUAL ↔ DISCORD', () => {
       manual.create(
         {
           projectId,
-          employeeId,
           reportDate: date,
           hours: 5,
           content: 'manual-after',

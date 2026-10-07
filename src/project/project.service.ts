@@ -126,8 +126,16 @@ export class ProjectService {
           orderBy: [{ reportDate: 'desc' }, { createdAt: 'desc' }],
           take: 10,
           include: {
-            employee: {
-              select: { id: true, firstName: true, lastName: true },
+            contributors: {
+              orderBy: [
+                { lastNameSnapshot: 'asc' },
+                { firstNameSnapshot: 'asc' },
+              ],
+              include: {
+                employee: {
+                  select: { id: true, firstName: true, lastName: true },
+                },
+              },
             },
           },
         },
@@ -275,6 +283,17 @@ export class ProjectService {
       select: { name: true },
     });
     await this.assertCanAccessProject(id, user);
+    // Hard-delete with existing reports is refused: the project-day
+    // record is a historical team log, not personal data to withdraw.
+    // Archive the project instead.
+    const reportCount = await this.prisma.projectReport.count({
+      where: { projectId: id },
+    });
+    if (reportCount > 0) {
+      throw new ConflictException(
+        `Project "${existing.name}" has ${reportCount} report${reportCount === 1 ? '' : 's'}; archive the project instead of deleting.`,
+      );
+    }
     await this.prisma.project.delete({ where: { id } });
     await this.audit.recordSafe({
       actorUserId: user.id,

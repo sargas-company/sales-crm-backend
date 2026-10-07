@@ -176,7 +176,6 @@ export class DiscordInteractionsController {
 
     const embed = this.embeds.reportEmbed({
       projectName: result.projectName,
-      authorName: result.discordUsername,
       hours: result.hours,
       reportDate: result.reportDate,
       text,

@@ -20,9 +20,13 @@ export class DiscordEmbedBuilderService {
   readonly COLOR_RED = 15548997;
   readonly COLOR_BLUE = 3447003;
 
+  /**
+   * Project-channel embed posted by `/report`. The report is a
+   * team-level record — the embed no longer carries a per-author
+   * byline. Submitter identity stays only in the audit trail.
+   */
   reportEmbed(args: {
     projectName: string;
-    authorName: string;
     hours: number;
     reportDate: Date;
     text: string;
@@ -31,19 +35,21 @@ export class DiscordEmbedBuilderService {
     return normaliseEmbed({
       title: `📋 Daily report — ${args.projectName}`,
       color: args.isLate ? this.COLOR_YELLOW : this.COLOR_GREEN,
-      author: { name: args.authorName },
       fields: [
         { name: '🕒 Hours', value: String(args.hours), inline: true },
         { name: '📅 Date', value: this.iso(args.reportDate), inline: true },
         { name: '📝 Details', value: args.text, inline: false },
       ],
-      footer: { text: args.isLate ? 'Saved · marked LATE' : 'Saved' },
+      footer: {
+        text: args.isLate
+          ? 'Posted via Discord · marked LATE'
+          : 'Posted via Discord',
+      },
     });
   }
 
   lateReportEmbed(args: {
     projectName: string;
-    authorName: string;
     hours: number;
     reportDate: Date;
     text: string;
@@ -52,7 +58,6 @@ export class DiscordEmbedBuilderService {
     return normaliseEmbed({
       title: `⏰ Late report — ${args.projectName}`,
       color: this.COLOR_YELLOW,
-      author: { name: args.authorName },
       fields: [
         { name: '🕒 Hours', value: String(args.hours), inline: true },
         { name: '📅 For date', value: this.iso(args.reportDate), inline: true },
@@ -64,12 +69,12 @@ export class DiscordEmbedBuilderService {
 
   dailyDigestEmbeds(args: {
     reportDate: Date;
-    rows: Array<{ projectName: string; authorName: string; hours: number }>;
+    rows: Array<{ projectName: string; hours: number }>;
   }): DiscordEmbed[] {
     return args.rows.map((r) =>
       normaliseEmbed({
         title: r.projectName,
-        description: `${r.hours} hours — ${r.authorName}`,
+        description: `${r.hours} hours`,
         color: r.hours > 6 ? this.COLOR_GREEN : this.COLOR_RED,
       }),
     );
