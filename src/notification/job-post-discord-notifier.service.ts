@@ -7,10 +7,9 @@ import { DiscordBotClient } from '../discord-integration/discord-bot.client';
  * Scanner Core delivery path for JOB_POST_MATCH NotificationEvents.
  *
  * Routes the embed through the active DiscordProfile's `salesChannelId`
- * via `DiscordBotClient.postMessage` instead of the legacy
- * `DISCORD_WEBHOOK_URL`. The active profile is read every call, so an
- * atomic swap TEST ↔ PRODUCTION in Settings takes effect immediately
- * without a backend restart and without any env fiddling.
+ * via `DiscordBotClient.postMessage`. The active profile is read every
+ * call, so an atomic swap TEST ↔ PRODUCTION in Settings takes effect
+ * immediately without a backend restart and without any env fiddling.
  *
  * `send` throws on every "not deliverable right now" case so the
  * existing NotificationProcessorService retry path (NotificationDelivery

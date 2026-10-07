@@ -116,14 +116,17 @@ export const SK = {
   CREDENTIALS_REVEAL_AUTOHIDE_SEC: 'credentials.revealAutoHideSeconds',
   CREDENTIALS_MAX_ATTACHMENT_MB: 'credentials.maxAttachmentMegabytes',
 
-  // Phone Alerts
+  // Phone Alerts.
+  // NOTE: `phoneAlerts.webhookUrl` and `phoneAlerts.mention` were
+  // retired when phone-maintenance delivery moved to the active
+  // DiscordProfile + bot (opsChannelId + managerRoleId). Any rows
+  // left in the DB are harmless — nothing reads them. They are no
+  // longer in the registry or the seed catalogue.
   PHONE_ALERTS_ENABLED: 'phoneMaintenance.discordRemindersEnabled',
   PHONE_ALERTS_SEND_HOUR: 'phoneMaintenance.reminderHour',
   PHONE_ALERTS_SEND_MINUTE: 'phoneAlerts.reminderMinute',
-  PHONE_ALERTS_WEBHOOK_URL: 'phoneAlerts.webhookUrl',
   PHONE_ALERTS_INCLUDE_DUE: 'phoneAlerts.includeDue',
   PHONE_ALERTS_INCLUDE_OVERDUE: 'phoneAlerts.includeOverdue',
-  PHONE_ALERTS_MENTION: 'phoneAlerts.mention',
 
   // Phone Defaults
   PHONE_DEFAULTS_TOPUP_AMOUNT: 'phoneDefaults.topUpAmount',
@@ -567,17 +570,6 @@ export const SETTINGS_REGISTRY: Record<string, RegistryEntry> = {
     effectHint:
       'Off: scheduler stays silent. On: the daily job runs at the chosen time.',
   },
-  [SK.PHONE_ALERTS_WEBHOOK_URL]: {
-    key: SK.PHONE_ALERTS_WEBHOOK_URL,
-    section: 'phone_alerts',
-    label: 'Discord webhook URL',
-    description:
-      'Target channel for daily reminders. Standard Discord webhook URL.',
-    type: 'string',
-    default: '',
-    viewPermission: SETTINGS_VIEW,
-    editPermission: OWNER_ONLY,
-  },
   [SK.PHONE_ALERTS_SEND_HOUR]: {
     key: SK.PHONE_ALERTS_SEND_HOUR,
     section: 'phone_alerts',
@@ -625,17 +617,6 @@ export const SETTINGS_REGISTRY: Record<string, RegistryEntry> = {
       'Include tasks whose due date has already passed.',
     type: 'boolean',
     default: true,
-    viewPermission: SETTINGS_VIEW,
-    editPermission: OWNER_ONLY,
-  },
-  [SK.PHONE_ALERTS_MENTION]: {
-    key: SK.PHONE_ALERTS_MENTION,
-    section: 'phone_alerts',
-    label: 'Mention',
-    description:
-      'Discord mention prefixed to every reminder — e.g. "<@&ROLE_ID>" to ping a role or "<@USER_ID>" for a user. Empty to disable.',
-    type: 'string',
-    default: '',
     viewPermission: SETTINGS_VIEW,
     editPermission: OWNER_ONLY,
   },

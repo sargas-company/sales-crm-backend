@@ -1,8 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
-import { AuditResult, AuditSeverity, Prisma } from '@prisma/client';
-import axios from 'axios';
+import { AuditResult, AuditSeverity } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditEventService } from '../audit-event/audit-event.service';
@@ -15,6 +14,7 @@ import {
   getLocalParts,
   safeTimezone,
 } from '../common/time/timezone';
+import { DiscordBotClient } from '../discord-integration/discord-bot.client';
 
 /**
  * Daily maintenance tick:
@@ -24,6 +24,10 @@ import {
  *   • sends ONE consolidated Discord reminder listing every open
  *     task, exactly once per calendar day (PhoneReminderLog unique
  *     constraint provides the idempotency).
+ *
+ * Delivery goes through the active DiscordProfile.opsChannelId via
+ * DiscordBotClient. The profile is resolved on every send so a TEST ↔
+ * PRODUCTION swap in Settings takes effect without a backend restart.
  */
 @Injectable()
 export class PhoneMaintenanceScheduler {
@@ -35,6 +39,7 @@ export class PhoneMaintenanceScheduler {
     private readonly settings: SettingsService,
     private readonly audit: AuditEventService,
     private readonly config: ConfigService,
+    private readonly bot: DiscordBotClient,
   ) {}
 
   /** Fires every minute; cheap, lets the operator pin an exact
@@ -75,8 +80,7 @@ export class PhoneMaintenanceScheduler {
 
   /** Resolve the workspace business timezone, honoring the operator
    *  setting and silently falling back when the value is missing or
-   *  invalid. The scheduler compares reminder hour/minute in this zone
-   *  and deduplicates `PhoneReminderLog` by the local calendar day. */
+   *  invalid. */
   async resolveTimezone(): Promise<string> {
     const raw = await this.settings.getStringForKey(
       SK.GENERAL_TIMEZONE,
@@ -86,19 +90,16 @@ export class PhoneMaintenanceScheduler {
   }
 
   /**
-   * Resolve webhook URL and filter preferences from settings. Called
-   * both by the scheduler and by the "test ping" endpoint, so the
-   * message shape stays identical.
+   * Resolve filter preferences from settings. The webhook URL is NOT
+   * read any more — delivery goes through the active DiscordProfile
+   * via the bot. Kept as its own method so `sendTestPing` and the
+   * scheduler share the same enablement check.
    */
   async resolveConfig() {
     const enabled = await this.settings.getBooleanForKey(
       SK.PHONE_ALERTS_ENABLED,
       false,
     );
-    const webhook =
-      (await this.settings.getStringForKey(SK.PHONE_ALERTS_WEBHOOK_URL, '')) ||
-      this.config.get<string>('DISCORD_WEBHOOK_URL') ||
-      '';
     const includeDue = await this.settings.getBooleanForKey(
       SK.PHONE_ALERTS_INCLUDE_DUE,
       true,
@@ -107,11 +108,7 @@ export class PhoneMaintenanceScheduler {
       SK.PHONE_ALERTS_INCLUDE_OVERDUE,
       true,
     );
-    const mention = await this.settings.getStringForKey(
-      SK.PHONE_ALERTS_MENTION,
-      '',
-    );
-    return { enabled, webhook, includeDue, includeOverdue, mention };
+    return { enabled, includeDue, includeOverdue };
   }
 
   async sendDailyReminder(
@@ -121,13 +118,6 @@ export class PhoneMaintenanceScheduler {
     const cfg = await this.resolveConfig();
     if (!cfg.enabled) return;
 
-    if (!cfg.webhook) {
-      this.logger.warn(
-        'Phone alerts webhook URL not configured — skipping daily reminder',
-      );
-      return;
-    }
-
     const openAll = await this.maintenance.listOpen();
     const open = openAll.filter((t) => {
       if (t.status === 'DUE' && !cfg.includeDue) return false;
@@ -135,8 +125,6 @@ export class PhoneMaintenanceScheduler {
       return true;
     });
     if (open.length === 0) return;
-    const webhook = cfg.webhook;
-    const mention = cfg.mention.trim();
 
     // Idempotency: one successful log row per calendar day in the
     // configured business timezone — not UTC — so a 09:00 reminder in
@@ -159,22 +147,56 @@ export class PhoneMaintenanceScheduler {
       return `• ${maskPhone(t.phoneNumber.number)} · ${operator} · due ${due} · ${needs.join(' + ')}`;
     });
     const extra = open.length > 20 ? `\n… and ${open.length - 20} more` : '';
-    const content =
-      (mention ? `${mention}\n` : '') +
-      `**${open.length} phone number${open.length === 1 ? '' : 's'} require maintenance.** ` +
-      `Insert the SIMs, confirm network registration and top up balances.\n` +
-      lines.join('\n') +
-      extra +
-      (uiUrl
-        ? `\n\n→ ${uiUrl.replace(/\/$/, '')}/phone-numbers/maintenance`
-        : '');
 
     try {
-      await axios.post(
-        webhook,
-        { content },
-        { timeout: 7000, headers: { 'Content-Type': 'application/json' } },
-      );
+      const profile = await this.prisma.discordProfile.findFirst({
+        where: { active: true },
+        select: {
+          name: true,
+          opsChannelId: true,
+          managerRoleId: true,
+        },
+      });
+      if (!profile) {
+        throw new Error(
+          'No active DiscordProfile — phone maintenance reminder cannot be delivered',
+        );
+      }
+      if (!profile.opsChannelId) {
+        throw new Error(
+          `Active DiscordProfile "${profile.name}" has no opsChannelId — phone maintenance reminder cannot be delivered`,
+        );
+      }
+
+      const mentionPrefix = profile.managerRoleId
+        ? `<@&${profile.managerRoleId}>\n`
+        : '';
+      const content =
+        mentionPrefix +
+        `**${open.length} phone number${open.length === 1 ? '' : 's'} require maintenance.** ` +
+        `Insert the SIMs, confirm network registration and top up balances.\n` +
+        lines.join('\n') +
+        extra +
+        (uiUrl
+          ? `\n\n→ ${uiUrl.replace(/\/$/, '')}/phone-numbers/maintenance`
+          : '');
+
+      // Only the managerRoleId is allowed to ping; everything else
+      // (@everyone, @here, @user, any other role id that might appear
+      // inside a task line) is suppressed by `parse: []`.
+      const allowedMentions: Record<string, unknown> = profile.managerRoleId
+        ? { parse: [], roles: [profile.managerRoleId] }
+        : { parse: [] };
+
+      const resp = await this.bot.postMessage({
+        channelId: profile.opsChannelId,
+        content,
+        allowedMentions,
+      });
+      if (!resp.ok) {
+        throw new Error(`Discord postMessage ${resp.status}: ${resp.message}`);
+      }
+
       await this.prisma.phoneReminderLog.upsert({
         where: { sentOn: todayDate },
         create: {
@@ -206,10 +228,10 @@ export class PhoneMaintenanceScheduler {
         result: AuditResult.SUCCESS,
       });
       this.logger.log(
-        `Sent phone maintenance reminder for ${open.length} tasks`,
+        `Sent phone maintenance reminder for ${open.length} tasks via profile ${profile.name}`,
       );
     } catch (err) {
-      const message = (err as Error).message?.slice(0, 240) ?? 'unknown';
+      const message = sanitiseError((err as Error).message);
       try {
         await this.prisma.phoneReminderLog.upsert({
           where: { sentOn: todayDate },
@@ -248,33 +270,57 @@ export class PhoneMaintenanceScheduler {
   }
 
   /**
-   * One-off ping to the configured webhook. Does NOT touch the
-   * daily-idempotency log and does NOT bump reminderCount on tasks —
-   * it just verifies the webhook URL and mention string are good.
+   * One-off ping to the active DiscordProfile's opsChannelId. Does
+   * NOT touch the daily-idempotency log and does NOT bump
+   * reminderCount on tasks — it just verifies that bot + profile +
+   * channel + role are configured correctly end to end.
    */
   async sendTestPing(): Promise<{ success: boolean; message?: string }> {
-    const cfg = await this.resolveConfig();
-    if (!cfg.webhook) {
-      return { success: false, message: 'Webhook URL is not configured.' };
-    }
-    const mention = cfg.mention.trim();
-    const content =
-      (mention ? `${mention}\n` : '') +
-      '**Phone maintenance alerts — test ping.** ' +
-      'If you see this message, the Sargas CRM webhook URL is live.';
-    try {
-      await axios.post(
-        cfg.webhook,
-        { content },
-        { timeout: 7000, headers: { 'Content-Type': 'application/json' } },
-      );
-      return { success: true };
-    } catch (err) {
+    const profile = await this.prisma.discordProfile.findFirst({
+      where: { active: true },
+      select: { name: true, opsChannelId: true, managerRoleId: true },
+    });
+    if (!profile) {
       return {
         success: false,
-        message: (err as Error).message?.slice(0, 240) ?? 'unknown error',
+        message: 'No active DiscordProfile — activate TEST or PRODUCTION first.',
       };
     }
+    if (!profile.opsChannelId) {
+      return {
+        success: false,
+        message: `Active DiscordProfile "${profile.name}" has no opsChannelId.`,
+      };
+    }
+    const mentionPrefix = profile.managerRoleId
+      ? `<@&${profile.managerRoleId}>\n`
+      : '';
+    const content =
+      mentionPrefix +
+      '**Phone maintenance alerts — test ping.** ' +
+      'If you see this message, the bot has access to the Ops channel.';
+    const allowedMentions: Record<string, unknown> = profile.managerRoleId
+      ? { parse: [], roles: [profile.managerRoleId] }
+      : { parse: [] };
+    const resp = await this.bot.postMessage({
+      channelId: profile.opsChannelId,
+      content,
+      allowedMentions,
+    });
+    if (!resp.ok) {
+      return {
+        success: false,
+        message: sanitiseError(`${resp.status}: ${resp.message}`),
+      };
+    }
+    return { success: true };
   }
 }
 
+function sanitiseError(message: string | undefined | null): string {
+  if (!message) return 'unknown';
+  return message
+    .replace(/Bot\s+[A-Za-z0-9._-]+/g, 'Bot <redacted>')
+    .replace(/\/webhooks\/(\d{17,20})\/[^\/\s]+/g, '/webhooks/$1/<redacted>')
+    .slice(0, 240);
+}

@@ -14,7 +14,7 @@ import { Job, Worker } from 'bullmq';
 import IORedis from 'ioredis';
 
 import { PrismaService } from '../prisma/prisma.service';
-import { DiscordNotificationService } from './discord.service';
+import { DiscordBotClient } from '../discord-integration/discord-bot.client';
 import { JobPostDiscordNotifierService } from './job-post-discord-notifier.service';
 import {
   NOTIFICATION_QUEUE,
@@ -34,23 +34,16 @@ export class NotificationProcessorService
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
-    private readonly discord: DiscordNotificationService,
+    private readonly bot: DiscordBotClient,
     private readonly jobPostNotifier: JobPostDiscordNotifierService,
   ) {}
 
   onModuleInit() {
-    // Scanner Core (JOB_POST_MATCH) is now routed through the active
-    // DiscordProfile.salesChannelId via DiscordBotClient — the legacy
-    // webhook is only used for CALL_REMINDER / CLIENT_REQUEST paths.
-    // The worker must therefore start regardless of whether
-    // DISCORD_WEBHOOK_URL is set.
-    const webhookUrl = this.config.get<string>('DISCORD_WEBHOOK_URL');
-    if (!webhookUrl) {
-      this.logger.warn(
-        'DISCORD_WEBHOOK_URL is not configured — CALL_REMINDER / CLIENT_REQUEST will fail retryably until it is set. Scanner Core (JOB_POST_MATCH) continues to work via the active DiscordProfile.',
-      );
-    }
-
+    // Every runtime CRM notification path (JOB_POST_MATCH, CLIENT_REQUEST,
+    // CALL_REMINDER) is now routed through the active DiscordProfile via
+    // DiscordBotClient. The worker starts unconditionally; if the bot
+    // token or active profile is missing the per-attempt send throws and
+    // BullMQ's exponential backoff takes over.
     this.connection = new IORedis({
       host: this.config.get('REDIS_HOST', 'localhost'),
       port: Number(this.config.get('REDIS_PORT', 6379)),
@@ -104,13 +97,16 @@ export class NotificationProcessorService
   }
 
   /**
-   * Route an event to the right Discord sender:
-   *   - JOB_POST_MATCH → active DiscordProfile.salesChannelId via
-   *     DiscordBotClient (Scanner Core path);
-   *   - CALL_REMINDER, CLIENT_REQUEST → legacy DISCORD_WEBHOOK_URL.
+   * Route an event to its Discord channel on the active DiscordProfile:
+   *   - JOB_POST_MATCH → salesChannelId via JobPostDiscordNotifierService;
+   *   - CLIENT_REQUEST → pmsChannelId via DiscordBotClient;
+   *   - CALL_REMINDER → pmsChannelId via DiscordBotClient.
    *
-   * Idempotency, retry and sent/failed bookkeeping are the same
-   * NotificationDelivery contract regardless of channel.
+   * The active profile is resolved on every send so an atomic swap
+   * TEST ↔ PRODUCTION in Settings takes effect without a backend
+   * restart. Missing active profile or channelId throws, so BullMQ
+   * retries with the existing exponential backoff and the
+   * NotificationDelivery row stays non-SENT.
    */
   private async deliverDiscord(
     type: string,
@@ -124,28 +120,73 @@ export class NotificationProcessorService
       return;
     }
 
-    const body = this.buildDiscordBody(type, payload, eventId);
-    if (!body) return;
-    await this.recordAndSend(eventId, () => this.discord.send(body));
+    const embed =
+      type === 'CALL_REMINDER'
+        ? this.buildCallReminderEmbed(payload, eventId)
+        : type === 'CLIENT_REQUEST'
+          ? this.buildClientRequestEmbed(payload, eventId)
+          : null;
+
+    if (!embed) {
+      this.logger.warn(`No Discord builder for event type ${type}, skipping`);
+      return;
+    }
+
+    await this.recordAndSend(eventId, () =>
+      this.postToPmsChannel(eventId, embed),
+    );
   }
 
-  private buildDiscordBody(
-    type: string,
-    payload: unknown,
+  /**
+   * Resolve the active DiscordProfile and post an embed to its PMS
+   * channel. Throws on every "cannot deliver right now" case so the
+   * caller sees a retryable failure (NotificationDelivery stays
+   * non-SENT, BullMQ retries).
+   *
+   * When the active profile has a `managerRoleId`, a `<@&roleId>`
+   * prefix is added to the message content and the role id is the
+   * only entry in `allowed_mentions.roles`; `parse: []` ensures no
+   * `@everyone`, `@here`, or any other role/user id that might
+   * appear inside the embed can page the channel. When no role is
+   * configured, the message goes without a ping and `allowed_mentions`
+   * stays `{ parse: [] }`.
+   */
+  private async postToPmsChannel(
     eventId: string,
-  ): Record<string, unknown> | null {
-    // JOB_POST_MATCH is routed via `JobPostDiscordNotifierService` and
-    // does not pass through this builder any more.
-    if (type === 'CALL_REMINDER') {
-      return this.buildCallReminderEmbed(payload, eventId);
+    embed: Record<string, unknown>,
+  ): Promise<void> {
+    const profile = await this.prisma.discordProfile.findFirst({
+      where: { active: true },
+      select: { name: true, pmsChannelId: true, managerRoleId: true },
+    });
+    if (!profile) {
+      throw new Error(
+        `No active DiscordProfile — event ${eventId} cannot be delivered`,
+      );
     }
-
-    if (type === 'CLIENT_REQUEST') {
-      return this.buildClientRequestEmbed(payload, eventId);
+    if (!profile.pmsChannelId) {
+      throw new Error(
+        `Active DiscordProfile "${profile.name}" has no pmsChannelId — event ${eventId} cannot be delivered`,
+      );
     }
-
-    this.logger.warn(`No Discord builder for event type ${type}, skipping`);
-    return null;
+    const content = profile.managerRoleId
+      ? `<@&${profile.managerRoleId}>`
+      : undefined;
+    const allowedMentions: Record<string, unknown> = profile.managerRoleId
+      ? { parse: [], roles: [profile.managerRoleId] }
+      : { parse: [] };
+    const resp = await this.bot.postMessage({
+      channelId: profile.pmsChannelId,
+      content,
+      embeds: [embed],
+      allowedMentions,
+    });
+    if (!resp.ok) {
+      throw new Error(`Discord postMessage ${resp.status}: ${resp.message}`);
+    }
+    this.logger.log(
+      `Delivered event ${eventId} to profile ${profile.name} (channel ${profile.pmsChannelId}), messageId=${resp.messageId}`,
+    );
   }
 
   private buildCallReminderEmbed(
@@ -182,14 +223,10 @@ export class NotificationProcessorService
     ];
 
     return {
-      embeds: [
-        {
-          title: `📞 ${p.callTitle}`,
-          description: reminderLabel,
-          color,
-          fields,
-        },
-      ],
+      title: `📞 ${p.callTitle}`,
+      description: reminderLabel,
+      color,
+      fields,
     };
   }
 
@@ -214,14 +251,10 @@ export class NotificationProcessorService
     ].filter(Boolean);
 
     return {
-      embeds: [
-        {
-          title: '📥 New client request',
-          color: 0x5865f2,
-          description: p.message ?? undefined,
-          fields,
-        },
-      ],
+      title: '📥 New client request',
+      color: 0x5865f2,
+      description: p.message ?? undefined,
+      fields,
     };
   }
 
@@ -308,7 +341,7 @@ export class NotificationProcessorService
  * row or logs. DiscordBotClient already scrubs `Bot <token>` and
  * `/webhooks/{appId}/<interaction-token>`; we repeat the regexes here
  * so a message that reaches this file via another path (future
- * sender, test shim, legacy webhook) is still safe.
+ * sender, test shim) is still safe.
  */
 function sanitiseError(message: string): string {
   return message

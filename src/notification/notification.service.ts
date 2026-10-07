@@ -157,12 +157,11 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // Scanner Core delivery no longer depends on DISCORD_WEBHOOK_URL:
-    // the processor routes JOB_POST_MATCH through
-    // JobPostDiscordNotifierService → active DiscordProfile.salesChannelId
-    // → DiscordBotClient. If no profile / salesChannelId is set, the
-    // processor fails retryably and the BullMQ backoff kicks in; this
-    // service only decides whether an event is worth queueing.
+    // Delivery target (active DiscordProfile.salesChannelId) is
+    // resolved by JobPostDiscordNotifierService per attempt via
+    // DiscordBotClient; this service only decides whether an event is
+    // worth queueing. Missing active profile / salesChannelId → the
+    // processor fails retryably and BullMQ backs off.
 
     this.logger.log(
       `Event ${event.id} passed rule: decision=${payload.decision}`,
@@ -191,13 +190,9 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    if (!this.config.get<string>('DISCORD_WEBHOOK_URL')) {
-      this.logger.warn(
-        `Event ${event.id} skipped: DISCORD_WEBHOOK_URL not configured`,
-      );
-      return;
-    }
-
+    // Delivery target (active DiscordProfile.pmsChannelId) is resolved
+    // by the processor per attempt; this service only decides whether
+    // the event is worth queueing.
     await this.queue.add(
       NOTIFICATION_SEND,
       { eventId: event.id },
@@ -221,13 +216,9 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    if (!this.config.get<string>('DISCORD_WEBHOOK_URL')) {
-      this.logger.warn(
-        `Event ${event.id} skipped: DISCORD_WEBHOOK_URL not configured`,
-      );
-      return;
-    }
-
+    // Delivery target (active DiscordProfile.pmsChannelId) is resolved
+    // by the processor per attempt; this service only decides whether
+    // the event is worth queueing.
     await this.queue.add(
       NOTIFICATION_SEND,
       { eventId: event.id },

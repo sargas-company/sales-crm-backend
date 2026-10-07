@@ -3,14 +3,15 @@ import axios from 'axios';
 import { BackupType } from '@prisma/client';
 
 /**
- * Resolve the Discord webhook URL to use for ops notifications.
- * `DISCORD_OPS_WEBHOOK_URL` is preferred; `DISCORD_WEBHOOK_URL` is
- * accepted as a legacy fallback so existing environments keep
- * working. Returns null when neither is set — callers must treat
- * that as "notifications disabled" and continue silently.
+ * Resolve the Discord webhook URL used for backup/infrastructure
+ * alerts. Only `DISCORD_OPS_WEBHOOK_URL` is accepted — the backup
+ * scripts run outside the Nest process and deliberately bypass the
+ * active DiscordProfile + bot path so they still fire when the
+ * backend is down. Returns null when the var is not set, which
+ * callers treat as "notifications disabled" and continue silently.
  */
 export function resolveOpsWebhook(env: NodeJS.ProcessEnv = process.env): string | null {
-  const url = env.DISCORD_OPS_WEBHOOK_URL ?? env.DISCORD_WEBHOOK_URL ?? '';
+  const url = env.DISCORD_OPS_WEBHOOK_URL ?? '';
   return url.trim() || null;
 }
 

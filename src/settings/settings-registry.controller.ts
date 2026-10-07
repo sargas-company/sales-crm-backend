@@ -13,7 +13,6 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { AuditResult, AuditSeverity } from '@prisma/client';
-import axios from 'axios';
 import type { Request as ExpressRequest } from 'express';
 
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -22,6 +21,7 @@ import { RequirePermission } from '../auth/permission.decorator';
 import { AuthUser } from '../auth/auth-user';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditEventService } from '../audit-event/audit-event.service';
+import { DiscordBotClient } from '../discord-integration/discord-bot.client';
 
 import { SettingsService } from './settings.service';
 import { RegistrySection, SK } from './settings-registry';
@@ -50,6 +50,7 @@ export class SettingsRegistryController {
     private readonly prisma: PrismaService,
     private readonly audit: AuditEventService,
     private readonly config: ConfigService,
+    private readonly bot: DiscordBotClient,
   ) {}
 
   /** List every section + entry the caller is allowed to see. */
@@ -149,8 +150,27 @@ export class SettingsRegistryController {
       this.countActiveVaultSessions(),
     ]);
 
+    // "Configured" means: the bot token is set in env AND there is
+    // an active DiscordProfile with at least one channel wired up.
+    // Backup/infrastructure scripts use DISCORD_OPS_WEBHOOK_URL
+    // outside this process; nothing here reads it.
+    const botTokenSet = !!this.config.get<string>('DISCORD_BOT_TOKEN');
+    const activeProfile = await this.prisma.discordProfile.findFirst({
+      where: { active: true },
+      select: {
+        salesChannelId: true,
+        pmsChannelId: true,
+        opsChannelId: true,
+      },
+    });
     const discordConfigured =
-      !!this.config.get<string>('DISCORD_WEBHOOK_URL');
+      botTokenSet &&
+      !!activeProfile &&
+      !!(
+        activeProfile.salesChannelId ||
+        activeProfile.pmsChannelId ||
+        activeProfile.opsChannelId
+      );
     // The Vibe Worker webhook is now public (its UI cannot send
     // custom headers), so there is no secret to key "configured" on.
     // We surface `scanner.ingestionEnabled` instead — that is the
@@ -176,12 +196,17 @@ export class SettingsRegistryController {
         configured: discordConfigured,
         alertsEnabled: discordAlertsEnabled,
         scoreThreshold,
-        // Static list of what currently fires the webhook. Keep in
-        // sync with the services that call DISCORD_WEBHOOK_URL.
+        // Static list of what currently fires Discord traffic from
+        // this process. Everything except backup alerts goes through
+        // the active DiscordProfile + bot; backup alerts stay on the
+        // DISCORD_OPS_WEBHOOK_URL so they still fire when Nest is
+        // down.
         usedBy: [
-          'Job post alerts',
-          'Phone maintenance reminders',
-          'Backup failure alerts',
+          'Job post alerts (Sales channel)',
+          'Client requests (PMS channel)',
+          'Call reminders (PMS channel)',
+          'Phone maintenance reminders (Ops channel)',
+          'Backup failure alerts (DISCORD_OPS_WEBHOOK_URL)',
         ],
       },
       vault: {
@@ -190,17 +215,33 @@ export class SettingsRegistryController {
     };
   }
 
-  /** Owner-only test notification. */
+  /**
+   * Owner-only test notification.
+   *
+   * Routed through the active DiscordProfile's **opsChannelId** via
+   * DiscordBotClient — the same channel the phone-maintenance
+   * reminders use. No fallback to PMS or Sales: the test verifies the
+   * Ops wiring specifically, and a silent re-route to a different
+   * channel would mask a real misconfiguration. Mentions are
+   * hard-disabled with `allowed_mentions.parse: []`.
+   */
   @Post('integrations/discord/test')
   @RequirePermission('settings:update')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Send a test Discord notification using the configured webhook.',
+    summary:
+      'Send a test Discord notification to the active DiscordProfile Ops channel via the bot.',
   })
   async testDiscord(@Req() req: ExpressRequest & { user: AuthUser }) {
-    const url = this.config.get<string>('DISCORD_WEBHOOK_URL');
     const ctx = extractCtx(req);
-    if (!url) {
+    const profile = await this.prisma.discordProfile.findFirst({
+      where: { active: true },
+      select: { name: true, opsChannelId: true },
+    });
+    if (!profile || !profile.opsChannelId) {
+      const reason = profile
+        ? `Active DiscordProfile "${profile.name}" has no opsChannelId configured`
+        : 'No active DiscordProfile';
       await this.audit.recordSafe({
         actorUserId: req.user.id,
         domain: 'SETTINGS',
@@ -209,31 +250,21 @@ export class SettingsRegistryController {
         targetLabel: 'Discord',
         result: AuditResult.FAILED,
         severity: AuditSeverity.INFO,
-        metadata: { reason: 'DISCORD_WEBHOOK_URL not configured' },
+        metadata: { reason },
         ...ctx,
       });
-      throw new BadRequestException('Discord webhook is not configured');
-    }
-    try {
-      await axios.post(
-        url,
-        {
-          content: `Sargas CRM · test notification · ${new Date().toISOString()}`,
-        },
-        { timeout: 5000 },
+      throw new BadRequestException(
+        profile
+          ? `Active DiscordProfile "${profile.name}" has no Ops channel configured. Set opsChannelId on the active profile first.`
+          : 'No active DiscordProfile — activate TEST or PRODUCTION first.',
       );
-      await this.audit.recordSafe({
-        actorUserId: req.user.id,
-        domain: 'SETTINGS',
-        action: 'integration.discord.test',
-        targetType: 'Integration',
-        targetLabel: 'Discord',
-        result: AuditResult.SUCCESS,
-        severity: AuditSeverity.INFO,
-        ...ctx,
-      });
-      return { ok: true };
-    } catch (e) {
+    }
+    const resp = await this.bot.postMessage({
+      channelId: profile.opsChannelId,
+      content: `Sargas CRM · test notification · ${new Date().toISOString()}`,
+      allowedMentions: { parse: [] },
+    });
+    if (!resp.ok) {
       await this.audit.recordSafe({
         actorUserId: req.user.id,
         domain: 'SETTINGS',
@@ -242,13 +273,25 @@ export class SettingsRegistryController {
         targetLabel: 'Discord',
         result: AuditResult.FAILED,
         severity: AuditSeverity.WARNING,
-        metadata: { reason: (e as Error).message?.slice(0, 240) ?? null },
+        metadata: { reason: `${resp.status}: ${resp.message}` },
         ...ctx,
       });
       throw new BadRequestException(
-        `Discord test failed: ${(e as Error).message}`,
+        `Discord test failed: ${resp.status} ${resp.message}`,
       );
     }
+    await this.audit.recordSafe({
+      actorUserId: req.user.id,
+      domain: 'SETTINGS',
+      action: 'integration.discord.test',
+      targetType: 'Integration',
+      targetLabel: 'Discord',
+      result: AuditResult.SUCCESS,
+      severity: AuditSeverity.INFO,
+      metadata: { profile: profile.name, channelId: profile.opsChannelId },
+      ...ctx,
+    });
+    return { ok: true };
   }
 
   /** Owner-only: invalidate every live vault session. */
