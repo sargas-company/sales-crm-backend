@@ -137,7 +137,7 @@ export class PhoneMaintenanceScheduler {
     });
     if (alreadySent && alreadySent.success) return;
 
-    const uiUrl = this.config.get<string>('APP_UI_URL') ?? '';
+    const uiUrl = this.config.get<string>('FRONTEND_URL') ?? '';
     const lines = open.slice(0, 20).map((t) => {
       const needs: string[] = [];
       if (!t.networkRegisteredAt) needs.push('register');

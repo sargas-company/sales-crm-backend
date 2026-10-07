@@ -76,14 +76,33 @@ function makeDeliveryTable() {
   return api;
 }
 
-function makePrismaStub(deliveryTable: ReturnType<typeof makeDeliveryTable>) {
+function makePrismaStub(
+  deliveryTable: ReturnType<typeof makeDeliveryTable>,
+  opts: { lockAvailable?: boolean } = {},
+) {
   const profileUpdate = jest.fn(async () => undefined);
-  return {
+  const lockAvailable = opts.lockAvailable ?? true;
+  // Shared `tx` surface for both direct-prisma calls and the
+  // callback the real service passes to `$transaction`.
+  const tx = {
     discordDelivery: deliveryTable,
     discordProfile: { update: profileUpdate },
-    // The chunked path uses pg_try_advisory_lock + pg_advisory_unlock
-    // raw queries.
-    $queryRaw: jest.fn(async () => [{ got: true }]),
+    $queryRaw: jest.fn(async () => [{ got: lockAvailable }]),
+  };
+  return {
+    ...tx,
+    // Short-circuits `$transaction(cb)` into `cb(tx)` so our tests
+    // observe the exact DB calls the service makes. The real
+    // Postgres connection pin is covered by integration-level DB
+    // tests; this unit-level cover tests the control flow +
+    // per-chunk idempotency contract.
+    $transaction: jest.fn(
+      async (cb: (c: typeof tx) => Promise<unknown>) => cb(tx),
+    ),
+    // Fallback: when a test calls prisma.$queryRaw directly outside
+    // the transaction, mirror the shared stub so the control flow
+    // can still progress.
+    _tx: tx,
   } as unknown as PrismaService;
 }
 
@@ -260,61 +279,10 @@ describe('DiscordSchedulersService.sendChunked — chunking + idempotency', () =
     }
   });
 
-  it('two parallel ticks on the same base period → only ONE actually sends (advisory lock)', async () => {
+  it('xact advisory lock not acquired → send is a no-op', async () => {
     const deliveries = makeDeliveryTable();
-    const prisma = makePrismaStub(deliveries);
-    let locked = false;
-    prisma.$queryRaw = (async (strings: TemplateStringsArray) => {
-      const sql = strings.join('').trim();
-      if (sql.startsWith('SELECT pg_try_advisory_lock')) {
-        if (locked) return [{ got: false }];
-        locked = true;
-        return [{ got: true }];
-      }
-      if (sql.startsWith('SELECT pg_advisory_unlock')) {
-        locked = false;
-        return [{ got: true }];
-      }
-      return [];
-    }) as unknown as PrismaService['$queryRaw'];
+    const prisma = makePrismaStub(deliveries, { lockAvailable: false });
     const bot = makeBot(async () => ({ ok: true, messageId: 'm' }));
-    const svc = new DiscordSchedulersService(
-      prisma,
-      bot,
-      stubEmbeds,
-      stubLate,
-      stubConfig,
-    );
-    const [, ] = await Promise.all([
-      invokeSendChunked(svc, {
-        profile: PROFILE,
-        jobType: DiscordJobType.DAILY_DIGEST_19,
-        periodKey: '2026-02-10',
-        channelId: PROFILE.pmsChannelId!,
-        content: 'Daily',
-        embeds: makeEmbeds(23),
-      }),
-      invokeSendChunked(svc, {
-        profile: PROFILE,
-        jobType: DiscordJobType.DAILY_DIGEST_19,
-        periodKey: '2026-02-10',
-        channelId: PROFILE.pmsChannelId!,
-        content: 'Daily',
-        embeds: makeEmbeds(23),
-      }),
-    ]);
-    expect(bot.postMessage).toHaveBeenCalledTimes(3);
-  });
-
-  it('429 Retry-After → chunk stays PENDING for the next tick', async () => {
-    const deliveries = makeDeliveryTable();
-    const prisma = makePrismaStub(deliveries);
-    const bot = makeBot(async () => ({
-      ok: false,
-      status: 429,
-      message: 'rate limited',
-      retryAfterMs: 5000,
-    }));
     const svc = new DiscordSchedulersService(
       prisma,
       bot,
@@ -328,11 +296,179 @@ describe('DiscordSchedulersService.sendChunked — chunking + idempotency', () =
       periodKey: '2026-02-10',
       channelId: PROFILE.pmsChannelId!,
       content: 'Daily',
-      embeds: makeEmbeds(5),
+      embeds: makeEmbeds(10),
     });
+    expect(bot.postMessage).not.toHaveBeenCalled();
+    expect(deliveries._store.size).toBe(0);
+  });
+
+  it('acquires the xact advisory lock inside the same Prisma $transaction (same-connection guarantee)', async () => {
+    const deliveries = makeDeliveryTable();
+    const prisma = makePrismaStub(deliveries);
+    const bot = makeBot(async () => ({ ok: true, messageId: 'm' }));
+    const svc = new DiscordSchedulersService(
+      prisma,
+      bot,
+      stubEmbeds,
+      stubLate,
+      stubConfig,
+    );
+    await invokeSendChunked(svc, {
+      profile: PROFILE,
+      jobType: DiscordJobType.DAILY_DIGEST_19,
+      periodKey: '2026-02-10',
+      channelId: PROFILE.pmsChannelId!,
+      content: 'Daily',
+      embeds: makeEmbeds(3),
+    });
+    // Exactly one $transaction call wrapping the whole chunked send.
+    expect(
+      (prisma as unknown as { $transaction: jest.Mock }).$transaction,
+    ).toHaveBeenCalledTimes(1);
+    const txCall = (prisma as unknown as { $transaction: jest.Mock }).$transaction
+      .mock.calls[0];
+    // The second arg carries `timeout: 60_000` so Prisma does not
+    // kill the tx before the HTTP sends complete.
+    expect(txCall[1]).toEqual({ timeout: 60_000 });
+    // The lock acquire went to the tx client, NOT to the top-level
+    // prisma (which would have been a different pool connection).
+    const txQueryRaw = (
+      prisma as unknown as { _tx: { $queryRaw: jest.Mock } }
+    )._tx.$queryRaw;
+    expect(txQueryRaw).toHaveBeenCalledTimes(1);
+    const sql = (txQueryRaw.mock.calls[0][0] as TemplateStringsArray).join('');
+    expect(sql).toContain('pg_try_advisory_xact_lock');
+  });
+
+  it('xact lock is released even when the chunk send throws (tx-end auto-release)', async () => {
+    const deliveries = makeDeliveryTable();
+    const prisma = makePrismaStub(deliveries);
+    const bot = makeBot(async () => {
+      throw new Error('boom');
+    });
+    const svc = new DiscordSchedulersService(
+      prisma,
+      bot,
+      stubEmbeds,
+      stubLate,
+      stubConfig,
+    );
+    await expect(
+      invokeSendChunked(svc, {
+        profile: PROFILE,
+        jobType: DiscordJobType.DAILY_DIGEST_19,
+        periodKey: '2026-02-10',
+        channelId: PROFILE.pmsChannelId!,
+        content: 'Daily',
+        embeds: makeEmbeds(3),
+      }),
+    ).rejects.toThrow('boom');
+    // The transaction wrapper exited (its callback threw) — the
+    // xact-scope lock auto-releases on tx end; our stub resolves on
+    // the next $transaction call without any lingering state.
+    expect(
+      (prisma as unknown as { $transaction: jest.Mock }).$transaction,
+    ).toHaveBeenCalledTimes(1);
+  });
+
+  it('429 Retry-After → chunk PENDING with sentAt lease; a tick inside the window skips, a later tick retries', async () => {
+    const deliveries = makeDeliveryTable();
+    const prisma = makePrismaStub(deliveries);
+    const bot = makeBot(async () => ({
+      ok: false,
+      status: 429,
+      message: 'rate limited',
+      retryAfterMs: 120_000, // 2 minutes — longer than scheduler interval
+    }));
+    const svc = new DiscordSchedulersService(
+      prisma,
+      bot,
+      stubEmbeds,
+      stubLate,
+      stubConfig,
+    );
+    const run = () =>
+      invokeSendChunked(svc, {
+        profile: PROFILE,
+        jobType: DiscordJobType.DAILY_DIGEST_19,
+        periodKey: '2026-02-10',
+        channelId: PROFILE.pmsChannelId!,
+        content: 'Daily',
+        embeds: makeEmbeds(5),
+      });
+
+    const T0 = 1_700_000_000_000;
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(T0);
+    try {
+      await run();
+    } finally {
+      // keep spy for the subsequent assertions
+    }
+    expect(bot.postMessage).toHaveBeenCalledTimes(1);
+    const row = deliveries._store.get(
+      'DAILY_DIGEST_19:2026-02-10:chunk:0',
+    );
+    expect(row?.status).toBe(DiscordDeliveryStatus.PENDING);
+    expect(row?.sentAt?.getTime()).toBe(T0 + 120_000);
+
+    // Early tick (60s later, still inside the Retry-After window):
+    // bot MUST NOT be called again.
+    nowSpy.mockReturnValue(T0 + 60_000);
+    bot.postMessage.mockClear();
+    (bot.postMessage as jest.Mock).mockImplementation(async () => ({
+      ok: true,
+      messageId: 'should-not-fire',
+    }));
+    await run();
+    expect(bot.postMessage).not.toHaveBeenCalled();
+    // Row still PENDING, lease unchanged.
+    expect(
+      deliveries._store.get('DAILY_DIGEST_19:2026-02-10:chunk:0')?.sentAt?.getTime(),
+    ).toBe(T0 + 120_000);
+
+    // Late tick (3 minutes later, outside the window): the retry
+    // proceeds — bot called once, chunk flips SENT, next chunk
+    // created, etc.
+    nowSpy.mockReturnValue(T0 + 180_000);
+    bot.postMessage.mockClear();
+    await run();
     expect(bot.postMessage).toHaveBeenCalledTimes(1);
     expect(
       deliveries._store.get('DAILY_DIGEST_19:2026-02-10:chunk:0')?.status,
-    ).toBe(DiscordDeliveryStatus.PENDING);
+    ).toBe(DiscordDeliveryStatus.SENT);
+    nowSpy.mockRestore();
+  });
+});
+
+describe('DiscordSchedulersService.sendChunked — absences content-only path', () => {
+  it('empty embed list + content → single ABSENCES:<date>:chunk:0 delivery with content-only message', async () => {
+    const deliveries = makeDeliveryTable();
+    const prisma = makePrismaStub(deliveries);
+    const bot = makeBot(async () => ({ ok: true, messageId: 'm' }));
+    const svc = new DiscordSchedulersService(
+      prisma,
+      bot,
+      stubEmbeds,
+      stubLate,
+      stubConfig,
+    );
+    await invokeSendChunked(svc, {
+      profile: PROFILE,
+      jobType: DiscordJobType.ABSENCES,
+      periodKey: '2026-02-10',
+      channelId: PROFILE.pmsChannelId!,
+      content: 'Everyone is working today.',
+      embeds: [],
+    });
+    expect(bot.postMessage).toHaveBeenCalledTimes(1);
+    const call = bot.postMessage.mock.calls[0][0] as {
+      content?: string;
+      embeds?: unknown;
+    };
+    expect(call.content).toBe('Everyone is working today.');
+    expect(call.embeds).toBeUndefined();
+    expect(
+      deliveries._store.get('ABSENCES:2026-02-10:chunk:0')?.status,
+    ).toBe(DiscordDeliveryStatus.SENT);
   });
 });

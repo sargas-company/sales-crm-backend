@@ -4,8 +4,17 @@ import { Cron } from '@nestjs/schedule';
 import {
   DiscordDeliveryStatus,
   DiscordJobType,
+  Prisma,
   type DiscordProfile,
 } from '@prisma/client';
+
+/**
+ * Prisma client-or-tx shape — accepts both the top-level
+ * `PrismaService` and the `tx` argument of `$transaction(async(tx)
+ * => ...)`. Used for helpers that must run on the same pinned
+ * connection as a surrounding transaction (lock scope).
+ */
+type TxLike = Pick<Prisma.TransactionClient, 'discordProfile'> | import('../prisma/prisma.service').PrismaService;
 
 import { PrismaService } from '../prisma/prisma.service';
 import { chunkEmbeds, type DiscordEmbed } from './discord-chunking';
@@ -59,9 +68,14 @@ export class DiscordSchedulersService {
       );
     }
     if (profile.absencesEnabled && this.timeReached(nowHM, profile.absencesAt)) {
-      await this.runOnce(profile, DiscordJobType.ABSENCES, todayKey, () =>
-        this.runAbsences(profile),
-      );
+      // Absences uses chunked per-chunk delivery (ABSENCES:<date>:chunk:N)
+      // so the "Everyone is working today." branch is also idempotent
+      // and a failed non-empty chunk 1 does not re-send chunk 0.
+      try {
+        await this.runAbsences(profile);
+      } catch (err) {
+        await this.handleChunkedError(profile, DiscordJobType.ABSENCES, err);
+      }
     }
     if (profile.reportsEnabled && this.timeReached(nowHM, profile.reminderAt)) {
       // Reminder is only useful BEFORE the digest; after that it's noise.
@@ -219,38 +233,39 @@ export class DiscordSchedulersService {
         endDate: { gte: today },
         employee: { status: 'active' },
       },
-      include: { employee: { select: { firstName: true, lastName: true } } },
+      include: {
+        employee: { select: { id: true, firstName: true, lastName: true } },
+      },
+      // Stable ordering so chunk slices are deterministic across
+      // retries — the per-chunk delivery key keys the same slice
+      // regardless of which tick creates it.
+      orderBy: [{ startDate: 'asc' }, { id: 'asc' }],
     });
-    if (!offs.length) {
-      const resp = await this.bot.postMessage({
-        channelId: profile.pmsChannelId,
-        content: 'Everyone is working today.',
-        allowedMentions: { parse: [] },
-      });
-      if (!resp.ok) throw new Error(`${resp.status}: ${resp.message}`);
-      return;
-    }
-    const embeds = this.embeds.absencesEmbeds(
-      offs.map((o) => ({
-        type: o.type,
-        firstName: o.employee.firstName,
-        lastName: o.employee.lastName,
-        endDate: o.endDate,
-      })),
-    );
-    // Absences rarely exceed the 10-embed cap, but a long holiday
-    // stretch across a big team could; chunk defensively through the
-    // shared helper so the same budgeting + truncation applies.
-    const chunks = chunkEmbeds(embeds);
-    for (let i = 0; i < chunks.length; i++) {
-      const resp = await this.bot.postMessage({
-        channelId: profile.pmsChannelId,
-        content: i === 0 ? 'Who is off today' : undefined,
-        embeds: chunks[i] as Record<string, unknown>[],
-        allowedMentions: { parse: [] },
-      });
-      if (!resp.ok) throw new Error(`${resp.status}: ${resp.message}`);
-    }
+    const periodKey = today.toISOString().slice(0, 10);
+    const embeds = offs.length
+      ? this.embeds.absencesEmbeds(
+          offs.map((o) => ({
+            type: o.type,
+            firstName: o.employee.firstName,
+            lastName: o.employee.lastName,
+            endDate: o.endDate,
+          })),
+        )
+      : [];
+    // Both paths route through sendChunked so that:
+    //   - the empty "Everyone is working today." case still gets a
+    //     `ABSENCES:<date>:chunk:0` row and will not re-fire on a
+    //     catch-up tick;
+    //   - the non-empty case gets per-chunk delivery keys and never
+    //     re-sends chunk 0 after a chunk 1 failure.
+    await this.sendChunked({
+      profile,
+      jobType: DiscordJobType.ABSENCES,
+      periodKey,
+      channelId: profile.pmsChannelId,
+      content: offs.length ? 'Who is off today' : 'Everyone is working today.',
+      embeds,
+    });
   }
 
   private async runReminder(profile: DiscordProfile): Promise<void> {
@@ -394,18 +409,33 @@ export class DiscordSchedulersService {
    *
    * Each chunk gets its own `DiscordDelivery(deliveryKey =
    * JOB:periodKey:chunk:N)`. On entry we:
-   *   1. slice `embeds` into Discord-safe chunks via `chunkEmbeds`;
-   *   2. walk them in order under one advisory lock keyed by the
-   *      base `JOB:periodKey` (so two scheduler ticks never race on
-   *      the same digest);
-   *   3. for each chunk — SKIP if its row is SENT, SEND otherwise.
-   *      On success flip to SENT and continue; on failure STOP and
-   *      leave the row PENDING for the next tick to retry.
+   *   1. slice `embeds` into Discord-safe chunks via `chunkEmbeds`
+   *      (empty + non-empty content both produce ≥1 chunk);
+   *   2. walk them in order inside ONE Prisma `$transaction` so the
+   *      acquire + per-chunk UPDATEs + unlock all run on the same
+   *      PostgreSQL connection — session-scope advisory lock would
+   *      otherwise leak across pool connections. We use
+   *      `pg_try_advisory_xact_lock` so the lock auto-releases on
+   *      transaction end, success or failure, with no manual unlock
+   *      step to forget;
+   *   3. for each chunk — SKIP if SENT, SKIP if PENDING with
+   *      `sentAt` in the future (429 backoff lease), SEND otherwise.
+   *      On success flip to SENT; on failure leave PENDING with
+   *      `sentAt = now + retryAfterMs` so the next tick that fires
+   *      before the Retry-After window elapses will skip and bail.
    *
    * The order of embeds is stable (callers sort before passing them
    * in), so chunk N on retry contains the same slice as before. The
    * `content` text is attached to chunk 0 only; later chunks are
    * pure-embed messages so Discord doesn't repeat the header.
+   *
+   * Transaction timeout is lifted to 60s because the chunk loop
+   * includes Discord HTTP calls (axios ≤10s per POST, up to ~24
+   * chunks of 10 embeds would be the realistic ceiling). This holds
+   * one Prisma connection for the duration of the send — the trade-
+   * off is intentional: correctness of cross-instance mutual
+   * exclusion requires same-connection acquire+release, and the
+   * daily/weekly cadence makes a once-a-day held connection cheap.
    */
   private async sendChunked(args: {
     profile: DiscordProfile;
@@ -415,82 +445,114 @@ export class DiscordSchedulersService {
     content: string;
     embeds: readonly DiscordEmbed[];
   }): Promise<void> {
-    const chunks = chunkEmbeds(args.embeds);
+    const chunksRaw = chunkEmbeds(args.embeds);
+    // Content-only path (absences "Everyone is working today."):
+    // zero embeds + non-empty content → one empty-embed-list chunk.
+    const chunks: DiscordEmbed[][] =
+      chunksRaw.length > 0
+        ? chunksRaw
+        : args.content
+          ? [[]]
+          : [];
     if (!chunks.length) return;
     const baseKey = `${args.jobType}:${args.periodKey}`;
     const lockKey = this.hash31(`chunked:${baseKey}`);
-    const [row] = await this.prisma.$queryRaw<Array<{ got: boolean }>>`
-      SELECT pg_try_advisory_lock(${lockKey}) AS got
-    `;
-    if (!row?.got) return;
-    try {
-      for (let i = 0; i < chunks.length; i++) {
-        const chunkKey = `${baseKey}:chunk:${i}`;
-        const existing = await this.prisma.discordDelivery.findUnique({
-          where: { deliveryKey: chunkKey },
-        });
-        if (existing?.status === DiscordDeliveryStatus.SENT) continue;
 
-        const delivery = existing
-          ? await this.prisma.discordDelivery.update({
-              where: { id: existing.id },
+    await this.prisma.$transaction(
+      async (tx) => {
+        const [row] = await tx.$queryRaw<Array<{ got: boolean }>>`
+          SELECT pg_try_advisory_xact_lock(${lockKey}) AS got
+        `;
+        if (!row?.got) return;
+
+        for (let i = 0; i < chunks.length; i++) {
+          const chunkKey = `${baseKey}:chunk:${i}`;
+          const existing = await tx.discordDelivery.findUnique({
+            where: { deliveryKey: chunkKey },
+          });
+          if (existing?.status === DiscordDeliveryStatus.SENT) continue;
+
+          // Rate-limit lease on `sentAt`: when a 429 landed, we set
+          // sentAt to the next permissible attempt time. PENDING +
+          // sentAt in the future ⇒ do not try yet and do not touch
+          // later chunks (they can't jump ahead).
+          if (
+            existing?.status === DiscordDeliveryStatus.PENDING &&
+            existing.sentAt &&
+            existing.sentAt.getTime() > Date.now()
+          ) {
+            this.logger.debug(
+              `chunked ${args.jobType}: chunk ${i} backoff until ${existing.sentAt.toISOString()}`,
+            );
+            return;
+          }
+
+          const delivery = existing
+            ? await tx.discordDelivery.update({
+                where: { id: existing.id },
+                data: {
+                  status: DiscordDeliveryStatus.PENDING,
+                  attempts: existing.attempts + 1,
+                  // Clear the lease marker; we are retrying now.
+                  sentAt: null,
+                },
+              })
+            : await tx.discordDelivery.create({
+                data: {
+                  profileId: args.profile.id,
+                  deliveryKey: chunkKey,
+                  jobType: args.jobType,
+                  periodKey: args.periodKey,
+                  status: DiscordDeliveryStatus.PENDING,
+                  attempts: 1,
+                },
+              });
+
+          const resp = await this.bot.postMessage({
+            channelId: args.channelId,
+            content: i === 0 && args.content ? args.content : undefined,
+            embeds: chunks[i].length
+              ? (chunks[i] as Record<string, unknown>[])
+              : undefined,
+            allowedMentions: { parse: [] },
+          });
+          if (resp.ok) {
+            await tx.discordDelivery.update({
+              where: { id: delivery.id },
               data: {
-                status: DiscordDeliveryStatus.PENDING,
-                attempts: existing.attempts + 1,
-              },
-            })
-          : await this.prisma.discordDelivery.create({
-              data: {
-                profileId: args.profile.id,
-                deliveryKey: chunkKey,
-                jobType: args.jobType,
-                periodKey: args.periodKey,
-                status: DiscordDeliveryStatus.PENDING,
-                attempts: 1,
+                status: DiscordDeliveryStatus.SENT,
+                sentAt: new Date(),
+                lastError: null,
               },
             });
-
-        const resp = await this.bot.postMessage({
-          channelId: args.channelId,
-          content: i === 0 ? args.content : undefined,
-          embeds: chunks[i] as Record<string, unknown>[],
-          allowedMentions: { parse: [] },
-        });
-        if (resp.ok) {
-          await this.prisma.discordDelivery.update({
+            await this.recordProfileSuccess(args.profile.id, tx);
+            continue;
+          }
+          const errMsg = this.scrub(`${resp.status}: ${resp.message}`);
+          // 429 backoff: lease sentAt forward by retryAfterMs so
+          // ticks inside the window skip this chunk entirely.
+          const leaseUntil = resp.retryAfterMs
+            ? new Date(Date.now() + resp.retryAfterMs)
+            : null;
+          await tx.discordDelivery.update({
             where: { id: delivery.id },
             data: {
-              status: DiscordDeliveryStatus.SENT,
-              sentAt: new Date(),
-              lastError: null,
+              status: DiscordDeliveryStatus.PENDING,
+              lastError: errMsg,
+              sentAt: leaseUntil,
             },
           });
-          await this.recordProfileSuccess(args.profile.id);
-          continue;
+          await this.recordProfileFailure(args.profile.id, errMsg, tx);
+          if (leaseUntil) {
+            this.logger.warn(
+              `chunked ${args.jobType}: rate-limited, honouring Retry-After ${resp.retryAfterMs}ms (until ${leaseUntil.toISOString()})`,
+            );
+          }
+          return;
         }
-        // Failure: leave this chunk PENDING, bail out of the loop so
-        // subsequent chunks are NOT sent until this one lands. The
-        // outer `runOnce` wrapper (gate) is NOT used by chunked jobs
-        // — the per-chunk key is the dedup token here.
-        const errMsg = this.scrub(`${resp.status}: ${resp.message}`);
-        await this.prisma.discordDelivery.update({
-          where: { id: delivery.id },
-          data: {
-            status: DiscordDeliveryStatus.PENDING,
-            lastError: errMsg,
-          },
-        });
-        await this.recordProfileFailure(args.profile.id, errMsg);
-        if (resp.retryAfterMs) {
-          this.logger.warn(
-            `chunked ${args.jobType}: rate-limited, honouring Retry-After ${resp.retryAfterMs}ms`,
-          );
-        }
-        return;
-      }
-    } finally {
-      await this.releaseLock(lockKey);
-    }
+      },
+      { timeout: 60_000 },
+    );
   }
 
   /**
@@ -521,12 +583,14 @@ export class DiscordSchedulersService {
   }
 
   /**
-   * `${APP_UI_URL}/projects/reports` with trailing-slash normalisation.
-   * Empty string when APP_UI_URL is not configured — callers surface
-   * this as "no link" rather than crashing.
+   * `${FRONTEND_URL}/projects/reports` with trailing-slash
+   * normalisation. The env var name matches the operational
+   * contract on production. Empty string when `FRONTEND_URL` is
+   * not configured — callers surface this as "no link" rather
+   * than crashing.
    */
   private reportsUrl(): string {
-    const raw = this.config.get<string>('APP_UI_URL') ?? '';
+    const raw = this.config.get<string>('FRONTEND_URL') ?? '';
     if (!raw) return '';
     return `${raw.replace(/\/+$/, '')}/projects/reports`;
   }
@@ -570,15 +634,22 @@ export class DiscordSchedulersService {
 
   // ─── Housekeeping ──────────────────────────────────────────────
 
-  private async recordProfileSuccess(profileId: string): Promise<void> {
-    await this.prisma.discordProfile.update({
+  private async recordProfileSuccess(
+    profileId: string,
+    client: TxLike = this.prisma,
+  ): Promise<void> {
+    await client.discordProfile.update({
       where: { id: profileId },
       data: { lastSuccessAt: new Date() },
     });
   }
 
-  private async recordProfileFailure(profileId: string, message: string): Promise<void> {
-    await this.prisma.discordProfile.update({
+  private async recordProfileFailure(
+    profileId: string,
+    message: string,
+    client: TxLike = this.prisma,
+  ): Promise<void> {
+    await client.discordProfile.update({
       where: { id: profileId },
       data: {
         lastFailureAt: new Date(),
