@@ -148,6 +148,20 @@ export class LinkedInIdeaService {
     await this.prisma.linkedInIdea.delete({ where: { id } });
   }
 
+  /**
+   * Bulk delete under the same permission as single-remove. Stale
+   * ids are silently skipped — the response reports the actual
+   * matched row count via `deleted`. LinkedInPost.ideaId gets
+   * SET NULL by FK; posts survive.
+   */
+  async bulkRemove(ids: string[]): Promise<{ deleted: number }> {
+    if (ids.length === 0) return { deleted: 0 };
+    const result = await this.prisma.linkedInIdea.deleteMany({
+      where: { id: { in: ids } },
+    });
+    return { deleted: result.count };
+  }
+
   private buildOrderBy(
     sortBy?: LinkedInIdeaSortBy,
     sortDir?: SortDir,

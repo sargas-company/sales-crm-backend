@@ -16,6 +16,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PermissionGuard } from '../auth/permission.guard';
 import { RequirePermission } from '../auth/permission.decorator';
+import { BulkDeleteLinkedInPostsDto } from './dto/bulk-delete-linkedin-posts.dto';
 import { CreateLinkedInPostDto } from './dto/create-linkedin-post.dto';
 import { UpdateLinkedInPostDto } from './dto/update-linkedin-post.dto';
 import { ListLinkedInPostsDto } from './dto/list-linkedin-posts.dto';
@@ -59,5 +60,13 @@ export class LinkedInPostController {
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param('id') id: string) {
     return this.svc.remove(id);
+  }
+
+  @Post('bulk-delete')
+  @RequirePermission('linkedin_posts:delete')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Bulk-delete LinkedIn posts' })
+  bulkDelete(@Body() dto: BulkDeleteLinkedInPostsDto) {
+    return this.svc.bulkRemove(dto.ids);
   }
 }
