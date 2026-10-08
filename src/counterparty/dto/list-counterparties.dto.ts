@@ -1,4 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { CounterpartyType } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
   IsEnum,
@@ -60,4 +61,13 @@ export class ListCounterpartiesDto {
     typeof value === 'string' ? value.trim() || undefined : value,
   )
   search?: string;
+
+  @ApiPropertyOptional({
+    enum: CounterpartyType,
+    description:
+      'Restrict the result to a single counterparty type (e.g. only `client` rows for the Project form picker). Omit to include every type the caller is allowed to see.',
+  })
+  @IsOptional()
+  @IsEnum(CounterpartyType)
+  type?: CounterpartyType;
 }

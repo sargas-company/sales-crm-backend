@@ -57,6 +57,7 @@ describe('ProjectService date-range invariant', () => {
       svc.create(
         {
           name: 'x',
+          clientId: '11111111-1111-1111-1111-111111111111',
           startDate: '2026-05-10',
           endDate: '2026-05-01',
         },
@@ -76,6 +77,7 @@ describe('ProjectService date-range invariant', () => {
           await svc.create(
             {
               name: 'x',
+              clientId: '11111111-1111-1111-1111-111111111111',
               startDate: '2026-05-10',
               endDate: '2026-05-10',
             },

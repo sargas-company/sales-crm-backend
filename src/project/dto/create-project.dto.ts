@@ -26,13 +26,12 @@ export class CreateProjectDto {
   @Transform(({ value }) => trim(value))
   name: string;
 
-  @ApiPropertyOptional({
+  @ApiProperty({
     description:
-      'Counterparty this project is billed against. Must reference a client-type row.',
+      'Counterparty this project is billed against. Must reference a client-type row. Required when creating a project.',
   })
-  @IsOptional()
   @IsUUID()
-  clientId?: string;
+  clientId: string;
 
   @ApiPropertyOptional({ enum: ProjectStatus, default: ProjectStatus.planned })
   @IsOptional()

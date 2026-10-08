@@ -27,9 +27,15 @@ export class CounterpartyService {
     const dir: Prisma.SortOrder =
       dto.sortDirection ?? CounterpartySortDirection.desc;
     const visibleTypes = scopePolicy.visibleTypes(user);
+    // Honor caller-provided `type`, but never widen beyond what the
+    // scope policy allows: a Regular Manager asking for contractors
+    // still gets an empty list, not a 403.
+    const effectiveTypes = dto.type
+      ? visibleTypes.filter((t) => t === dto.type)
+      : visibleTypes;
 
     const where: Prisma.CounterpartyWhereInput = {
-      type: { in: visibleTypes },
+      type: { in: effectiveTypes },
       ...(dto.search
         ? {
             OR: [
