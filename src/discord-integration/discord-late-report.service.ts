@@ -100,13 +100,17 @@ export class DiscordLateReportService {
         await this.markFailed(row.id, 'corrupt periodKey');
         continue;
       }
-      const embed = this.embeds.lateReportEmbed(payload);
+      // Late PMS card uses the SAME compact shape as a Daily Digest
+      // row: project name + hours only, color by `> 6`. Snapshot may
+      // still carry text/submittedAt from pre-change rows — we read
+      // just the two fields we need and ignore the rest.
+      const embed = this.embeds.compactReportCard({
+        projectName: payload.projectName,
+        hours: payload.hours,
+      });
       const resp = await this.bot.postMessage({
         channelId: profile.pmsChannelId!,
         embeds: [embed as Record<string, unknown>],
-        // Content is empty for late-report tick (embed-only); still
-        // pin allowed_mentions so nothing in the author/project name
-        // or `text` can ever ping the channel.
         allowedMentions: { parse: [] },
       });
       if (resp.ok) {

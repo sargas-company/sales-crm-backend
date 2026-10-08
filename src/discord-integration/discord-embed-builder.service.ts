@@ -13,17 +13,59 @@ import { normaliseEmbed, type DiscordEmbed } from './discord-chunking';
  * fields, footer.text ≤2048, author.name ≤256. Chunking (10-embed
  * cap, 6000-char total) is a separate concern handled by the sender.
  */
+/**
+ * Legacy admin accent colors — the two shades every ProjectReport
+ * notification uses. Hex values are preserved verbatim from the old
+ * Laravel app (NotificationController::sendDailyReport /
+ * sendWeeklyReport), so a message delivered now looks identical to
+ * one delivered by that admin.
+ *
+ * Any other hue (green, yellow, Discord blurple 0x3498DB, …) is NOT
+ * used for ProjectReport-shaped messages. Non-report flows
+ * (absences, weekly off-day digests, reminders, scanner, etc.) are
+ * out of scope and keep their own palettes.
+ */
+export const LEGACY_BLUE = 7506394; // 0x7289DA
+export const LEGACY_RED = 11471113; // 0xAF0909
+
+/** Daily/Late share one strict threshold inherited from Laravel's
+ *  `NotificationController::sendDailyReport`: `hours > 6` → blue,
+ *  otherwise red. A report at exactly 6.00 hours stays red. */
+export const DAILY_REPORT_HOURS_THRESHOLD = 6;
+
+/** Weekly keeps Laravel's `sendWeeklyReport` rule: `hours > 34` →
+ *  blue. Exactly 34.00 hours is red. */
+export const WEEKLY_REPORT_HOURS_THRESHOLD = 34;
+
+/**
+ * Color helper used by every compact ProjectReport card
+ * (daily digest + late report). Centralised so the two paths cannot
+ * drift and so the strict `>` comparator is written exactly once.
+ */
+export const reportColorForHours = (
+  hours: number,
+  threshold: number = DAILY_REPORT_HOURS_THRESHOLD,
+): number => (hours > threshold ? LEGACY_BLUE : LEGACY_RED);
+
 @Injectable()
 export class DiscordEmbedBuilderService {
-  readonly COLOR_GREEN = 5763719;
-  readonly COLOR_YELLOW = 15844367;
+  // Non-report palette constants kept for other builders in this file
+  // (reminderContent, absencesEmbeds). They are NOT used by report
+  // cards and must stay unused by the compact / daily / late paths.
   readonly COLOR_RED = 15548997;
   readonly COLOR_BLUE = 3447003;
+
+  readonly LEGACY_BLUE = LEGACY_BLUE;
+  readonly LEGACY_RED = LEGACY_RED;
 
   /**
    * Project-channel embed posted by `/report`. The report is a
    * team-level record — the embed no longer carries a per-author
    * byline. Submitter identity stays only in the audit trail.
+   *
+   * Color is ALWAYS `LEGACY_BLUE`, regardless of `isLate` or
+   * `hours`. The working-channel surface must never go red: the
+   * red/blue split lives only on PMS compact cards.
    */
   reportEmbed(args: {
     projectName: string;
@@ -34,7 +76,7 @@ export class DiscordEmbedBuilderService {
   }): DiscordEmbed {
     return normaliseEmbed({
       title: `📋 Daily report — ${args.projectName}`,
-      color: args.isLate ? this.COLOR_YELLOW : this.COLOR_GREEN,
+      color: LEGACY_BLUE,
       fields: [
         { name: '🕒 Hours', value: String(args.hours), inline: true },
         { name: '📅 Date', value: this.iso(args.reportDate), inline: true },
@@ -48,47 +90,48 @@ export class DiscordEmbedBuilderService {
     });
   }
 
-  lateReportEmbed(args: {
+  /**
+   * Single compact PMS report card — the shared shape used by the
+   * 19:00 digest row AND by every late-report PMS message. Does
+   * NOT render the report body, submitted-at, author, meeting URL
+   * or any of the detailed project-channel fields.
+   */
+  compactReportCard(args: {
     projectName: string;
     hours: number;
-    reportDate: Date;
-    text: string;
-    submittedAt: Date;
   }): DiscordEmbed {
     return normaliseEmbed({
-      title: `⏰ Late report — ${args.projectName}`,
-      color: this.COLOR_YELLOW,
-      fields: [
-        { name: '🕒 Hours', value: String(args.hours), inline: true },
-        { name: '📅 For date', value: this.iso(args.reportDate), inline: true },
-        { name: '🕘 Submitted at', value: args.submittedAt.toISOString(), inline: false },
-        { name: '📝 Details', value: args.text, inline: false },
-      ],
+      title: args.projectName,
+      description: `${args.hours} hours`,
+      color: reportColorForHours(args.hours, DAILY_REPORT_HOURS_THRESHOLD),
     });
   }
 
+  /**
+   * 19:00 PMS digest = N × `compactReportCard`, one per report row,
+   * in the caller-supplied order. Chunking (10 embeds / 6000 chars)
+   * is the sender's concern.
+   */
   dailyDigestEmbeds(args: {
     reportDate: Date;
     rows: Array<{ projectName: string; hours: number }>;
   }): DiscordEmbed[] {
     return args.rows.map((r) =>
-      normaliseEmbed({
-        title: r.projectName,
-        description: `${r.hours} hours`,
-        color: r.hours > 6 ? this.COLOR_GREEN : this.COLOR_RED,
-      }),
+      this.compactReportCard({ projectName: r.projectName, hours: r.hours }),
     );
   }
 
-  weeklyDigestEmbeds(rows: Array<{ projectName: string; hours: number }>): DiscordEmbed[] {
-    // Threshold is strict `>34`: matches the legacy admin's weekly
-    // report colour rule exactly. A project that lands on 34.00 hours
-    // is red, as it has been since the old backend.
+  weeklyDigestEmbeds(
+    rows: Array<{ projectName: string; hours: number }>,
+  ): DiscordEmbed[] {
+    // Threshold is strict `>34`; a project landing on 34.00 is red.
+    // Zero-hour projects stay in the list (red) — mirrors the old
+    // Laravel admin.
     return rows.map((r) =>
       normaliseEmbed({
         title: r.projectName,
         description: `${r.hours.toFixed(2)} hours`,
-        color: r.hours > 34 ? this.COLOR_GREEN : this.COLOR_RED,
+        color: reportColorForHours(r.hours, WEEKLY_REPORT_HOURS_THRESHOLD),
       }),
     );
   }

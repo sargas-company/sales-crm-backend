@@ -227,16 +227,9 @@ export class DiscordAdminService {
       case 'LATE_REPORT':
         return {
           embeds: [
-            this.embeds.lateReportEmbed({
+            this.embeds.compactReportCard({
               projectName: 'Example Project',
               hours: 3,
-              reportDate: logicalReportDate({
-                now: new Date(),
-                cutoffHour: profile.cutoffHour,
-                timezone: profile.timezone,
-              }),
-              text: 'Filed yesterday’s work this morning.',
-              submittedAt: new Date(),
             }),
           ],
         };
