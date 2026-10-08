@@ -125,34 +125,71 @@ describe('PMS compact card — daily + late share one builder', () => {
     expect(row.fields).toBeUndefined();
   });
 
-  it('daily and late carry the identical embed shape for the same inputs', () => {
-    const daily = svc.dailyDigestEmbeds({
-      reportDate,
-      rows: [{ projectName: 'Delta', hours: 5 }],
-    })[0];
-    const late = svc.compactReportCard({ projectName: 'Delta', hours: 5 });
-    expect(late).toEqual(daily);
-  });
-
-  it('compactReportCard never carries detailed-only fields (Submitted at, Details, Author)', () => {
+  it('daily digest row carries no detailed-only fields', () => {
     const e = svc.compactReportCard({ projectName: 'Eps', hours: 8 });
     const json = JSON.stringify(e);
     expect(json).not.toContain('Submitted at');
     expect(json).not.toContain('Details');
     expect(json).not.toContain('author');
-    // No report body text leaks either.
     expect(e.fields).toBeUndefined();
   });
+});
 
-  it('late embed shape (as emitted from the late tick) == compact card', () => {
-    // The late tick in DiscordLateReportService wires its payload
-    // directly into compactReportCard. The contract here is: given
-    // the same (projectName, hours), the embed is identical.
-    const asLateInput = { projectName: 'Zeta', hours: 2 };
-    const asDailyInput = { projectName: 'Zeta', hours: 2 };
-    expect(svc.compactReportCard(asLateInput)).toEqual(
-      svc.compactReportCard(asDailyInput),
-    );
+describe('Late report PMS card — own 2-field shape, shared color rule', () => {
+  const forDay = new Date('2026-11-10T00:00:00Z');
+
+  it('title is `⏰ Late report — {projectName}`', () => {
+    const e = svc.lateReportCard({
+      projectName: 'Omega',
+      hours: 9,
+      reportDate: forDay,
+    });
+    expect(e.title).toBe('⏰ Late report — Omega');
+  });
+
+  it('6.00 → LEGACY_RED', () => {
+    const e = svc.lateReportCard({
+      projectName: 'Omega',
+      hours: 6,
+      reportDate: forDay,
+    });
+    expect(e.color).toBe(LEGACY_RED);
+  });
+
+  it('6.01 → LEGACY_BLUE', () => {
+    const e = svc.lateReportCard({
+      projectName: 'Omega',
+      hours: 6.01,
+      reportDate: forDay,
+    });
+    expect(e.color).toBe(LEGACY_BLUE);
+  });
+
+  it('contains only Hours + For day fields, both inline', () => {
+    const e = svc.lateReportCard({
+      projectName: 'Omega',
+      hours: 7,
+      reportDate: forDay,
+    });
+    const fields = e.fields ?? [];
+    expect(fields.map((f) => f.name)).toEqual(['🕒 Hours', '📅 For day']);
+    expect(fields.every((f) => f.inline === true)).toBe(true);
+    expect(fields[1].value).toBe('2026-11-10');
+  });
+
+  it('does not include Submitted at / Details / full report text / author', () => {
+    const e = svc.lateReportCard({
+      projectName: 'Omega',
+      hours: 7,
+      reportDate: forDay,
+    });
+    const json = JSON.stringify(e);
+    expect(json).not.toContain('Submitted at');
+    expect(json).not.toContain('Details');
+    expect(json).not.toContain('author');
+    expect(json).not.toMatch(/body|description/);
+    // Only 2 fields; no description string at all.
+    expect(e.description).toBeUndefined();
   });
 });
 

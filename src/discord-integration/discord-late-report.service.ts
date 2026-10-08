@@ -100,13 +100,15 @@ export class DiscordLateReportService {
         await this.markFailed(row.id, 'corrupt periodKey');
         continue;
       }
-      // Late PMS card uses the SAME compact shape as a Daily Digest
-      // row: project name + hours only, color by `> 6`. Snapshot may
-      // still carry text/submittedAt from pre-change rows — we read
-      // just the two fields we need and ignore the rest.
-      const embed = this.embeds.compactReportCard({
+      // Late PMS card: `⏰ Late report — {name}` title, 🕒 Hours +
+      // 📅 For day fields, color driven by the shared daily `>6`
+      // comparator. Snapshot may still carry text/submittedAt from
+      // pre-change rows — we read only projectName, hours and
+      // reportDate and ignore the rest.
+      const embed = this.embeds.lateReportCard({
         projectName: payload.projectName,
         hours: payload.hours,
+        reportDate: payload.reportDate,
       });
       const resp = await this.bot.postMessage({
         channelId: profile.pmsChannelId!,

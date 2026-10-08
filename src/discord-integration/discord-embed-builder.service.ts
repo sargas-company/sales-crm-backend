@@ -91,10 +91,9 @@ export class DiscordEmbedBuilderService {
   }
 
   /**
-   * Single compact PMS report card — the shared shape used by the
-   * 19:00 digest row AND by every late-report PMS message. Does
-   * NOT render the report body, submitted-at, author, meeting URL
-   * or any of the detailed project-channel fields.
+   * Single compact PMS report card — one row of the 19:00 digest.
+   * Does NOT render the report body, submitted-at, author, meeting
+   * URL or any of the detailed project-channel fields.
    */
   compactReportCard(args: {
     projectName: string;
@@ -104,6 +103,30 @@ export class DiscordEmbedBuilderService {
       title: args.projectName,
       description: `${args.hours} hours`,
       color: reportColorForHours(args.hours, DAILY_REPORT_HOURS_THRESHOLD),
+    });
+  }
+
+  /**
+   * Late-report PMS card. Shares the color rule with the daily
+   * digest (`hours > 6` → LEGACY_BLUE, else LEGACY_RED) but keeps
+   * its own 2-field shape with the "For day" date so a reader can
+   * tell what day the late submission was for.
+   *
+   * Deliberately omits Submitted at / Details / author / full
+   * report text — the PMS surface should never carry the body.
+   */
+  lateReportCard(args: {
+    projectName: string;
+    hours: number;
+    reportDate: Date;
+  }): DiscordEmbed {
+    return normaliseEmbed({
+      title: `⏰ Late report — ${args.projectName}`,
+      color: reportColorForHours(args.hours, DAILY_REPORT_HOURS_THRESHOLD),
+      fields: [
+        { name: '🕒 Hours', value: String(args.hours), inline: true },
+        { name: '📅 For day', value: this.iso(args.reportDate), inline: true },
+      ],
     });
   }
 
@@ -163,8 +186,8 @@ export class DiscordEmbedBuilderService {
           `${o.firstName} ${o.lastName}`,
         description: `${o.type} (till ${this.iso(o.endDate)})`,
         color:
-          o.type === 'VACATION' ? this.COLOR_BLUE :
-          o.type === 'SICK_LEAVE' ? this.COLOR_RED : 0x95a5a6,
+          o.type === 'VACATION' ? LEGACY_BLUE :
+          o.type === 'SICK_LEAVE' ? LEGACY_RED : 0x95a5a6,
       }),
     );
   }

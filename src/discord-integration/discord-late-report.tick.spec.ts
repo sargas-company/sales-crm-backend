@@ -1,11 +1,14 @@
 /**
  * DiscordLateReportService.tick — ensures that the PMS payload is
- * the shared compactReportCard shape:
- *   • exactly title + description + color + nothing else;
- *   • palette is LEGACY_BLUE / LEGACY_RED (never YELLOW / green);
- *   • strict `hours > 6` matches the daily digest comparator;
- *   • snapshot carrying `text` / `submittedAt` fields is tolerated —
- *     the compact builder reads only projectName + hours;
+ * the dedicated `lateReportCard` shape:
+ *   • title `⏰ Late report — {projectName}`;
+ *   • exactly two inline fields: 🕒 Hours + 📅 For day;
+ *   • no description, no Submitted at, no Details, no body text;
+ *   • palette is LEGACY_BLUE / LEGACY_RED (shared `hours > 6`
+ *     comparator — the SAME threshold the daily digest uses);
+ *   • snapshot carrying extra text / submittedAt fields is
+ *     tolerated — the builder reads only projectName + hours +
+ *     reportDate;
  *   • already-SENT rows are not re-sent;
  *   • a successful send flips the row to SENT with `attempts += 1`.
  */
@@ -77,7 +80,7 @@ describe('DiscordLateReportService.tick — compact PMS card', () => {
     return { call: call[0], embed: call[0].embeds[0] };
   };
 
-  it('sends a compact card with LEGACY_BLUE for hours > 6', async () => {
+  it('sends a late card with LEGACY_BLUE for hours > 6, Hours + For day only', async () => {
     const { svc, postMessage } = makeStubs([
       {
         id: 'row-blue',
@@ -88,14 +91,28 @@ describe('DiscordLateReportService.tick — compact PMS card', () => {
     ]);
     await svc.tick();
     expect(postMessage).toHaveBeenCalledTimes(1);
-    const { embed } = firstEmbed(postMessage);
+    const { embed } = firstEmbed(postMessage) as unknown as {
+      embed: {
+        color: number;
+        title: string;
+        description?: string;
+        fields?: Array<{ name: string; value: string; inline?: boolean }>;
+      };
+    };
     expect(embed.color).toBe(LEGACY_BLUE);
-    expect(embed.title).toBe('Legacy Snapshot Project');
-    expect(embed.description).toBe('9 hours');
-    expect(embed.fields).toBeUndefined();
+    expect(embed.title).toBe('⏰ Late report — Legacy Snapshot Project');
+    expect(embed.description).toBeUndefined();
+    expect(embed.fields?.map((f) => f.name)).toEqual([
+      '🕒 Hours',
+      '📅 For day',
+    ]);
+    expect(
+      embed.fields?.find((f) => f.name === '📅 For day')?.value,
+    ).toBe('2026-11-10');
     const asJson = JSON.stringify(embed);
     expect(asJson).not.toContain('confidential body');
     expect(asJson).not.toContain('Submitted at');
+    expect(asJson).not.toContain('Details');
   });
 
   it('sends LEGACY_RED when hours ≤ 6 (6.00 → red, strict `>`)', async () => {
@@ -108,7 +125,9 @@ describe('DiscordLateReportService.tick — compact PMS card', () => {
       },
     ]);
     await svc.tick();
-    const { embed } = firstEmbed(postMessage);
+    const { embed } = firstEmbed(postMessage) as unknown as {
+      embed: { color: number };
+    };
     expect(embed.color).toBe(LEGACY_RED);
   });
 
@@ -154,28 +173,53 @@ describe('DiscordLateReportService.tick — compact PMS card', () => {
     expect(updateCall[0].data.attempts).toBe(3);
   });
 
-  it('tolerates both MANUAL-origin and Discord-origin snapshots (same compact shape)', async () => {
-    const minimalSnapshot = JSON.stringify({
+  it('tolerates both MANUAL-origin and Discord-origin snapshots (same late shape)', async () => {
+    const manualSnapshot = JSON.stringify({
       projectName: 'Minimal Manual',
       hours: 7,
       reportDate: '2026-11-10T00:00:00.000Z',
       text: '',
       submittedAt: '2026-11-10T19:30:00.000Z',
     });
-    const { svc, postMessage } = makeStubs([
-      {
-        id: 'row-manual',
-        status: DiscordDeliveryStatus.PENDING,
-        attempts: 0,
-        periodKey: minimalSnapshot,
-      },
+    const discordSnapshot = legacySnapshotFor(7);
+    const makeFor = (periodKey: string) =>
+      makeStubs([
+        {
+          id: 'row',
+          status: DiscordDeliveryStatus.PENDING,
+          attempts: 0,
+          periodKey,
+        },
+      ]);
+    const first = makeFor(manualSnapshot);
+    const second = makeFor(discordSnapshot);
+    await first.svc.tick();
+    await second.svc.tick();
+    const manual = firstEmbed(first.postMessage) as unknown as {
+      embed: {
+        color: number;
+        title: string;
+        fields?: Array<{ name: string; value: string }>;
+      };
+    };
+    const discord = firstEmbed(second.postMessage) as unknown as {
+      embed: {
+        color: number;
+        title: string;
+        fields?: Array<{ name: string; value: string }>;
+      };
+    };
+    // Same color, same field names, same ordering.
+    expect(manual.embed.color).toBe(LEGACY_BLUE);
+    expect(discord.embed.color).toBe(LEGACY_BLUE);
+    expect(manual.embed.fields?.map((f) => f.name)).toEqual([
+      '🕒 Hours',
+      '📅 For day',
     ]);
-    await svc.tick();
-    const { embed } = firstEmbed(postMessage);
-    expect(embed.title).toBe('Minimal Manual');
-    expect(embed.description).toBe('7 hours');
-    expect(embed.color).toBe(LEGACY_BLUE);
-    expect(embed.fields).toBeUndefined();
+    expect(discord.embed.fields?.map((f) => f.name)).toEqual([
+      '🕒 Hours',
+      '📅 For day',
+    ]);
   });
 
   it('posts with allowed_mentions pinned so project name cannot ping', async () => {
