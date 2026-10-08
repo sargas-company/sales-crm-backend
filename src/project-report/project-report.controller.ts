@@ -22,6 +22,7 @@ import {
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PermissionGuard } from '../auth/permission.guard';
 import { RequirePermission } from '../auth/permission.decorator';
+import { BulkDeleteProjectReportsDto } from './dto/bulk-delete-project-reports.dto';
 import { CreateProjectReportDto } from './dto/create-project-report.dto';
 import { ListProjectReportsDto } from './dto/list-project-reports.dto';
 import { UpdateProjectReportDto } from './dto/update-project-report.dto';
@@ -73,5 +74,16 @@ export class ProjectReportController {
   @ApiOperation({ summary: 'Delete project report' })
   remove(@Param('id') id: string, @Request() req) {
     return this.reports.remove(id, req.user);
+  }
+
+  @Post('bulk-delete')
+  @RequirePermission('project_reports:delete')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Bulk-delete project reports (Owner / Admin Manager only)',
+  })
+  @ApiResponse({ status: 200, description: '{ deleted: number }' })
+  bulkDelete(@Body() dto: BulkDeleteProjectReportsDto, @Request() req) {
+    return this.reports.bulkRemove(dto.ids, req.user);
   }
 }

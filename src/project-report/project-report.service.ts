@@ -203,6 +203,27 @@ export class ProjectReportService {
     await this.prisma.projectReport.delete({ where: { id } });
   }
 
+  /**
+   * Bulk delete under the same privilege rule as single-remove. Hits
+   * the DB with one `deleteMany` so the operation is atomic — if a
+   * caller passes stale ids (ones already gone), `deleteMany` just
+   * skips them and reports the actual deleted count rather than
+   * throwing. The caller sees how many of the requested ids were
+   * live when the delete fired.
+   */
+  async bulkRemove(ids: string[], user: AuthUser): Promise<{ deleted: number }> {
+    if (!scopePolicy.canViewAnyProject(user)) {
+      throw new ForbiddenException(
+        'Only an Owner / Admin Manager can delete a project report.',
+      );
+    }
+    if (ids.length === 0) return { deleted: 0 };
+    const result = await this.prisma.projectReport.deleteMany({
+      where: { id: { in: ids } },
+    });
+    return { deleted: result.count };
+  }
+
   // ── helpers ────────────────────────────────────────────────────────────
 
   /**
