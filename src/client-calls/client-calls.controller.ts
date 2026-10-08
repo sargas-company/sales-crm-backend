@@ -24,6 +24,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PermissionGuard } from '../auth/permission.guard';
 import { RequirePermission } from '../auth/permission.decorator';
 import { ClientCallsService } from './client-calls.service';
+import { BulkDeleteClientCallsDto } from './dto/bulk-delete-client-calls.dto';
 import { CreateClientCallDto } from './dto/create-client-call.dto';
 import { ListClientCallsDto } from './dto/list-client-calls.dto';
 import { UpdateClientCallDto } from './dto/update-client-call.dto';
@@ -79,5 +80,14 @@ export class ClientCallsController {
   @ApiResponse({ status: 404, description: 'Not found' })
   remove(@Param('id') id: string) {
     return this.clientCallsService.remove(id);
+  }
+
+  @Post('bulk-delete')
+  @RequirePermission('client_calls:delete')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Bulk-delete client calls' })
+  @ApiResponse({ status: 200, description: '{ deleted: number }' })
+  bulkDelete(@Body() dto: BulkDeleteClientCallsDto) {
+    return this.clientCallsService.bulkRemove(dto.ids);
   }
 }

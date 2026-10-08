@@ -21,6 +21,7 @@ import {
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PermissionGuard } from '../auth/permission.guard';
 import { RequirePermission } from '../auth/permission.decorator';
+import { BulkDeleteJobPostsDto } from './dto/bulk-delete-job-posts.dto';
 import { ConvertToProposalDto } from './dto/convert-to-proposal.dto';
 import { JobPostStatsDto } from './dto/job-post-stats.dto';
 import { ListJobPostsDto } from './dto/list-job-posts.dto';
@@ -85,5 +86,14 @@ export class JobPostController {
   @ApiOperation({ summary: 'Delete job post by id' })
   remove(@Param('id') id: string) {
     return this.jobPostService.remove(id);
+  }
+
+  @Post('bulk-delete')
+  @RequirePermission('job_posts:delete')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Bulk-delete job posts' })
+  @ApiResponse({ status: 200, description: '{ deleted: number }' })
+  bulkDelete(@Body() dto: BulkDeleteJobPostsDto) {
+    return this.jobPostService.bulkRemove(dto.ids);
   }
 }

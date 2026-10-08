@@ -33,6 +33,7 @@ import { PermissionGuard } from '../auth/permission.guard';
 import { RequirePermission } from '../auth/permission.decorator';
 import { IncomingFileData } from '../storage';
 import { ClientRequestsService } from './client-requests.service';
+import { BulkDeleteClientRequestsDto } from './dto/bulk-delete-client-requests.dto';
 import { CreateClientRequestDto } from './dto/create-client-request.dto';
 import { ListClientRequestsDto } from './dto/list-client-requests.dto';
 import { UpdateClientRequestDto } from './dto/update-client-request.dto';
@@ -121,6 +122,20 @@ export class ClientRequestsController {
   @ApiResponse({ status: 404, description: 'Not found' })
   remove(@Param('id') id: string) {
     return this.service.remove(id);
+  }
+
+  @Post('client-requests/bulk-delete')
+  @ApiBearerAuth('jwt')
+  @UseGuards(JwtAuthGuard, PermissionGuard)
+  @RequirePermission('client_requests:delete')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'Bulk-delete client requests (cascades to dependent ClientCalls)',
+  })
+  @ApiResponse({ status: 200, description: '{ deleted: number }' })
+  bulkDelete(@Body() dto: BulkDeleteClientRequestsDto) {
+    return this.service.bulkRemove(dto.ids);
   }
 
   @Get('client-requests/:id/files')

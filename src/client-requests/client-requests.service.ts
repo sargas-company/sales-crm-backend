@@ -105,6 +105,43 @@ export class ClientRequestsService {
     await this.prisma.clientRequest.delete({ where: { id } });
   }
 
+  /**
+   * Bulk delete under the same permission as single-remove. B2 folder
+   * cleanup runs per-row with best-effort — a failed storage delete
+   * does NOT block the DB cleanup (storage leak is strictly better
+   * than orphaned rows). Cascade on `ClientCall → ClientRequest`
+   * removes dependent calls automatically. Stale ids silently drop.
+   */
+  async bulkRemove(ids: string[]): Promise<{ deleted: number }> {
+    if (ids.length === 0) return { deleted: 0 };
+    const rows = await this.prisma.clientRequest.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, files: true },
+    });
+    await Promise.all(
+      rows.map(async (row) => {
+        const storedFiles = (row.files as unknown) as StoredFileMetadata[];
+        const folderPrefix =
+          storedFiles.length > 0
+            ? storedFiles[0].fileName.split('/')[0] + '/'
+            : `${row.id}/`;
+        try {
+          await this.storage.deleteFolder(
+            StorageBucket.CLIENT_REQUESTS,
+            folderPrefix,
+          );
+        } catch {
+          /* swallow — storage leak is acceptable; DB row removal is
+             the primary guarantee. */
+        }
+      }),
+    );
+    const result = await this.prisma.clientRequest.deleteMany({
+      where: { id: { in: rows.map((r) => r.id) } },
+    });
+    return { deleted: result.count };
+  }
+
   async getFilesDownloadUrls(id: string): Promise<{ originalName: string; url: string; mimetype: string; size: number }[]> {
     const request = await this.findOne(id);
     const storedFiles = (request.files as unknown) as StoredFileMetadata[];

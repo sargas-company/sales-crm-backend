@@ -200,4 +200,17 @@ export class ClientCallsService {
     if (!call) throw new NotFoundException('ClientCall not found');
     return this.prisma.clientCall.delete({ where: { id } });
   }
+
+  /**
+   * Bulk delete under the same permission as single-remove. Stale ids
+   * are silently skipped — the caller sees how many rows actually
+   * matched via `deleted`.
+   */
+  async bulkRemove(ids: string[]): Promise<{ deleted: number }> {
+    if (ids.length === 0) return { deleted: 0 };
+    const result = await this.prisma.clientCall.deleteMany({
+      where: { id: { in: ids } },
+    });
+    return { deleted: result.count };
+  }
 }

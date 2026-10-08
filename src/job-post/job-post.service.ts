@@ -307,6 +307,19 @@ export class JobPostService {
     await this.prisma.jobPost.delete({ where: { id } });
   }
 
+  /**
+   * Bulk delete under the same permission as single-remove. Stale
+   * ids are silently skipped — the response reports the actual
+   * matched row count via `deleted`.
+   */
+  async bulkRemove(ids: string[]): Promise<{ deleted: number }> {
+    if (ids.length === 0) return { deleted: 0 };
+    const result = await this.prisma.jobPost.deleteMany({
+      where: { id: { in: ids } },
+    });
+    return { deleted: result.count };
+  }
+
   async convertToProposal(
     id: string,
     dto: ConvertToProposalDto,
