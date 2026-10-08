@@ -306,6 +306,12 @@ model Lead {
   firstName   String?
   lastName    String?
   companyName String?
+  // Contact fields — nullable, no UNIQUE: the same person may show
+  // up across multiple leads (re-engaging under a new deal). Phone
+  // is stored in E.164 after frontend-side normalisation; email is
+  // trimmed + lower-cased in the service layer.
+  email       String?
+  phone       String?
   status      LeadStatus @default(conversation_ongoing)
   clientType  ClientType?
   rate       Int?

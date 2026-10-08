@@ -21,6 +21,8 @@ export class LeadService {
         firstName: dto.firstName,
         lastName: dto.lastName,
         companyName: dto.companyName,
+        email: dto.email ?? null,
+        phone: dto.phone ?? null,
         clientType: dto.clientType,
         rate: dto.rate,
         location: dto.location,
@@ -50,6 +52,10 @@ export class LeadService {
             { firstName: { contains: dto.search, mode: 'insensitive' } },
             { lastName: { contains: dto.search, mode: 'insensitive' } },
             { companyName: { contains: dto.search, mode: 'insensitive' } },
+            // Email + phone enter the same insensitive-contains lane so
+            // a manager can paste a snippet of either and find the lead.
+            { email: { contains: dto.search, mode: 'insensitive' } },
+            { phone: { contains: dto.search, mode: 'insensitive' } },
           ],
         }
       : {};
@@ -87,6 +93,10 @@ export class LeadService {
         return { rate: { sort: dir, nulls: 'last' } };
       case LeadSortBy.location:
         return { location: { sort: dir, nulls: 'last' } };
+      case LeadSortBy.email:
+        return { email: { sort: dir, nulls: 'last' } };
+      case LeadSortBy.phone:
+        return { phone: { sort: dir, nulls: 'last' } };
       case LeadSortBy.repliedAt:
         return { repliedAt: dir };
       case LeadSortBy.createdAt:
@@ -128,6 +138,11 @@ export class LeadService {
         firstName: dto.firstName,
         lastName: dto.lastName,
         companyName: dto.companyName,
+        // `null` from the DTO clears the stored value; `undefined`
+        // (field absent) leaves it untouched — standard partial
+        // update semantics.
+        ...(dto.email !== undefined ? { email: dto.email } : {}),
+        ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
         status: dto.status,
         clientType: dto.clientType,
         rate: dto.rate,

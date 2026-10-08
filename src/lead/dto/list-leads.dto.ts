@@ -16,6 +16,8 @@ export enum LeadSortBy {
   status = 'status',
   rate = 'rate',
   location = 'location',
+  email = 'email',
+  phone = 'phone',
   repliedAt = 'repliedAt',
   createdAt = 'createdAt',
 }
@@ -55,7 +57,7 @@ export class ListLeadsDto {
 
   @ApiPropertyOptional({
     description:
-      'Partial, case-insensitive match against first/last/company name.',
+      'Partial, case-insensitive match against first/last/company name, email, or phone.',
   })
   @IsOptional()
   @IsString()
