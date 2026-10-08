@@ -6,13 +6,14 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsUrl,
   Matches,
   MaxLength,
   Min,
   MinLength,
 } from 'class-validator';
 
-import { ClientType } from '@prisma/client';
+import { ClientType, LeadStatus, LeadTemperature } from '@prisma/client';
 
 /**
  * E.164 phone format — a `+`, a non-zero country-code digit, up to
@@ -96,4 +97,32 @@ export class CreateLeadDto {
   @IsString()
   @MinLength(1)
   location?: string;
+
+  @ApiPropertyOptional({ enum: LeadStatus, default: LeadStatus.NEW })
+  @IsOptional()
+  @IsEnum(LeadStatus)
+  status?: LeadStatus;
+
+  @ApiPropertyOptional({ enum: LeadTemperature })
+  @IsOptional()
+  @IsEnum(LeadTemperature)
+  temperature?: LeadTemperature | null;
+
+  @ApiPropertyOptional({ example: 'Upwork' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  source?: string | null;
+
+  @ApiPropertyOptional({ example: 'https://upwork.com/freelancers/~abc' })
+  @IsOptional()
+  @IsUrl({ require_protocol: true, require_tld: true })
+  @MaxLength(500)
+  profileUrl?: string | null;
+
+  @ApiPropertyOptional({ example: 'Followed up on 2026-10-01, meeting Tue.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(4000)
+  notes?: string | null;
 }

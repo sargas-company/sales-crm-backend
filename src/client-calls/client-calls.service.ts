@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { ClientCallClientType, Prisma } from '@prisma/client';
+import { AuditResult, ClientCallClientType, Prisma } from '@prisma/client';
 
+import { AuditEventService } from '../audit-event/audit-event.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateClientCallDto } from './dto/create-client-call.dto';
 import {
@@ -53,23 +54,53 @@ function enrichCall<T extends { scheduledAt: Date; clientTimezone: string }>(
 
 @Injectable()
 export class ClientCallsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditEventService,
+  ) {}
 
   async create(dto: CreateClientCallDto, createdById: string) {
+    // Exactly-one-owner invariant. The DB CHECK constraint
+    // `ClientCall_exactly_one_owner` is the final arbiter; this check
+    // raises a friendlier 400 before the SQL error surfaces, and
+    // additionally refuses extraneous owner ids that don't match the
+    // declared `clientType` discriminator.
+    const providedIds = {
+      leadId: dto.leadId ?? null,
+      crmClientId: dto.crmClientId ?? null,
+      clientRequestId: dto.clientRequestId ?? null,
+    };
+    const providedCount = Object.values(providedIds).filter((v) => !!v).length;
+    if (providedCount !== 1) {
+      throw new BadRequestException(
+        'Exactly one of leadId / crmClientId / clientRequestId must be set',
+      );
+    }
+    const expectedKey =
+      dto.clientType === ClientCallClientType.lead
+        ? 'leadId'
+        : dto.clientType === ClientCallClientType.client
+          ? 'crmClientId'
+          : 'clientRequestId';
+    if (!providedIds[expectedKey]) {
+      throw new BadRequestException(
+        `clientType=${dto.clientType} but ${expectedKey} is missing`,
+      );
+    }
+
     if (dto.clientType === ClientCallClientType.lead) {
-      if (!dto.leadId)
-        throw new BadRequestException('leadId is required for type lead');
       const lead = await this.prisma.lead.findUnique({
-        where: { id: dto.leadId },
+        where: { id: dto.leadId! },
       });
       if (!lead) throw new NotFoundException('Lead not found');
+    } else if (dto.clientType === ClientCallClientType.client) {
+      const c = await this.prisma.client.findUnique({
+        where: { id: dto.crmClientId! },
+      });
+      if (!c) throw new NotFoundException('Client not found');
     } else {
-      if (!dto.clientRequestId)
-        throw new BadRequestException(
-          'clientRequestId is required for type client_request',
-        );
       const cr = await this.prisma.clientRequest.findUnique({
-        where: { id: dto.clientRequestId },
+        where: { id: dto.clientRequestId! },
       });
       if (!cr) throw new NotFoundException('ClientRequest not found');
     }
@@ -77,8 +108,16 @@ export class ClientCallsService {
     const call = await this.prisma.clientCall.create({
       data: {
         clientType: dto.clientType,
-        leadId: dto.leadId ?? null,
-        clientRequestId: dto.clientRequestId ?? null,
+        leadId:
+          dto.clientType === ClientCallClientType.lead ? dto.leadId! : null,
+        crmClientId:
+          dto.clientType === ClientCallClientType.client
+            ? dto.crmClientId!
+            : null,
+        clientRequestId:
+          dto.clientType === ClientCallClientType.client_request
+            ? dto.clientRequestId!
+            : null,
         createdById,
         callTitle: dto.callTitle,
         meetingUrl: dto.meetingUrl ?? null,
@@ -88,7 +127,77 @@ export class ClientCallsService {
       },
     });
 
+    await this.emitCallCreatedActivity(call, createdById);
+
     return enrichCall(call);
+  }
+
+  /**
+   * Write an append-only `*.call_created` AuditEvent on the owner
+   * entity so the Lead / Client / ClientRequest timeline surfaces
+   * the call. Nothing from the call body (title, notes, meeting
+   * link) is persisted on the event — only shape markers.
+   */
+  private async emitCallCreatedActivity(
+    call: {
+      id: string;
+      clientType: ClientCallClientType;
+      leadId: string | null;
+      crmClientId: string | null;
+      clientRequestId: string | null;
+      scheduledAt: Date;
+    },
+    actorUserId: string,
+  ) {
+    if (call.clientType === ClientCallClientType.lead && call.leadId) {
+      await this.audit.recordSafe({
+        actorUserId,
+        domain: 'leads',
+        action: 'lead.call_created',
+        targetType: 'Lead',
+        targetId: call.leadId,
+        targetHref: `/leads/preview/${call.leadId}`,
+        result: AuditResult.SUCCESS,
+        metadata: {
+          callId: call.id,
+          scheduledAt: call.scheduledAt.toISOString(),
+        },
+      });
+    } else if (
+      call.clientType === ClientCallClientType.client &&
+      call.crmClientId
+    ) {
+      await this.audit.recordSafe({
+        actorUserId,
+        domain: 'clients',
+        action: 'client.call_created',
+        targetType: 'Client',
+        targetId: call.crmClientId,
+        targetHref: `/clients/${call.crmClientId}`,
+        result: AuditResult.SUCCESS,
+        metadata: {
+          callId: call.id,
+          scheduledAt: call.scheduledAt.toISOString(),
+        },
+      });
+    } else if (
+      call.clientType === ClientCallClientType.client_request &&
+      call.clientRequestId
+    ) {
+      await this.audit.recordSafe({
+        actorUserId,
+        domain: 'client_requests',
+        action: 'client_request.call_created',
+        targetType: 'ClientRequest',
+        targetId: call.clientRequestId,
+        targetHref: `/client-requests/preview/${call.clientRequestId}`,
+        result: AuditResult.SUCCESS,
+        metadata: {
+          callId: call.id,
+          scheduledAt: call.scheduledAt.toISOString(),
+        },
+      });
+    }
   }
 
   async findAll(dto: ListClientCallsDto) {
@@ -113,6 +222,9 @@ export class ClientCallsService {
         include: {
           lead: {
             select: { id: true, firstName: true, lastName: true, companyName: true },
+          },
+          crmClient: {
+            select: { id: true, firstName: true, lastName: true, company: true },
           },
           clientRequest: {
             select: { id: true, name: true, company: true },
@@ -157,6 +269,9 @@ export class ClientCallsService {
       include: {
         lead: {
           select: { id: true, firstName: true, lastName: true, companyName: true },
+        },
+        crmClient: {
+          select: { id: true, firstName: true, lastName: true, company: true },
         },
         clientRequest: {
           select: { id: true, name: true, company: true },

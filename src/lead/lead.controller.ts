@@ -9,12 +9,12 @@ import {
   Patch,
   Post,
   Query,
+  Request,
   UseGuards,
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiOperation,
-  ApiQuery,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
@@ -38,19 +38,34 @@ export class LeadController {
   @RequirePermission('leads:create')
   @ApiOperation({ summary: 'Create a standalone lead (without proposal)' })
   @ApiResponse({ status: 201, description: 'Lead created' })
-  create(@Body() dto: CreateLeadDto) {
-    return this.leadService.create(dto);
+  create(@Body() dto: CreateLeadDto, @Request() req) {
+    return this.leadService.create(dto, req.user);
   }
 
   @Get()
   @RequirePermission('leads:view')
   @ApiOperation({ summary: 'Get paginated / searched / sorted leads' })
-  @ApiResponse({
-    status: 200,
-    description: 'Paginated list of leads',
-  })
   findAll(@Query() dto: ListLeadsDto) {
     return this.leadService.findAll(dto);
+  }
+
+  @Get('duplicates')
+  @RequirePermission('leads:view')
+  @ApiOperation({
+    summary: 'Non-blocking duplicate hint — email and/or phone, excludeId optional.',
+  })
+  findDuplicates(
+    @Query('email') email?: string,
+    @Query('phone') phone?: string,
+    @Query('excludeId') excludeId?: string,
+  ) {
+    const normEmail = email ? email.trim().toLowerCase() || null : null;
+    const normPhone = phone ? phone.replace(/\s+/g, '') || null : null;
+    return this.leadService.findDuplicates({
+      email: normEmail,
+      phone: normPhone,
+      excludeId,
+    });
   }
 
   @Get(':id')
@@ -62,22 +77,27 @@ export class LeadController {
     return this.leadService.findOne(id);
   }
 
+  @Get(':id/activity')
+  @RequirePermission('leads:view')
+  @ApiOperation({ summary: 'Timeline of audit events emitted for this lead' })
+  activity(@Param('id') id: string) {
+    return this.leadService.activity(id);
+  }
+
   @Delete(':id')
   @RequirePermission('leads:delete')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Delete lead' })
-  @ApiResponse({ status: 204, description: 'Lead deleted' })
-  @ApiResponse({ status: 404, description: 'Lead not found' })
-  remove(@Param('id') id: string) {
-    return this.leadService.remove(id);
+  remove(@Param('id') id: string, @Request() req) {
+    return this.leadService.remove(id, req.user);
   }
 
   @Patch(':id')
   @RequirePermission('leads:update')
-  @ApiOperation({ summary: 'Update lead' })
-  @ApiResponse({ status: 200, description: 'Lead updated' })
-  @ApiResponse({ status: 404, description: 'Lead not found' })
-  update(@Param('id') id: string, @Body() dto: UpdateLeadDto) {
-    return this.leadService.update(id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateLeadDto,
+    @Request() req,
+  ) {
+    return this.leadService.update(id, dto, req.user);
   }
 }

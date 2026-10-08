@@ -25,10 +25,20 @@ import { CreateLeadDto } from './dto/create-lead.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
 import { LeadSortBy, LeadSortDirection, ListLeadsDto } from './dto/list-leads.dto';
 import { LeadService } from './lead.service';
+import { AuditEventService } from '../audit-event/audit-event.service';
+
+const auditStub = {
+  recordSafe: async () => undefined,
+  record: async () => undefined,
+} as unknown as AuditEventService;
+const stubUser = {
+  id: '00000000-0000-0000-0000-000000000001',
+  permissions: new Set<string>(['leads:create', 'leads:update']),
+};
 
 const prisma = new PrismaClient();
 const prismaSvc = prisma as unknown as PrismaService;
-const svc = new LeadService(prismaSvc);
+const svc = new LeadService(prismaSvc, auditStub);
 
 const TAG = `lead-contact-${randomUUID().slice(0, 8)}`;
 const createdIds: string[] = [];
@@ -145,17 +155,17 @@ describe('LeadService — persistence + search + sort', () => {
       lastName: `${TAG}-a`,
       email: '  ALICE@acme.com  ',
       phone: ' +1 415 555 0123 ',
-    } as unknown as CreateLeadDto);
+    } as unknown as CreateLeadDto, stubUser);
     const b = await svc.create({
       firstName: 'Bob',
       lastName: `${TAG}-b`,
       email: 'bob@example.io',
-    } as unknown as CreateLeadDto);
+    } as unknown as CreateLeadDto, stubUser);
     const c = await svc.create({
       firstName: 'Carl',
       lastName: `${TAG}-c`,
       phone: '+380991234567',
-    } as unknown as CreateLeadDto);
+    } as unknown as CreateLeadDto, stubUser);
     aId = a.id;
     bId = b.id;
     cId = c.id;
@@ -179,7 +189,7 @@ describe('LeadService — persistence + search + sort', () => {
 
   it('update with absent key leaves field untouched', async () => {
     const before = await prisma.lead.findUnique({ where: { id: bId } });
-    await svc.update(bId, { rate: 42 } as unknown as UpdateLeadDto);
+    await svc.update(bId, { rate: 42 } as unknown as UpdateLeadDto, stubUser);
     const after = await prisma.lead.findUnique({ where: { id: bId } });
     expect(after?.email).toBe(before?.email);
     expect(after?.phone).toBe(before?.phone);
@@ -187,14 +197,14 @@ describe('LeadService — persistence + search + sort', () => {
   });
 
   it('update with null clears email/phone', async () => {
-    await svc.update(aId, { email: null, phone: null } as unknown as UpdateLeadDto);
+    await svc.update(aId, { email: null, phone: null } as unknown as UpdateLeadDto, stubUser);
     const after = await prisma.lead.findUnique({ where: { id: aId } });
     expect(after?.email).toBeNull();
     expect(after?.phone).toBeNull();
   });
 
   it('update with new string writes it', async () => {
-    await svc.update(bId, { phone: '+819012345678' } as unknown as UpdateLeadDto);
+    await svc.update(bId, { phone: '+819012345678' } as unknown as UpdateLeadDto, stubUser);
     const after = await prisma.lead.findUnique({ where: { id: bId } });
     expect(after?.phone).toBe('+819012345678');
   });

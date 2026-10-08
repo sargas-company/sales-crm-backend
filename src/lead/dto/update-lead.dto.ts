@@ -6,13 +6,14 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsUrl,
   Matches,
   MaxLength,
   Min,
   MinLength,
 } from 'class-validator';
 
-import { ClientType, LeadStatus } from '@prisma/client';
+import { ClientType, LeadStatus, LeadTemperature } from '@prisma/client';
 
 const E164_RE = /^\+[1-9]\d{1,14}$/;
 
@@ -73,7 +74,7 @@ export class UpdateLeadDto {
   })
   phone?: string | null;
 
-  @ApiPropertyOptional({ enum: LeadStatus, example: LeadStatus.trial })
+  @ApiPropertyOptional({ enum: LeadStatus })
   @IsOptional()
   @IsEnum(LeadStatus)
   status?: LeadStatus;
@@ -94,4 +95,27 @@ export class UpdateLeadDto {
   @IsString()
   @MinLength(1)
   location?: string;
+
+  @ApiPropertyOptional({ enum: LeadTemperature, nullable: true })
+  @IsOptional()
+  @IsEnum(LeadTemperature)
+  temperature?: LeadTemperature | null;
+
+  @ApiPropertyOptional({ example: 'Upwork' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  source?: string | null;
+
+  @ApiPropertyOptional({ example: 'https://linkedin.com/in/jane' })
+  @IsOptional()
+  @IsUrl({ require_protocol: true, require_tld: true })
+  @MaxLength(500)
+  profileUrl?: string | null;
+
+  @ApiPropertyOptional({ example: 'Follow up next Tuesday' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(4000)
+  notes?: string | null;
 }

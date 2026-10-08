@@ -10,6 +10,7 @@ import { AccountModule } from './account/account.module';
 import { ClientCallsModule } from './client-calls/client-calls.module';
 import { AuthModule } from './auth/auth.module';
 import { ClientRequestsModule } from './client-requests/client-requests.module';
+import { ClientModule } from './client/client.module';
 import { CounterpartyModule } from './counterparty/counterparty.module';
 import { InvoiceModule } from './invoice/invoice.module';
 import { SettingsModule } from './settings/settings.module';
@@ -74,6 +75,7 @@ import { DiscordIntegrationModule } from './discord-integration/discord-integrat
     ClientRequestsModule,
     InvoiceModule,
     CounterpartyModule,
+    ClientModule,
     ClientCallsModule,
     SettingsModule,
     VibeWorkerWebhookModule,

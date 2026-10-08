@@ -29,6 +29,7 @@ export class ProjectService {
 
   async create(dto: CreateProjectDto, user: AuthUser) {
     this.assertDateRangeValid(dto.startDate, dto.endDate);
+    await this.assertCrmClientExists(dto.crmClientId);
     if (dto.clientId) {
       await this.assertClientExists(dto.clientId);
     }
@@ -41,6 +42,7 @@ export class ProjectService {
         data: {
           name: dto.name,
           clientId: dto.clientId ?? null,
+          crmClientId: dto.crmClientId,
           status: dto.status ?? 'planned',
           description: dto.description,
           startDate: dto.startDate ? new Date(dto.startDate) : null,
@@ -80,6 +82,13 @@ export class ProjectService {
         status: created.status,
         memberCount: dto.memberIds?.length ?? 0,
       },
+    });
+    await this.emitClientProjectLinkActivity({
+      actorUserId: user.id,
+      projectId: created.id,
+      projectName: created.name,
+      beforeClientId: null,
+      afterClientId: created.crmClientId,
     });
     return created;
   }
@@ -152,6 +161,9 @@ export class ProjectService {
     if (dto.clientId !== undefined && dto.clientId !== null) {
       await this.assertClientExists(dto.clientId);
     }
+    if (dto.crmClientId !== undefined && dto.crmClientId !== null) {
+      await this.assertCrmClientExists(dto.crmClientId);
+    }
     if (dto.memberIds !== undefined) {
       await this.assertEmployeesExist(dto.memberIds ?? []);
     }
@@ -183,6 +195,9 @@ export class ProjectService {
         data: {
           ...(dto.name !== undefined ? { name: dto.name } : {}),
           ...(dto.clientId !== undefined ? { clientId: dto.clientId } : {}),
+          ...(dto.crmClientId !== undefined
+            ? { crmClientId: dto.crmClientId }
+            : {}),
           ...(dto.status !== undefined ? { status: dto.status } : {}),
           ...(dto.description !== undefined
             ? { description: dto.description }
@@ -274,7 +289,80 @@ export class ProjectService {
       changes: changes ?? null,
       metadata: membersDiff ? { members: membersDiff } : undefined,
     });
+    if (dto.crmClientId !== undefined) {
+      await this.emitClientProjectLinkActivity({
+        actorUserId: user.id,
+        projectId: id,
+        projectName: updated.name,
+        beforeClientId: beforeFull.crmClientId ?? null,
+        afterClientId: updated.crmClientId ?? null,
+      });
+    }
     return updated;
+  }
+
+  /**
+   * Append-only "project linked / unlinked / changed" events on the
+   * Client timeline. Fired on create() and whenever update() touches
+   * crmClientId. Writes to the OWNER client row; a change (A → B)
+   * fires two events — unlinked on A, linked on B — so both
+   * timelines reflect reality. Nothing beyond the Project id + name
+   * ends up in metadata.
+   */
+  private async emitClientProjectLinkActivity(params: {
+    actorUserId: string;
+    projectId: string;
+    projectName: string;
+    beforeClientId: string | null;
+    afterClientId: string | null;
+  }) {
+    const { actorUserId, projectId, projectName, beforeClientId, afterClientId } =
+      params;
+    const base = {
+      actorUserId,
+      domain: 'clients',
+      targetType: 'Client',
+      targetHref: `/projects/edit/${projectId}`,
+      result: AuditResult.SUCCESS,
+    };
+    if (beforeClientId === afterClientId) return;
+
+    if (beforeClientId && afterClientId && beforeClientId !== afterClientId) {
+      // A → B: unlink from A, link to B. Second event marks the
+      // change on the NEW client with action="project_changed" so a
+      // reader on the new timeline sees "reassigned here", not just
+      // "linked".
+      await this.audit.recordSafe({
+        ...base,
+        action: 'client.project_unlinked',
+        targetId: beforeClientId,
+        metadata: { projectId, projectName, reason: 'reassigned' },
+      });
+      await this.audit.recordSafe({
+        ...base,
+        action: 'client.project_changed',
+        targetId: afterClientId,
+        metadata: { projectId, projectName, reason: 'reassigned' },
+      });
+      return;
+    }
+    if (!beforeClientId && afterClientId) {
+      await this.audit.recordSafe({
+        ...base,
+        action: 'client.project_linked',
+        targetId: afterClientId,
+        metadata: { projectId, projectName },
+      });
+      return;
+    }
+    if (beforeClientId && !afterClientId) {
+      await this.audit.recordSafe({
+        ...base,
+        action: 'client.project_unlinked',
+        targetId: beforeClientId,
+        metadata: { projectId, projectName },
+      });
+    }
   }
 
   async remove(id: string, user: AuthUser) {
@@ -313,6 +401,15 @@ export class ProjectService {
     return {
       client: {
         select: { id: true, firstName: true, lastName: true, type: true },
+      },
+      crmClient: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          company: true,
+          status: true,
+        },
       },
       members: {
         include: {
@@ -417,6 +514,16 @@ export class ProjectService {
       throw new BadRequestException(
         'Only client-type counterparties can be linked to a project',
       );
+    }
+  }
+
+  private async assertCrmClientExists(id: string) {
+    const client = await this.prisma.client.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!client) {
+      throw new BadRequestException('Client not found for crmClientId');
     }
   }
 

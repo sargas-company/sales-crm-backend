@@ -23,6 +23,11 @@ export class CreateClientCallDto {
   @IsUUID()
   leadId?: string;
 
+  @ApiPropertyOptional({ example: 'uuid-of-crm-client' })
+  @ValidateIf((o) => o.clientType === ClientCallClientType.client)
+  @IsUUID()
+  crmClientId?: string;
+
   @ApiPropertyOptional({ example: 'uuid-of-client-request' })
   @ValidateIf((o) => o.clientType === ClientCallClientType.client_request)
   @IsUUID()

@@ -34,6 +34,8 @@ const ADMIN_EXPECTED = new Set<string>([
   // explicitly denied; service-level `scopePolicy` enforces that.
   'invoices:view', 'invoices:create', 'invoices:update', 'invoices:delete', 'invoices:generate',
   'counterparties:view', 'counterparties:create', 'counterparties:update', 'counterparties:delete',
+  // CRM Clients — the new independent entity.
+  'clients:view', 'clients:create', 'clients:update', 'clients:delete',
 
   'prompts:view', 'prompts:create', 'prompts:update', 'prompts:delete',
   'employees:view',
@@ -100,16 +102,23 @@ const ADMIN_FORBIDDEN = new Set<string>([
   'discord_integration:send_test', 'discord_integration:activate_profile',
 ]);
 
-/** Regular Manager must be strictly read-only on projects + reports. */
+/** Regular Manager — read-only on projects/reports, plus CRM Client
+ *  view/create/update so the Project create form's Client dropdown
+ *  loads without a 403. Delete stays denied. */
 const REGULAR_EXPECTED = new Set<string>([
   'projects:view',
   'project_reports:view',
+  'clients:view',
+  'clients:create',
+  'clients:update',
 ]);
 
 const REGULAR_FORBIDDEN = new Set<string>([
   'projects:view_any',
   'projects:create', 'projects:update', 'projects:delete',
   'project_reports:create', 'project_reports:update', 'project_reports:delete',
+  // CRM Clients — delete stays forbidden.
+  'clients:delete',
   // Spot-check across other modules — nothing should bleed into
   // Regular Manager's default surface.
   'leads:view', 'invoices:view', 'counterparties:view', 'employees:view',

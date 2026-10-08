@@ -77,6 +77,12 @@ export const ADMIN_MANAGER_PRESET_KEYS: ReadonlySet<string> = new Set<string>([
   'counterparties:update',
   'counterparties:delete',
 
+  // CRM Clients — full CRUD.
+  'clients:view',
+  'clients:create',
+  'clients:update',
+  'clients:delete',
+
   // Prompts — full CRUD.
   'prompts:view',
   'prompts:create',
@@ -179,6 +185,12 @@ export const ADMIN_MANAGER_PRESET_KEYS: ReadonlySet<string> = new Set<string>([
 export const REGULAR_MANAGER_PRESET_KEYS: ReadonlySet<string> = new Set<string>([
   'projects:view',
   'project_reports:view',
+  // CRM Clients — view + create + update (no delete). Lets a
+  // Regular Manager populate the Project create form's Client
+  // dropdown without needing a counterparties:view bump.
+  'clients:view',
+  'clients:create',
+  'clients:update',
 ]);
 
 /**

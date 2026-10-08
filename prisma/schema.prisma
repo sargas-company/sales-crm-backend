@@ -168,18 +168,29 @@ model Account {
 }
 
 enum LeadStatus {
-  conversation_ongoing
-  trial
-  hold
-  contract_offer
-  accept_contract
-  start_contract
-  suspended
+  NEW
+  CONTACTED
+  IN_CONVERSATION
+  ON_HOLD
+  WON
+  LOST
+}
+
+enum LeadTemperature {
+  COLD
+  WARM
+  HOT
 }
 
 enum ClientType {
   individual
   company
+}
+
+enum ClientStatus {
+  ACTIVE
+  ON_HOLD
+  FORMER
 }
 
 // ─── Proposal ────────────────────────────────────────────────────────────────
@@ -300,9 +311,9 @@ model JobPostIngestEvent {
 // ─── Lead ────────────────────────────────────────────────────────────────────
 
 model Lead {
-  id         String     @id @default(uuid())
-  number     Int        @unique @default(autoincrement())
-  proposalId  String?    @unique
+  id          String           @id @default(uuid())
+  number      Int              @unique @default(autoincrement())
+  proposalId  String?          @unique
   firstName   String?
   lastName    String?
   companyName String?
@@ -312,20 +323,57 @@ model Lead {
   // trimmed + lower-cased in the service layer.
   email       String?
   phone       String?
-  status      LeadStatus @default(conversation_ongoing)
+  // Classification fields (new): where the lead came from, link to
+  // their profile on that source, temperature rating, free-form
+  // internal notes.
+  source      String?
+  profileUrl  String?
+  temperature LeadTemperature?
+  notes       String?
+  status      LeadStatus       @default(NEW)
   clientType  ClientType?
-  rate       Int?
-  location   String?
-  createdAt  DateTime   @default(now())
-  updatedAt  DateTime   @updatedAt
-  repliedAt  DateTime   @default(now())
-  acceptedAt DateTime?
-  holdAt     DateTime?
+  rate        Int?
+  location    String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  repliedAt   DateTime         @default(now())
+  acceptedAt  DateTime?
+  holdAt      DateTime?
 
   proposal    Proposal?    @relation(fields: [proposalId], references: [id], onDelete: SetNull)
   clientCalls ClientCall[]
 
   @@index([status])
+  @@index([temperature])
+  @@index([source])
+  @@index([createdAt])
+}
+
+/// Independent CRM Client entity. Deliberately NOT a renamed Counterparty
+/// and NOT a converted Lead — a person may legitimately exist in both
+/// Lead and Client tables at once. Finance (Counterparty/Invoice/Payments)
+/// is unaffected by this model.
+model Client {
+  id          String       @id @default(uuid())
+  firstName   String
+  lastName    String?
+  company     String?
+  email       String?
+  phone       String?
+  source      String?
+  profileUrl  String?
+  status      ClientStatus @default(ACTIVE)
+  clientSince DateTime?
+  notes       String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  calls    ClientCall[]
+  projects Project[]
+
+  @@index([status])
+  @@index([source])
+  @@index([clientSince])
   @@index([createdAt])
 }
 
@@ -528,6 +576,7 @@ model ClientRequest {
 
 enum ClientCallClientType {
   lead
+  client
   client_request
 }
 
@@ -540,7 +589,12 @@ enum ClientCallStatus {
 model ClientCall {
   id              String               @id @default(uuid())
   clientType      ClientCallClientType
+  // Exactly one of leadId / crmClientId / clientRequestId is set per
+  // row. Enforced by a Postgres CHECK constraint
+  // `ClientCall_exactly_one_owner`, by DTO validation, and by the
+  // service layer. See migration 20261026000000_leads_clients_split.
   leadId          String?
+  crmClientId     String?
   clientRequestId String?
   createdById     String
 
@@ -562,6 +616,7 @@ model ClientCall {
   updatedAt       DateTime             @updatedAt
 
   lead          Lead?          @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  crmClient     Client?        @relation(fields: [crmClientId], references: [id], onDelete: Cascade)
   clientRequest ClientRequest? @relation(fields: [clientRequestId], references: [id], onDelete: Cascade)
   createdBy     User           @relation(fields: [createdById], references: [id])
   reminders     CallReminderSent[]
@@ -570,6 +625,7 @@ model ClientCall {
   @@index([status])
   @@index([scheduledAt(sort: Desc)])
   @@index([leadId])
+  @@index([crmClientId])
   @@index([clientRequestId])
 }
 
@@ -705,8 +761,17 @@ enum ProjectStatus {
 model Project {
   id               String        @id @default(uuid())
   name             String
+  // Legacy — ties Project to a Counterparty row for billing. Kept
+  // nullable and untouched for existing data; new project create
+  // paths now use `crmClientId` → Client instead. Counterparty
+  // module/API/UI are not retrofitted in this phase.
   clientId         String?
   client           Counterparty? @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  // New CRM relation. The regular Project create/edit flow requires
+  // this at DTO/service level; legacy rows keep it NULL and remain
+  // readable.
+  crmClientId      String?
+  crmClient        Client?       @relation(fields: [crmClientId], references: [id], onDelete: SetNull)
   status           ProjectStatus @default(planned)
   description      String?
   startDate        DateTime?
@@ -728,6 +793,7 @@ model Project {
 
   @@index([status])
   @@index([clientId])
+  @@index([crmClientId])
 }
 
 model ProjectStatusHistory {

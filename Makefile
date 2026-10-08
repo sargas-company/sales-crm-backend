@@ -161,6 +161,13 @@ local-seed-demo:
 	@echo "==> seed-employees-projects-demo"
 	npx ts-node scripts/seed-employees-projects-demo.ts
 
+local-seed-demo-crm:
+	set -e
+	@echo "==> assert local db"
+	npx ts-node scripts/assert-local-db.ts
+	@echo "==> seed-demo (Leads / Clients / Calls)"
+	npx ts-node -r tsconfig-paths/register scripts/seed-demo.ts
+
 local-reset:
 	set -e
 	@echo "==> assert local db"

@@ -26,12 +26,20 @@ export class CreateProjectDto {
   @Transform(({ value }) => trim(value))
   name: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Legacy — ties the project to a Counterparty row. Nullable and no longer required; new flow uses `crmClientId`. Counterparty module is otherwise untouched.',
+  })
+  @IsOptional()
+  @IsUUID()
+  clientId?: string;
+
   @ApiProperty({
     description:
-      'Counterparty this project is billed against. Must reference a client-type row. Required when creating a project.',
+      'CRM Client this project is for. Required when creating a project; legacy rows may stay null.',
   })
   @IsUUID()
-  clientId: string;
+  crmClientId: string;
 
   @ApiPropertyOptional({ enum: ProjectStatus, default: ProjectStatus.planned })
   @IsOptional()

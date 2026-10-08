@@ -71,6 +71,12 @@ const PERMISSION_CATALOGUE: PermissionSeed[] = [
   { module: 'counterparties',     action: 'create',  key: 'counterparties:create',   label: 'Create counterparties' },
   { module: 'counterparties',     action: 'update',  key: 'counterparties:update',   label: 'Update counterparties' },
   { module: 'counterparties',     action: 'delete',  key: 'counterparties:delete',   label: 'Delete counterparties' },
+  // CRM Client — the new independent client entity. Separate from
+  // Counterparty (finance) and from Lead (sales pipeline).
+  { module: 'clients',            action: 'view',    key: 'clients:view',            label: 'View CRM clients' },
+  { module: 'clients',            action: 'create',  key: 'clients:create',          label: 'Create CRM clients' },
+  { module: 'clients',            action: 'update',  key: 'clients:update',          label: 'Update CRM clients' },
+  { module: 'clients',            action: 'delete',  key: 'clients:delete',          label: 'Delete CRM clients' },
   // Contractor-scope elevators. Baseline counterparties:* / invoices:*
   // grant access to client-scoped rows only; the two keys below add
   // read + write access to contractor-scoped counterparties and their
