@@ -39,8 +39,12 @@ coordinated changes in both repos as separate commits.
 
 - `npx prisma validate --config=./prisma.config.ts` — safe, touches
   nothing.
-- `npm run typecheck` — n/a (project uses `tsc` through `nest build`;
-  rely on build).
+- `npm run typecheck` — `tsc --noEmit -p tsconfig.build.json` against
+  the production source scope (test/spec excluded).
+- `npm run lint:check` — read-only diagnostic: ESLint over the same
+  scope as `lint`, without `--fix`. Currently exits 1 because of the
+  legacy lint baseline (prettier/require-await/etc. tech debt); **not
+  a release blocker** until the dedicated cleanup/baseline card lands.
 
 ## Verification — writes files (not read-only)
 
