@@ -213,6 +213,7 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeConfig(),
       bot,
       jobPost,
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
 
     await invokeJob(svc, eventId);
@@ -228,7 +229,7 @@ describe('NotificationProcessorService — bot-based routing', () => {
     expect(delivery.failedAttempts).toBe(0);
   });
 
-  it('CLIENT_REQUEST → active profile pmsChannelId + managerRoleId mention via bot; delivery = SENT', async () => {
+  it('CLIENT_REQUEST → PMS channel WITHOUT managerRoleId mention (Sales format opts out)', async () => {
     activateProfileFull('TEST', {
       pmsChannelId: '123456789012345678',
       managerRoleId: '555000111222333444',
@@ -246,6 +247,7 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeConfig(),
       bot,
       jobPost,
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
 
     await invokeJob(svc, eventId);
@@ -253,11 +255,9 @@ describe('NotificationProcessorService — bot-based routing', () => {
     expect(bot.postMessage).toHaveBeenCalledTimes(1);
     const call = bot.postMessage.mock.calls[0][0] as PostMessageArgs;
     expect(call.channelId).toBe('123456789012345678');
-    expect(call.content).toBe('<@&555000111222333444>');
-    expect(call.allowedMentions).toEqual({
-      parse: [],
-      roles: ['555000111222333444'],
-    });
+    // Sales format: no manager-role ping, even when the profile has one.
+    expect(call.content).toBeUndefined();
+    expect(call.allowedMentions).toEqual({ parse: [] });
     expect(call.embeds).toBeDefined();
     expect(jobPost.send).not.toHaveBeenCalled();
 
@@ -284,6 +284,8 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeConfig(),
       bot,
       makeJobPostNotifier(async () => undefined),
+    
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
 
     await invokeJob(svc, eventId);
@@ -311,17 +313,17 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeConfig(),
       bot,
       makeJobPostNotifier(async () => undefined),
+    
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
 
     await invokeJob(svc, eventId);
 
     const call = bot.postMessage.mock.calls[0][0] as PostMessageArgs;
     expect(call.channelId).toBe('222222222222222222');
-    expect(call.content).toBe('<@&666777888999000111>');
-    expect(call.allowedMentions).toEqual({
-      parse: [],
-      roles: ['666777888999000111'],
-    });
+    // Sales format: no manager-role ping on CALL_REMINDER either.
+    expect(call.content).toBeUndefined();
+    expect(call.allowedMentions).toEqual({ parse: [] });
 
     const delivery = await prisma.notificationDelivery.findFirstOrThrow({
       where: { eventId, channel: NotificationChannel.DISCORD },
@@ -329,10 +331,7 @@ describe('NotificationProcessorService — bot-based routing', () => {
     expect(delivery.status).toBe(NotificationDeliveryStatus.SENT);
   });
 
-  it('arbitrary mentions in user payload cannot ping — allowed_mentions.parse is empty', async () => {
-    // Payload contains @everyone / @here sentinels and a stray role
-    // snowflake inside the free-text fields. parse:[] + the single
-    // managerRoleId in roles[] must block every one of them.
+  it('arbitrary mentions in user payload cannot ping — allowed_mentions.parse is empty and no roles are allowed on Sales events', async () => {
     activateProfileFull('TEST', {
       pmsChannelId: '424242424242424242',
       managerRoleId: '111222333444555666',
@@ -351,14 +350,18 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeConfig(),
       bot,
       makeJobPostNotifier(async () => undefined),
+
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
 
     await invokeJob(svc, eventId);
 
     const call = bot.postMessage.mock.calls[0][0] as PostMessageArgs;
     expect((call.allowedMentions as { parse: unknown[] }).parse).toEqual([]);
+    // Sales format opts out of role mentions, so `roles` is NOT
+    // whitelisted.
     const roles = (call.allowedMentions as { roles?: string[] }).roles;
-    expect(roles).toEqual(['111222333444555666']);
+    expect(roles).toBeUndefined();
   });
 
   it('TEST ↔ PRODUCTION switch is picked up on the next send without restart', async () => {
@@ -368,6 +371,8 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeConfig(),
       bot,
       makeJobPostNotifier(async () => undefined),
+    
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
 
     activateProfile('TEST', { pmsChannelId: '111111111111111111' });
@@ -409,6 +414,8 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeConfig(),
       bot,
       makeJobPostNotifier(async () => undefined),
+    
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
 
     await expect(invokeJob(svc, eventId)).rejects.toThrow(
@@ -438,6 +445,8 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeConfig(),
       bot,
       makeJobPostNotifier(async () => undefined),
+    
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
 
     await expect(invokeJob(svc, eventId)).rejects.toThrow(/no pmsChannelId/);
@@ -463,6 +472,8 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeConfig(),
       bot,
       makeJobPostNotifier(async () => undefined),
+    
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
 
     await invokeJob(svc, eventId);
@@ -494,6 +505,8 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeConfig(),
       bot,
       makeJobPostNotifier(async () => undefined),
+    
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
 
     await expect(invokeJob(svc, eventId)).rejects.toThrow('Missing Access');
@@ -521,6 +534,7 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeConfig(),
       makeBot(async () => ({ ok: true, messageId: 'never' })),
       jobPost,
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
 
     await expect(invokeJob(svc, eventId)).rejects.toThrow();

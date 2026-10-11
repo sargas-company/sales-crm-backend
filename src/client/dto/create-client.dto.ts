@@ -105,4 +105,26 @@ export class CreateClientDto {
   @MaxLength(4000)
   @Transform(({ value }) => trim(value))
   notes?: string | null;
+
+  @ApiPropertyOptional({
+    example: 'c0ff33b0-…',
+    description:
+      'Platform (Upwork, LinkedIn, …) from the shared directory. Independent of the Lead platform selection.',
+    nullable: true,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(36)
+  platformId?: string | null;
+
+  @ApiPropertyOptional({
+    description:
+      'Free-text location — country name or "City, Country". The UI edits country and city separately and joins them here.',
+    nullable: true,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(160)
+  @Transform(({ value }) => trim(value))
+  location?: string | null;
 }

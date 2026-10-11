@@ -67,7 +67,7 @@ describe('VibeWorkerWebhookService (no-auth ingest contract)', () => {
   it('accepts a brand-new event and stores the full payload', async () => {
     const prisma = makePrismaStub();
     const settings = makeSettingsStub(true);
-    const svc = new VibeWorkerWebhookService(prisma as never, settings as never);
+    const svc = new VibeWorkerWebhookService(prisma as never, settings as never, { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never);
 
     const payload = {
       vibe_id: 'alpha',
@@ -93,7 +93,7 @@ describe('VibeWorkerWebhookService (no-auth ingest contract)', () => {
   it('a repeat delivery with the same payload is marked duplicate and does not insert', async () => {
     const prisma = makePrismaStub();
     const settings = makeSettingsStub(true);
-    const svc = new VibeWorkerWebhookService(prisma as never, settings as never);
+    const svc = new VibeWorkerWebhookService(prisma as never, settings as never, { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never);
 
     const payload = { kind: 'job', ref: 'duplicate-smoke', body: 'same text' };
 
@@ -109,7 +109,7 @@ describe('VibeWorkerWebhookService (no-auth ingest contract)', () => {
   it('a repeat delivery with an explicit event id reuses the row', async () => {
     const prisma = makePrismaStub();
     const settings = makeSettingsStub(true);
-    const svc = new VibeWorkerWebhookService(prisma as never, settings as never);
+    const svc = new VibeWorkerWebhookService(prisma as never, settings as never, { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never);
     const explicitId = 'vibe-event-7f2b';
 
     const first = await svc.captureJobPost({ data: 1 }, explicitId);
@@ -124,7 +124,7 @@ describe('VibeWorkerWebhookService (no-auth ingest contract)', () => {
   it('respects the scanner.ingestionEnabled kill-switch', async () => {
     const prisma = makePrismaStub();
     const settings = makeSettingsStub(false);
-    const svc = new VibeWorkerWebhookService(prisma as never, settings as never);
+    const svc = new VibeWorkerWebhookService(prisma as never, settings as never, { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never);
 
     await expect(svc.captureJobPost({ any: 'thing' }, null)).rejects.toBeInstanceOf(
       ServiceUnavailableException,

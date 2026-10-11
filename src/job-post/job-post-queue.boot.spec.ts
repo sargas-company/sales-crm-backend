@@ -30,6 +30,8 @@ jest.mock('bullmq', () => {
     Queue: jest.fn().mockImplementation(() => ({
       add: jest.fn(),
       close: jest.fn(async () => undefined),
+      getActive: jest.fn(async () => []),
+      getJob: jest.fn(async () => null),
     })),
   };
 });
@@ -71,27 +73,39 @@ describe('JobPostQueueService.onModuleInit — boot contract', () => {
     expect(enqueueSpy).not.toHaveBeenCalled();
   });
 
-  it('resetStuckProcessing is a separate method and only touches rows older than the age floor', async () => {
-    const { prisma, updateMany } = makePrismaSpies();
-    (updateMany as jest.Mock).mockImplementation(async () => ({ count: 3 }));
+  it('resetStuckProcessing finds candidates and skips ones currently active in Redis', async () => {
+    const { prisma, findMany, updateMany } = makePrismaSpies();
+    (findMany as jest.Mock).mockImplementation(async () => [
+      { id: 'post-stale-1' },
+      { id: 'post-stale-2' },
+      { id: 'post-still-running' },
+    ]);
+    (updateMany as jest.Mock).mockImplementation(async () => ({ count: 2 }));
     const svc = new JobPostQueueService(makeConfig(), prisma);
     await svc.onModuleInit();
     // Deferred recovery hasn't been called yet — the scheduler owns
     // that trigger, not module init.
     expect(updateMany).not.toHaveBeenCalled();
 
+    // Simulate "post-still-running" active in Redis via the Queue
+    // mock from jest.mock() above — we override getActive on the
+    // instance via a cast through unknown.
+    const svcAsAny = svc as unknown as {
+      queue: { getActive: jest.Mock };
+    };
+    svcAsAny.queue.getActive = jest
+      .fn<() => Promise<Array<{ data: { jobPostId: string } }>>>()
+      .mockResolvedValue([{ data: { jobPostId: 'post-still-running' } }]);
+
     const n = await svc.resetStuckProcessing(60_000);
-    expect(n).toBe(3);
+    expect(n).toBe(2);
     expect(updateMany).toHaveBeenCalledTimes(1);
     const callArg = (updateMany as jest.Mock).mock.calls[0][0] as {
-      where: { status: string; createdAt: { lt: Date } };
+      where: { status: string; id: { in: string[] } };
       data: { status: string };
     };
     expect(callArg.where.status).toBe('PROCESSING');
-    expect(callArg.where.createdAt.lt).toBeInstanceOf(Date);
-    // The cutoff must be in the past by roughly the configured age.
-    const ageMs = Date.now() - callArg.where.createdAt.lt.getTime();
-    expect(ageMs).toBeGreaterThanOrEqual(60_000 - 1_000);
+    expect(callArg.where.id.in).toEqual(['post-stale-1', 'post-stale-2']);
     expect(callArg.data.status).toBe('NEW');
   });
 });

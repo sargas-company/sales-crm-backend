@@ -51,6 +51,8 @@ export class ClientService {
         status: dto.status ?? ClientStatus.ACTIVE,
         clientSince: dto.clientSince ? new Date(dto.clientSince) : null,
         notes: dto.notes ?? null,
+        platformId: dto.platformId ?? null,
+        location: dto.location ?? null,
       },
     });
 
@@ -87,6 +89,9 @@ export class ClientService {
     const where: Prisma.ClientWhereInput = {
       ...(dto.status ? { status: dto.status } : {}),
       ...(dto.source ? { source: dto.source } : {}),
+      ...(dto.location
+        ? { location: { contains: dto.location, mode: 'insensitive' } }
+        : {}),
       ...(dto.clientSinceFrom || dto.clientSinceTo
         ? {
             clientSince: {
@@ -120,6 +125,9 @@ export class ClientService {
         orderBy,
         skip: offset,
         take: limit,
+        include: {
+          platform: { select: { id: true, title: true, slug: true, imageUrl: true } },
+        },
       }),
       this.prisma.client.count({ where }),
     ]);
@@ -128,7 +136,12 @@ export class ClientService {
   }
 
   async findOne(id: string): Promise<Client> {
-    const client = await this.prisma.client.findUnique({ where: { id } });
+    const client = await this.prisma.client.findUnique({
+      where: { id },
+      include: {
+        platform: { select: { id: true, title: true, slug: true, imageUrl: true } },
+      },
+    });
     if (!client) throw new NotFoundException('Client not found');
     return client;
   }
@@ -152,6 +165,8 @@ export class ClientService {
           }
         : {}),
       ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+      ...(dto.platformId !== undefined ? { platformId: dto.platformId } : {}),
+      ...(dto.location !== undefined ? { location: dto.location } : {}),
     };
 
     const updated = await this.prisma.client.update({
@@ -264,6 +279,20 @@ export class ClientService {
    * normalised email OR normalised phone; empty inputs return no
    * suggestions. The service never auto-merges or links.
    */
+  /**
+   * Distinct non-null Client.source values, sorted. Fuels the list
+   * filter dropdown.
+   */
+  async listSources(): Promise<string[]> {
+    const rows = await this.prisma.client.findMany({
+      where: { source: { not: null } },
+      select: { source: true },
+      distinct: ['source'],
+      orderBy: { source: 'asc' },
+    });
+    return rows.map((r) => r.source).filter((s): s is string => !!s);
+  }
+
   async findDuplicates(opts: { email?: string | null; phone?: string | null; excludeId?: string }) {
     if (!opts.email && !opts.phone) return [];
     const or: Prisma.ClientWhereInput[] = [];
@@ -295,6 +324,8 @@ export class ClientService {
     dir: Prisma.SortOrder,
   ): Prisma.ClientOrderByWithRelationInput {
     switch (sortBy) {
+      case ClientSortBy.number:
+        return { number: dir };
       case ClientSortBy.firstName:
         return { firstName: dir };
       case ClientSortBy.company:

@@ -55,17 +55,13 @@ export class JobPostDiscordNotifierService {
             id: true,
             title: true,
             jobUrl: true,
-            rawPayload: true,
             matchScore: true,
             decision: true,
             priority: true,
-            location: true,
             budget: true,
             totalSpent: true,
-            avgRatePaid: true,
-            hireRate: true,
-            hSkillsKeywords: true,
-            aiResponse: true,
+            country: true,
+            postedAt: true,
           },
         })
       : null;
@@ -120,19 +116,32 @@ export class JobPostDiscordNotifierService {
 
   // ─── embed builder ──────────────────────────────────────────────
 
+  /**
+   * Compact Job-Post alert embed, matching the final previewed format.
+   * Rules:
+   *   - colour bar by verdict (approve emerald, maybe amber, decline
+   *     red). Decline shouldn't reach this builder because the rule
+   *     filter in NotificationService drops it, but the branch is
+   *     here so a stray payload doesn't fall back to a default blue.
+   *   - title is the vacancy name as-is (no "fire" prefix).
+   *   - one Verdict field, multi-line. Lines are dropped individually
+   *     when their data is missing; no placeholder values, no
+   *     "Unknown", no "null".
+   *   - Links field - CRM link rendered when a jobPostId and
+   *     FRONTEND_URL are both present; the Upwork link only when
+   *     jobUrl is present. Field is skipped if neither renders.
+   *   - NO description (full rawText), NO AI reasoning field, NO
+   *     footer (internal eventId was leaking into channel chat).
+   */
   private buildEmbed(
-    eventId: string,
+    _eventId: string,
     payload: Exclude<ReturnType<typeof this.parsePayload>, null>,
     jobPost:
       | ({
           budget: string | null;
-          location: string | null;
           totalSpent: number | null;
-          avgRatePaid: number | null;
-          hireRate: number | null;
-          hSkillsKeywords: string[];
-          aiResponse: unknown;
-          rawPayload: unknown;
+          country: string | null;
+          postedAt: Date | null;
           title: string | null;
           jobUrl: string | null;
         } & { id: string })
@@ -143,121 +152,69 @@ export class JobPostDiscordNotifierService {
     const score = payload.score;
     const decision = payload.decision ?? '';
     const priority = payload.priority ?? '';
-    const color =
-      decision === 'approve'
-        ? 0x57f287
-        : decision === 'maybe'
-          ? 0xfee75c
-          : 0x5865f2;
+    const color = colorForDecision(decision);
 
-    const fields: Array<{ name: string; value: string; inline?: boolean }> = [];
-    fields.push({
-      name: 'Score',
-      value: `${scoreEmoji(score)} ${score}%`,
-      inline: true,
-    });
-    if (decision) fields.push({ name: 'Decision', value: decisionLabel(decision), inline: true });
-    if (priority) fields.push({ name: 'Priority', value: priorityLabel(priority), inline: true });
-
-    const vibePayload = (jobPost?.rawPayload ?? {}) as {
-      job?: Record<string, unknown>;
-      client?: Record<string, unknown>;
-      match?: Record<string, unknown>;
-    };
-    const vibeJob = vibePayload.job ?? {};
-    const vibeClient = vibePayload.client ?? {};
-    const vibeMatch = vibePayload.match ?? {};
-
-    // Economics line: budget + type + duration + experience level.
-    const economics = [
-      jobPost?.budget,
-      typeof vibeJob.type === 'string' ? `type: ${vibeJob.type}` : null,
-      typeof vibeJob.duration === 'string' ? `duration: ${vibeJob.duration}` : null,
-      typeof vibeJob.hoursPerWeek === 'string' ? `hrs/wk: ${vibeJob.hoursPerWeek}` : null,
-      typeof vibeJob.experienceLevel === 'string'
-        ? `experience: ${vibeJob.experienceLevel}`
-        : null,
+    // ── Verdict block (compact, one multi-line field) ──────────────
+    const verdictHead = [
+      `**${score}**/100`,
+      decision || null,
+      priority || null,
     ]
       .filter(Boolean)
       .join(' · ');
-    if (economics) {
-      fields.push({ name: 'Budget / Type', value: truncate(economics, 1024), inline: false });
+
+    const verdictLines: string[] = [verdictHead];
+    if (jobPost?.budget) {
+      verdictLines.push(`💰 ${jobPost.budget}`);
+    }
+    const clientBits: string[] = [];
+    if (jobPost?.totalSpent != null) {
+      clientBits.push(`Total spent $${Math.round(jobPost.totalSpent).toLocaleString('en-US')}`);
+    }
+    if (jobPost?.country) {
+      const flag = flagEmojiForCountry(jobPost.country);
+      clientBits.push(`${flag ? flag + ' ' : ''}${jobPost.country}`);
+    }
+    if (clientBits.length > 0) {
+      verdictLines.push(`👤 ${clientBits.join(' · ')}`);
+    }
+    if (jobPost?.postedAt) {
+      const unix = Math.floor(jobPost.postedAt.getTime() / 1000);
+      verdictLines.push(`🕐 posted <t:${unix}:R>`);
     }
 
-    // Location (job vs client; both when available).
-    const location =
-      jobPost?.location ??
-      (typeof vibeClient.location === 'string' ? vibeClient.location : null);
-    if (location) {
-      fields.push({ name: 'Location', value: truncate(location, 1024), inline: true });
+    // ── Links block ────────────────────────────────────────────────
+    const linkBits: string[] = [];
+    const crmBase = (process.env.FRONTEND_URL ?? '').replace(/\/+$/, '');
+    if (crmBase && (jobPost?.id || payload.jobPostId)) {
+      const jpId = jobPost?.id ?? payload.jobPostId;
+      linkBits.push(`[Open in CRM](${crmBase}/job-posts/preview/${jpId})`);
+    }
+    if (url) {
+      linkBits.push(`[Open on Upwork](${url})`);
     }
 
-    // Client reputation line.
-    const paymentVerified =
-      typeof vibeClient.paymentVerified === 'boolean'
-        ? vibeClient.paymentVerified
-          ? 'verified ✓'
-          : 'unverified ✗'
-        : null;
-    const rating =
-      typeof vibeClient.rating === 'number' ? `rating: ${vibeClient.rating.toFixed(2)}` : null;
-    const spent =
-      jobPost?.totalSpent != null ? `spent: $${Math.round(jobPost.totalSpent)}` : null;
-    const hireRate =
-      jobPost?.hireRate != null ? `hire rate: ${formatHireRate(jobPost.hireRate)}` : null;
-    const avgRate =
-      jobPost?.avgRatePaid != null ? `avg rate: $${jobPost.avgRatePaid}/hr` : null;
-    const clientLine = [paymentVerified, rating, spent, avgRate, hireRate].filter(Boolean).join(' · ');
-    if (clientLine) {
-      fields.push({ name: 'Client', value: truncate(clientLine, 1024), inline: false });
-    }
-
-    // Skills.
-    const skills = jobPost?.hSkillsKeywords ?? [];
-    if (skills.length) {
+    const fields: Array<{ name: string; value: string; inline?: boolean }> = [
+      {
+        name: 'Verdict',
+        value: truncate(verdictLines.join('\n'), 1024),
+        inline: false,
+      },
+    ];
+    if (linkBits.length > 0) {
       fields.push({
-        name: 'Skills',
-        value: truncate(skills.join(', '), 1024),
+        name: 'Links',
+        value: truncate(linkBits.join(' · '), 1024),
         inline: false,
       });
     }
-
-    // AI verdict / reasoning.
-    const gatekeeperReason =
-      typeof (jobPost?.aiResponse as { gatekeeper?: { reason?: string } } | null)?.gatekeeper
-        ?.reason === 'string'
-        ? (jobPost?.aiResponse as { gatekeeper?: { reason?: string } }).gatekeeper!.reason!
-        : null;
-    const evaluatorReasoning =
-      typeof (jobPost?.aiResponse as { evaluation?: { reasoning?: string } } | null)?.evaluation
-        ?.reasoning === 'string'
-        ? (jobPost?.aiResponse as { evaluation?: { reasoning?: string } }).evaluation!
-            .reasoning!
-        : null;
-    const vibeReasoning =
-      typeof vibeMatch.reasoning === 'string' ? vibeMatch.reasoning : null;
-    const verdict = evaluatorReasoning ?? gatekeeperReason ?? vibeReasoning;
-    if (verdict) {
-      fields.push({
-        name: 'AI verdict',
-        value: truncate(verdict, 1024),
-        inline: false,
-      });
-    }
-
-    // Description = short rawText. Capped at 4096 Discord-wise, but we
-    // trim to 2000 to leave headroom for the rest of the embed.
-    const description = payload.rawText ? truncate(payload.rawText, 2000) : undefined;
 
     const embed: Record<string, unknown> = {
-      title: `🔥 ${title}`,
+      title,
       color,
-      fields: fields.slice(0, 25),
-      footer: { text: `event ${eventId}` },
+      fields,
     };
     if (url) embed.url = url;
-    if (description) embed.description = description;
-
     return embed;
   }
 }
@@ -283,28 +240,41 @@ function truncate(s: string, max: number): string {
   return s.slice(0, Math.max(0, max - 1)) + '…';
 }
 
-function scoreEmoji(score: number): string {
-  if (score >= 70) return '🟢';
-  if (score >= 40) return '🟡';
-  return '🔴';
+/**
+ * Verdict → embed bar colour. Matches the shades used in the final
+ * previewed format:
+ *   approve → #22c55e emerald, maybe → #f59e0b amber,
+ *   decline → #dc2626 red (safety fallback — the NotificationService
+ *   rule already drops decline before this builder is reached).
+ */
+function colorForDecision(decision: string): number {
+  switch (decision) {
+    case 'approve':
+      return 0x22c55e;
+    case 'maybe':
+      return 0xf59e0b;
+    case 'decline':
+      return 0xdc2626;
+    default:
+      // Unknown verdict shouldn't reach us; use amber so it stands
+      // out from the approve/decline tones without pretending to be
+      // either.
+      return 0xf59e0b;
+  }
 }
 
-function decisionLabel(decision: string): string {
-  if (decision === 'approve') return '✅ approve';
-  if (decision === 'maybe') return '🤔 maybe';
-  if (decision === 'decline') return '❌ decline';
-  return decision;
-}
-
-function priorityLabel(p: string): string {
-  if (p === 'high') return '🔴 high';
-  if (p === 'medium') return '🟡 medium';
-  if (p === 'low') return '🟢 low';
-  return p;
-}
-
-function formatHireRate(hr: number): string {
-  // Vibe sends either 0–1 or 0–100 depending on source — normalize.
-  const normalised = hr > 1 ? hr : hr * 100;
-  return `${Math.round(normalised)}%`;
+/**
+ * Converts an ISO-3166 alpha-2 code into the regional-indicator
+ * flag emoji. Returns an empty string when the input is anything but
+ * a two-letter code (e.g. "United States" → ""). Callers render the
+ * country name separately — the flag is purely decorative.
+ */
+function flagEmojiForCountry(country: string): string {
+  if (country.length !== 2) return '';
+  const code = country.toUpperCase();
+  if (!/^[A-Z]{2}$/.test(code)) return '';
+  return String.fromCodePoint(
+    0x1f1e6 + code.charCodeAt(0) - 65,
+    0x1f1e6 + code.charCodeAt(1) - 65,
+  );
 }

@@ -11,12 +11,17 @@ import { Job, Worker } from 'bullmq';
 import IORedis from 'ioredis';
 
 import { NotificationService } from '../notification/notification.service';
-import { NotificationType } from '@prisma/client';
+import { NotificationType, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { SK } from '../settings/settings-registry';
-import { AiJobEvaluatorService } from './ai-job-evaluator.service';
+import {
+  AiJobEvaluatorService,
+  EvaluatorResponseError,
+  GATE_REJECT_THRESHOLD,
+  GatekeeperResponseError,
+} from './ai-job-evaluator.service';
 import { JOB_POST_PROCESS, JOB_POST_QUEUE } from './job-post.constants';
 
 @Injectable()
@@ -40,11 +45,18 @@ export class JobPostProcessorService implements OnModuleInit, OnModuleDestroy {
       maxRetriesPerRequest: null,
     });
 
+    // `BULLMQ_PREFIX` is set by jest-isolation (per-worker test
+    // prefix). Normal/production runs leave it unset and BullMQ
+    // uses the default `bull` prefix. Prefix MUST match the Queue
+    // producer side (JobPostQueueService), otherwise the Worker
+    // reads from a different namespace and sees zero jobs.
+    const prefix = process.env.BULLMQ_PREFIX || undefined;
     this.worker = new Worker(JOB_POST_QUEUE, (job) => this.process(job), {
       connection: this.connection,
       concurrency: 2,
       limiter: { max: 2, duration: 5000 },
       lockDuration: 120000, // 2 min — AI calls can be slow
+      ...(prefix ? { prefix } : {}),
     });
 
     this.worker.on('failed', (job, err) => {
@@ -108,12 +120,20 @@ export class JobPostProcessorService implements OnModuleInit, OnModuleDestroy {
       true,
     );
     if (!analysisEnabled) {
+      // Worker picked the row but the operator paused AI after
+      // ingestion. Hand the row back as BACKLOG (not PENDING!) so
+      // the scheduler's reconcile tick does NOT re-enqueue it in a
+      // loop. The next enable-analysis call will promote
+      // BACKLOG → PENDING per the operator's strategy; the stale
+      // completed BullMQ job for this row's current version will be
+      // removed by `enqueue()`'s terminal-state cleanup when the
+      // row is re-pushed.
       this.logger.warn(
-        `JobPost ${jobPostId}: analysis disabled by settings — leaving as NEW`,
+        `JobPost ${jobPostId}: analysis disabled — rolling back to NEW/BACKLOG`,
       );
       await this.prisma.jobPost.update({
         where: { id: jobPostId },
-        data: { status: 'NEW' },
+        data: { status: 'NEW', enqueueState: 'BACKLOG' },
       });
       return;
     }
@@ -126,29 +146,43 @@ export class JobPostProcessorService implements OnModuleInit, OnModuleDestroy {
         select: { rawText: true },
       });
 
-      // ── Gatekeeper gate: a cheap pre-filter the AI evaluator does
-      //    NOT need to run for obvious rejects. Business rules live
-      //    in JOB_GATEKEEPER_PROMPT, not inline here.
+      // ── Stage 1: Gatekeeper (Haiku) returns { fit, confidence, reason }.
+      //    Reject at the gate ONLY when fit=false AND confidence is
+      //    high. Low-confidence false still proceeds to Sonnet, so a
+      //    hesitant Haiku doesn't silently kill borderline posts.
       const gate = await this.aiEvaluator.gate(jobPost!.rawText);
-      if (!gate.fit) {
+      const gateRejected =
+        !gate.fit && gate.confidence >= GATE_REJECT_THRESHOLD;
+      if (gateRejected) {
         await this.prisma.jobPost.update({
           where: { id: jobPostId },
           data: {
             decision: 'decline',
             matchScore: 0,
             priority: 'low',
-            aiResponse: { gatekeeper: { fit: false, reason: gate.reason } },
+            aiResponse: {
+              gatekeeper: {
+                fit: false,
+                confidence: gate.confidence,
+                reason: gate.reason,
+                usage: gate.usage,
+              },
+            },
             status: 'PROCESSED',
             processedAt: new Date(),
+            lastAnalysisAt: new Date(),
+            lastAnalysisError: null,
+            analysisModelVersion: gate.usage.model,
+            enqueueState: null,
           },
         });
         this.logger.log(
-          `Gatekeeper declined jobPost: ${jobPostId} — ${gate.reason}`,
+          `Gatekeeper rejected jobPost ${jobPostId} (confidence=${gate.confidence}): ${gate.reason}`,
         );
         return;
       }
 
-      // ── Fit → full evaluation.
+      // ── Stage 2: Sonnet full evaluation.
       const result = await this.aiEvaluator.evaluate(jobPost!.rawText);
 
       const processed = await this.prisma.jobPost.update({
@@ -158,11 +192,29 @@ export class JobPostProcessorService implements OnModuleInit, OnModuleDestroy {
           matchScore: result.matchScore,
           priority: result.priority,
           aiResponse: {
-            gatekeeper: { fit: true, reason: gate.reason },
-            evaluation: result.aiResponse,
-          },
+            gatekeeper: {
+              fit: gate.fit,
+              confidence: gate.confidence,
+              reason: gate.reason,
+              usage: gate.usage,
+            },
+            evaluation: {
+              reasoning: result.reasoning,
+              strengths: result.strengths,
+              risks: result.risks,
+              scopeClarity: result.scopeClarity,
+              quickWin: result.quickWin,
+              effortEstimate: result.effortEstimate,
+              raw: result.raw as Prisma.InputJsonValue,
+              usage: result.usage,
+            },
+          } as Prisma.InputJsonValue,
           status: 'PROCESSED',
           processedAt: new Date(),
+          lastAnalysisAt: new Date(),
+          lastAnalysisError: null,
+          analysisModelVersion: result.usage.model,
+          enqueueState: null,
         },
       });
 
@@ -194,12 +246,31 @@ export class JobPostProcessorService implements OnModuleInit, OnModuleDestroy {
         `Processed jobPost: ${jobPostId} → ${result.decision} (${result.matchScore})`,
       );
     } catch (err) {
+      // Permanent validation errors (gatekeeper / evaluator returned
+      // schema-invalid output) do not benefit from a retry — the
+      // same prompt against the same model will fail the same way
+      // soon. These go straight to FAILED. Transient errors (API
+      // 5xx, 429, network) still retry via BullMQ's attempts.
+      const isPermanent =
+        err instanceof GatekeeperResponseError ||
+        err instanceof EvaluatorResponseError;
       const isLastAttempt = options.attempt + 1 >= options.maxAttempts;
+      const terminal = isPermanent || isLastAttempt;
       await this.prisma.jobPost.update({
         where: { id: jobPostId },
-        data: { status: isLastAttempt ? 'FAILED' : 'NEW' },
+        data: {
+          status: terminal ? 'FAILED' : 'NEW',
+          analysisAttempts: { increment: 1 },
+          lastAnalysisAt: new Date(),
+          lastAnalysisError: sanitiseError((err as Error).message),
+          enqueueState: terminal ? null : 'PENDING',
+        },
       });
       throw err;
     }
   }
+}
+
+function sanitiseError(msg: string): string {
+  return msg.replace(/\s+/g, ' ').trim().slice(0, 500);
 }

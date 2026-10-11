@@ -255,6 +255,23 @@ export class SettingsService {
       const before =
         existing?.value?.value ?? entry.default;
 
+      // Guard: enabling scanner.analysisEnabled directly from the
+      // Settings page would bypass the operator's choice for the
+      // accumulated BACKLOG (Process vs Skip). Force that path
+      // through POST /job-posts/enable-analysis — a Settings PATCH
+      // may only turn the flag OFF or keep it at the current value.
+      if (
+        key === 'scanner.analysisEnabled' &&
+        before === false &&
+        coerced === true
+      ) {
+        throw new BadRequestException(
+          'Enable AI analysis through the Resume AI dialog in Sales Analytics ' +
+            '— a direct Settings toggle would leave accumulated posts in BACKLOG. ' +
+            'Pausing AI from Settings is still allowed.',
+        );
+      }
+
       await this.ensureDbRow(entry);
       const row = await this.prisma.setting.findUnique({
         where: { key },
@@ -291,6 +308,21 @@ export class SettingsService {
         select: { id: true },
       });
       if (!row) throw new NotFoundException(`Setting "${key}" not found`);
+      const existing = await this.prisma.settingValue.findUnique({
+        where: { settingId: row.id },
+      });
+      const before = existing?.value ?? entry.default;
+      if (
+        key === 'scanner.analysisEnabled' &&
+        before === false &&
+        coerced === true
+      ) {
+        throw new BadRequestException(
+          'Enable AI analysis through the Resume AI dialog in Sales Analytics ' +
+            '— a direct Settings toggle would leave accumulated posts in BACKLOG. ' +
+            'Pausing AI from Settings is still allowed.',
+        );
+      }
       await this.prisma.settingValue.upsert({
         where: { settingId: row.id },
         create: {
@@ -416,6 +448,139 @@ export class SettingsService {
 
   private invalidateCache(key: string): void {
     this.cache.delete(key);
+  }
+
+  /**
+   * In-cache invalidation hook for callers that wrote the setting
+   * value from inside their own `$transaction` (via
+   * `applyBooleanInsideTx`). Call AFTER the transaction has
+   * committed — otherwise a concurrent read could re-populate the
+   * cache from a row that then rolls back.
+   */
+  invalidateCachePublic(key: string): void {
+    this.cache.delete(key);
+  }
+
+  /**
+   * Reads a boolean setting under a `FOR SHARE` row-level lock on
+   * the Setting row, bypassing the in-process cache. Compatible
+   * with `applyBooleanInsideTx` (which holds `FOR UPDATE`): a
+   * writer with FOR UPDATE blocks concurrent readers acquiring
+   * FOR SHARE until the writer commits, so a reader never sees
+   * the pre-commit value of an in-flight flag flip. Multiple
+   * concurrent readers do NOT block each other.
+   *
+   * Use ONLY inside a caller-controlled transaction that also
+   * does the row-level DB work the flag gates (e.g. the ingestion
+   * processor's JobPost create). Do NOT use for display reads —
+   * `getBooleanForKey` is faster and the cache staleness is
+   * acceptable there.
+   *
+   *   1. find the Setting row id (unlocked read of a stable id);
+   *   2. take `FOR SHARE` on that id — blocks on any concurrent
+   *      FOR UPDATE from an enable writer;
+   *   3. only AFTER the lock is held, read SettingValue — this
+   *      yields the committed value of a writer that was in
+   *      flight when the caller arrived.
+   */
+  async getBooleanInsideTx(
+    tx: Prisma.TransactionClient,
+    key: string,
+    fallback: boolean,
+  ): Promise<boolean> {
+    const row = await tx.setting.findUnique({
+      where: { key },
+      select: { id: true },
+    });
+    if (!row) return fallback;
+    await tx.$executeRaw`SELECT 1 FROM "Setting" WHERE "id" = ${row.id} FOR SHARE`;
+    const value = await tx.settingValue.findUnique({
+      where: { settingId: row.id },
+      select: { value: true },
+    });
+    if (!value) return fallback;
+    const v = value.value;
+    if (typeof v === 'boolean') return v;
+    // Legacy rows that stored booleans as 'true'/'false' strings.
+    if (typeof v === 'string') return v === 'true';
+    return fallback;
+  }
+
+  /**
+   * Read + exclusive-lock a boolean setting in ONE step. Use this
+   * from code paths that both READ the current value AND intend
+   * to WRITE a new one in the same transaction (e.g. enableAnalysis).
+   *
+   * Why not pair `getBooleanInsideTx` (FOR SHARE) with a later
+   * `applyBooleanInsideTx` (FOR UPDATE)? Two parallel transactions
+   * acquiring FOR SHARE first and then trying to upgrade to
+   * FOR UPDATE will deadlock, because Postgres treats the upgrade
+   * as a conflicting lock mode when another FOR SHARE is already
+   * held. Taking FOR UPDATE from the start avoids that cycle: the
+   * second transaction simply blocks until the first commits, then
+   * reads the committed value.
+   */
+  async getBooleanForUpdateInsideTx(
+    tx: Prisma.TransactionClient,
+    key: string,
+    fallback: boolean,
+  ): Promise<boolean> {
+    const row = await tx.setting.findUnique({
+      where: { key },
+      select: { id: true },
+    });
+    if (!row) return fallback;
+    await tx.$executeRaw`SELECT 1 FROM "Setting" WHERE "id" = ${row.id} FOR UPDATE`;
+    const value = await tx.settingValue.findUnique({
+      where: { settingId: row.id },
+      select: { value: true },
+    });
+    if (!value) return fallback;
+    const v = value.value;
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'string') return v === 'true';
+    return fallback;
+  }
+
+  /**
+   * Writes a boolean setting inside a caller-controlled Prisma
+   * transaction. Lets a feature endpoint atomically pair a flag
+   * flip with other row-level work (e.g. the enable-analysis
+   * strategy for Job Posts).
+   *
+   *   - Serialises concurrent writers via SELECT … FOR UPDATE on
+   *     the Setting row (if present).
+   *   - Does NOT touch the in-process cache; the caller must call
+   *     `invalidateCachePublic(key)` after a successful commit.
+   *   - Falls back to legacy-row behaviour when the key is not
+   *     in the registry.
+   */
+  async applyBooleanInsideTx(
+    tx: Prisma.TransactionClient,
+    key: string,
+    value: boolean,
+  ): Promise<void> {
+    // Ensure the Setting row exists (idempotent) BEFORE opening
+    // the row-level lock, so a brand-new local DB doesn't deadlock
+    // on the first write.
+    const entry = SETTINGS_REGISTRY[key];
+    if (entry) {
+      await this.ensureDbRow(entry);
+    }
+    const row = await tx.setting.findUnique({
+      where: { key },
+      select: { id: true },
+    });
+    if (!row) {
+      throw new NotFoundException(`Setting "${key}" not found`);
+    }
+    // Row-level lock to serialise concurrent enable/disable calls.
+    await tx.$executeRaw`SELECT 1 FROM "Setting" WHERE "id" = ${row.id} FOR UPDATE`;
+    await tx.settingValue.upsert({
+      where: { settingId: row.id },
+      create: { settingId: row.id, value: value as Prisma.InputJsonValue },
+      update: { value: value as Prisma.InputJsonValue },
+    });
   }
 
   private async getRawValueLegacy(key: string): Promise<unknown> {

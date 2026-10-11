@@ -19,6 +19,6 @@ import { JobPostService } from './job-post.service';
     AiJobEvaluatorService,
     JobPostService,
   ],
-  exports: [JobPostQueueService, AiJobEvaluatorService],
+  exports: [JobPostQueueService, AiJobEvaluatorService, JobPostService],
 })
 export class JobPostModule {}

@@ -16,9 +16,13 @@ const auditStub = {
 	recordSafe: async () => undefined,
 	record: async () => undefined,
 } as unknown as AuditEventService;
+const notificationsStub = {
+	createEvent: async () => undefined,
+} as unknown as import('../notification/notification.service').NotificationService;
 const svc = new ClientCallsService(
 	prisma as unknown as PrismaService,
 	auditStub,
+	notificationsStub,
 );
 const TAG = `cc-inv-${randomUUID().slice(0, 8)}`;
 
@@ -28,9 +32,21 @@ let creatorId: string;
 const createdCallIds: string[] = [];
 
 beforeAll(async () => {
-  const user = await prisma.user.findFirst({ select: { id: true } });
-  if (!user) throw new Error('No user in DB — fixture missing');
-  creatorId = user.id;
+  const existing = await prisma.user.findFirst({ select: { id: true } });
+  if (existing) {
+    creatorId = existing.id;
+  } else {
+    const u = await prisma.user.create({
+      data: {
+        email: `${TAG}@test.local`,
+        firstName: 'Spec',
+        lastName: 'Runner',
+        passwordHash: 'x',
+      },
+      select: { id: true },
+    });
+    creatorId = u.id;
+  }
   const lead = await prisma.lead.create({ data: { firstName: `${TAG}-l` } });
   const client = await prisma.client.create({
     data: { firstName: `${TAG}-c` },
@@ -50,8 +66,10 @@ afterAll(async () => {
 
 const base = (): Omit<CreateClientCallDto, 'clientType' | 'leadId' | 'crmClientId' | 'clientRequestId'> => ({
   callTitle: 'Discovery call',
-  scheduledAt: '2026-11-15T14:00:00.000Z',
-  clientTimezone: 'Europe/Kiev',
+  // 2 hours ahead so the 30-min-future validation always passes
+  // regardless of when the test is run.
+  scheduledAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+  clientTimezone: 'Europe/Kyiv',
   duration: 30,
 });
 

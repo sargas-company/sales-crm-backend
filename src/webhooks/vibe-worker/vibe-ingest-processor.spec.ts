@@ -30,6 +30,11 @@ const TAG = `vibe-ingest-${randomUUID().slice(0, 8)}`;
 function makeSettings(analysisEnabled = true): SettingsService {
   return {
     getBooleanForKey: async (_key: string, _default: boolean) => analysisEnabled,
+    getBooleanInsideTx: async (
+      _tx: unknown,
+      _key: string,
+      _default: boolean,
+    ) => analysisEnabled,
   } as unknown as SettingsService;
 }
 
@@ -145,6 +150,7 @@ describe('VibeIngestProcessorService — happy path', () => {
       prisma as unknown as PrismaService,
       queue,
       makeSettings(true),
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
 
     await svc.processEvent(eventId);
@@ -178,6 +184,7 @@ describe('VibeIngestProcessorService — idempotency', () => {
       prisma as unknown as PrismaService,
       makeQueueStub(),
       makeSettings(true),
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
     const queue1 = makeQueueStub();
     const queue2 = makeQueueStub();
@@ -188,6 +195,7 @@ describe('VibeIngestProcessorService — idempotency', () => {
       prisma as unknown as PrismaService,
       queue1,
       makeSettings(true),
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
     await svcA.processEvent(eventA);
 
@@ -202,6 +210,7 @@ describe('VibeIngestProcessorService — idempotency', () => {
       prisma as unknown as PrismaService,
       queue2,
       makeSettings(true),
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
     await svcB.processEvent(eventB);
 
@@ -232,6 +241,7 @@ describe('VibeIngestProcessorService — demo / diagnostic payloads', () => {
       prisma as unknown as PrismaService,
       queue,
       makeSettings(true),
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
     await svc.processEvent(eventId);
 
@@ -254,6 +264,7 @@ describe('VibeIngestProcessorService — queue failure safety', () => {
       prisma as unknown as PrismaService,
       failing,
       makeSettings(true),
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
     await svc.processEvent(eventId); // must NOT throw — logger.warn absorbs
 
@@ -270,6 +281,7 @@ describe('VibeIngestProcessorService — queue failure safety', () => {
       prisma as unknown as PrismaService,
       healthy,
       makeSettings(true),
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
     await svc2.processEvent(eventId);
     expect((healthy.enqueue as jest.Mock)).not.toHaveBeenCalled();
@@ -290,6 +302,7 @@ describe('VibeIngestProcessorService — drainReceived', () => {
       prisma as unknown as PrismaService,
       queue,
       makeSettings(true),
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
 
     const n = await svc.drainReceived();
@@ -306,8 +319,11 @@ describe('VibeIngestProcessorService — drainReceived', () => {
   });
 });
 
-describe('VibeIngestProcessorService — kill-switch respects scanner.analysisEnabled', () => {
-  it('does not touch events when analysisEnabled=false', async () => {
+describe('VibeIngestProcessorService — analysisEnabled gates ONLY the BullMQ handoff', () => {
+  // Phase A — ingestion is independent of `scanner.analysisEnabled`.
+  // The post always lands in Postgres as JobPost(NEW); the only
+  // thing the toggle controls is whether `queue.enqueue` is called.
+  it('still creates JobPost(NEW) when analysisEnabled=false, but does NOT enqueue', async () => {
     const providerJobId = `vw_${TAG}_pause_${Date.now()}`;
     const eventId = await captureEvent(makePayload(providerJobId));
     createdEventIds.push(eventId);
@@ -316,13 +332,38 @@ describe('VibeIngestProcessorService — kill-switch respects scanner.analysisEn
       prisma as unknown as PrismaService,
       queue,
       makeSettings(false),
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
     );
     await svc.processEvent(eventId);
 
-    const ev = await prisma.jobPostIngestEvent.findUniqueOrThrow({ where: { id: eventId } });
-    expect(ev.status).toBe(JobPostIngestStatus.RECEIVED);
-    const n = await prisma.jobPost.count({ where: { providerJobId } });
-    expect(n).toBe(0);
+    const ev = await prisma.jobPostIngestEvent.findUniqueOrThrow({
+      where: { id: eventId },
+    });
+    expect(ev.status).toBe(JobPostIngestStatus.PROCESSED);
+    const jp = await prisma.jobPost.findUnique({ where: { providerJobId } });
+    expect(jp).not.toBeNull();
+    expect(jp?.status).toBe('NEW');
+    expect(jp?.enqueuedAt).toBeNull();
     expect((queue.enqueue as jest.Mock)).not.toHaveBeenCalled();
+  });
+
+  it('enqueues when analysisEnabled=true', async () => {
+    const providerJobId = `vw_${TAG}_active_${Date.now()}`;
+    const eventId = await captureEvent(makePayload(providerJobId));
+    createdEventIds.push(eventId);
+    const queue = makeQueueStub();
+    const svc = new VibeIngestProcessorService(
+      prisma as unknown as PrismaService,
+      queue,
+      makeSettings(true),
+      { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
+    );
+    await svc.processEvent(eventId);
+
+    expect((queue.enqueue as jest.Mock)).toHaveBeenCalledTimes(1);
+    const jp = await prisma.jobPost.findUniqueOrThrow({
+      where: { providerJobId },
+    });
+    expect(jp.status).toBe('NEW');
   });
 });

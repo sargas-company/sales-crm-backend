@@ -44,7 +44,11 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       maxRetriesPerRequest: null,
     });
 
-    this.queue = new Queue(NOTIFICATION_QUEUE, { connection: this.connection });
+    const prefix = process.env.BULLMQ_PREFIX || undefined;
+    this.queue = new Queue(NOTIFICATION_QUEUE, {
+      connection: this.connection,
+      ...(prefix ? { prefix } : {}),
+    });
 
     this.orphanInterval = setInterval(() => {
       if (this.orphanRunning) {
@@ -113,9 +117,31 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       case NotificationType.CLIENT_REQUEST:
         await this.handleClientRequest(event);
         break;
+      case NotificationType.CALL_SCHEDULED:
+      case NotificationType.CALL_RESCHEDULED:
+      case NotificationType.CALL_CANCELLED:
+        // All three share the same "enqueue, routed through the
+        // processor to the active DiscordProfile's PMS channel" path.
+        await this.enqueuePmsEvent(event);
+        break;
       default:
         this.logger.log(`No rule for event type ${event.type}, skipping`);
     }
+  }
+
+  private async enqueuePmsEvent(event: NotificationEvent): Promise<void> {
+    await this.queue.add(
+      NOTIFICATION_SEND,
+      { eventId: event.id },
+      {
+        jobId: event.id,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 3000 },
+        removeOnComplete: true,
+        removeOnFail: false,
+      },
+    );
+    this.logger.log(`${event.type} event ${event.id} enqueued`);
   }
 
   private async handleJobPostMatch(event: NotificationEvent): Promise<void> {

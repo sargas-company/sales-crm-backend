@@ -92,8 +92,18 @@ export class CallReminderService implements OnModuleInit, OnModuleDestroy {
             scheduledAt: { gte: windowStart, lte: windowEnd },
           },
           include: {
-            lead: { select: { firstName: true, lastName: true } },
-            clientRequest: { select: { name: true } },
+            lead: {
+              select: { firstName: true, lastName: true, companyName: true },
+            },
+            // crmClient is needed for client-owned calls so the
+            // reminder embed doesn't fall back to '—'.
+            crmClient: {
+              select: { firstName: true, lastName: true, company: true },
+            },
+            // Legacy — kept for historical rows that still point at
+            // a ClientRequest. New calls can't be created against a
+            // request, but old ones can still fire their reminders.
+            clientRequest: { select: { name: true, company: true } },
           },
         });
 
@@ -101,7 +111,9 @@ export class CallReminderService implements OnModuleInit, OnModuleDestroy {
           const clientName =
             call.clientType === 'lead'
               ? `${call.lead?.firstName ?? ''} ${call.lead?.lastName ?? ''}`.trim()
-              : (call.clientRequest?.name ?? '—');
+              : call.clientType === 'client'
+                ? `${call.crmClient?.firstName ?? ''} ${call.crmClient?.lastName ?? ''}`.trim()
+                : (call.clientRequest?.name ?? '—');
 
           await this.sendReminderIdempotent(
             call.id,

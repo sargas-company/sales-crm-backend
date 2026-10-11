@@ -2,7 +2,6 @@ interface ParsedJobPostFields {
   title: string | null;
   jobUrl: string | null;
   scanner: string | null;
-  gigRadarScore: number | null;
   location: string | null;
   budget: string | null;
   totalSpent: number | null;
@@ -30,9 +29,6 @@ export function parseJobPostFields(
       : null) ?? null;
 
   const scanner = rawText.match(/Scanner:\s*(.+)/)?.[1]?.trim() ?? null;
-
-  const gigRadarRaw = rawText.match(/GigRadar Score:\s*(\d+)%/)?.[1];
-  const gigRadarScore = gigRadarRaw != null ? parseInt(gigRadarRaw, 10) : null;
 
   const location = rawText.match(/Location:\s*(.+)/)?.[1]?.trim() ?? null;
 
@@ -64,7 +60,6 @@ export function parseJobPostFields(
     title,
     jobUrl,
     scanner,
-    gigRadarScore,
     location,
     budget,
     totalSpent,

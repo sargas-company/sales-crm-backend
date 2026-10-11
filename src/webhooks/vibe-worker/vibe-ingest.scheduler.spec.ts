@@ -31,6 +31,11 @@ const TAG = `sched-${randomUUID().slice(0, 8)}`;
 function makeSettings(getFlag: () => boolean): SettingsService {
   return {
     getBooleanForKey: async (_key: string, _default: boolean) => getFlag(),
+    getBooleanInsideTx: async (
+      _tx: unknown,
+      _key: string,
+      _default: boolean,
+    ) => getFlag(),
   } as unknown as SettingsService;
 }
 
@@ -40,16 +45,24 @@ function makeQueue(opts?: { fail?: Error | null }) {
     calls.push(id);
     if (opts?.fail) throw opts.fail;
   });
-  // `resetStuckProcessing` is the deferred boot-recovery hook the
-  // scheduler calls on its first tick. In mocked suites we never
-  // seed stuck PROCESSING rows, so this returns 0 and lets the
-  // reconcile branch proceed exactly as before the refactor.
   const resetStuckProcessing = jest.fn(async () => 0);
+  const reconcilePauseState = jest.fn(async () => undefined);
+  const pause = jest.fn(async () => undefined);
+  const resume = jest.fn(async () => undefined);
+  const forgetJob = jest.fn(async () => undefined);
   return {
     calls,
     enqueue,
     resetStuckProcessing,
-    service: { enqueue, resetStuckProcessing } as unknown as JobPostQueueService,
+    reconcilePauseState,
+    service: {
+      enqueue,
+      resetStuckProcessing,
+      reconcilePauseState,
+      pause,
+      resume,
+      forgetJob,
+    } as unknown as JobPostQueueService,
   };
 }
 
@@ -139,11 +152,19 @@ function buildSched(
     prisma as unknown as PrismaService,
     queue.service,
     makeSettings(settingsFlag),
+    {
+      emitWebhookReceived: () => undefined,
+      emitJobPostChanged: () => undefined,
+      emitSettingsScanner: () => undefined,
+      emitDiscordDelivered: () => undefined,
+      stream$: () => ({}),
+    } as never,
   );
   const scheduler = new VibeIngestScheduler(
     prisma as unknown as PrismaService,
     processor,
     queue.service,
+    makeSettings(settingsFlag),
   );
   return { processor, scheduler };
 }
@@ -165,30 +186,57 @@ describe('inbox drain — tick-based processing', () => {
     expect(queue.calls).toEqual([ev.jobPostId]);
   });
 
-  it('analysisEnabled false → true drains backlog on the NEXT tick without restart', async () => {
-    const providerId = `${TAG}_flip_${Date.now()}`;
-    const eventId = await createEvent(payload(providerId));
-    createdEventIds.push(eventId);
+  it('analysisEnabled false → true: ingestion runs either way; only the AI enqueue is gated', async () => {
+    // Phase A: ingestion is independent of `scanner.analysisEnabled`.
+    // Events become PROCESSED and a JobPost(NEW) is created on tick #1
+    // regardless of the toggle. Flipping the setting from false to
+    // true only causes the FOLLOW-UP enqueue path to actually push
+    // the row to Redis — on tick #2 against a NEW post that was
+    // ingested while paused, nothing new happens for that same row
+    // (the processor only enqueues inside the create path), so we
+    // assert the two-tick shape against two posts: one before the
+    // flip, one after.
+    const beforeId = `${TAG}_flip_before_${Date.now()}`;
+    const beforeEvent = await createEvent(payload(beforeId));
+    createdEventIds.push(beforeEvent);
 
     let flag = false;
     const queue = makeQueue();
     const { scheduler } = buildSched(queue, () => flag);
 
-    // Tick #1 — paused. Nothing moves.
+    // Tick #1 — paused. Event IS processed; JobPost(NEW) is created
+    // with no enqueue (backlog case).
     await scheduler.inboxDrainTick();
-    let ev = await prisma.jobPostIngestEvent.findUniqueOrThrow({ where: { id: eventId } });
-    expect(ev.status).toBe(JobPostIngestStatus.RECEIVED);
-    expect(queue.calls).toHaveLength(0);
-
-    // Operator flips scanner.analysisEnabled → true.
-    flag = true;
-
-    // Tick #2 — backlog drained.
-    await scheduler.inboxDrainTick();
-    ev = await prisma.jobPostIngestEvent.findUniqueOrThrow({ where: { id: eventId } });
+    let ev = await prisma.jobPostIngestEvent.findUniqueOrThrow({
+      where: { id: beforeEvent },
+    });
     expect(ev.status).toBe(JobPostIngestStatus.PROCESSED);
     createdJobPostIds.push(ev.jobPostId!);
-    expect(queue.calls).toHaveLength(1);
+    expect(queue.calls).toHaveLength(0);
+    const beforeJp = await prisma.jobPost.findUniqueOrThrow({
+      where: { id: ev.jobPostId! },
+    });
+    expect(beforeJp.status).toBe('NEW');
+    expect(beforeJp.enqueuedAt).toBeNull();
+
+    // Operator flips scanner.analysisEnabled → true, and a NEW event
+    // arrives.
+    flag = true;
+    const afterId = `${TAG}_flip_after_${Date.now()}`;
+    const afterEvent = await createEvent(payload(afterId));
+    createdEventIds.push(afterEvent);
+
+    // Tick #2 — new event processed AND enqueued; the backlog item
+    // above is NOT re-enqueued automatically (that is the operator's
+    // explicit enable-strategy decision, not a side-effect of the
+    // tick).
+    await scheduler.inboxDrainTick();
+    ev = await prisma.jobPostIngestEvent.findUniqueOrThrow({
+      where: { id: afterEvent },
+    });
+    expect(ev.status).toBe(JobPostIngestStatus.PROCESSED);
+    createdJobPostIds.push(ev.jobPostId!);
+    expect(queue.calls).toEqual([ev.jobPostId!]);
   });
 
   it('two parallel tick calls do not double-process the same event', async () => {
@@ -236,8 +284,16 @@ describe('queue reconciliation — tick-based retry', () => {
         prisma as unknown as PrismaService,
         healthy.service,
         makeSettings(() => true),
+        {
+          emitWebhookReceived: () => undefined,
+          emitJobPostChanged: () => undefined,
+          emitSettingsScanner: () => undefined,
+          emitDiscordDelivered: () => undefined,
+          stream$: () => ({}),
+        } as never,
       ),
       healthy.service,
+      makeSettings(() => true),
     );
     await upSched.queueReconcileTick();
     expect(healthy.calls).toContain(jp.id);
@@ -275,6 +331,7 @@ describe('queue reconciliation — tick-based retry', () => {
         rawText: 'x',
         rawPayload: {} as never,
         status: 'NEW',
+        enqueueState: 'PENDING',
         scanner: 'vibe-worker',
         hSkillsKeywords: [],
       },

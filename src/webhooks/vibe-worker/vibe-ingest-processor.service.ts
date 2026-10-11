@@ -11,6 +11,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { JobPostQueueService } from '../../job-post/job-post-queue.service';
 import { SettingsService } from '../../settings/settings.service';
 import { SK } from '../../settings/settings-registry';
+import { LiveEventsService } from '../../live-events/live-events.service';
 import { mapVibeJobPayload } from './vibe-ingest-mapper';
 
 /**
@@ -47,19 +48,18 @@ export class VibeIngestProcessorService {
     private readonly prisma: PrismaService,
     private readonly queue: JobPostQueueService,
     private readonly settings: SettingsService,
+    private readonly liveEvents: LiveEventsService,
   ) {}
 
-  /** Entry point used by the webhook controller for the hot path. */
+  /**
+   * Entry point used by the webhook controller for the hot path.
+   *
+   * Phase A: ingestion (RECEIVED → JobPost(NEW)) is now independent
+   * of `scanner.analysisEnabled`. Only the BullMQ enqueue inside
+   * `processOne` is gated by that setting — so a paused AI still
+   * leaves every incoming post visible in the triage list.
+   */
   async processEvent(eventId: string): Promise<void> {
-    const analysisDisabled = !(await this.settings.getBooleanForKey(
-      SK.SCANNER_ANALYSIS_ENABLED,
-      true,
-    ));
-    if (analysisDisabled) {
-      // Analysis is paused by the operator: leave the event RECEIVED
-      // so a later drain can pick it up. Do NOT drop it.
-      return;
-    }
     const event = await this.prisma.jobPostIngestEvent.findUnique({
       where: { id: eventId },
       select: { id: true, status: true, payload: true },
@@ -75,19 +75,11 @@ export class VibeIngestProcessorService {
   /**
    * Walks every RECEIVED event in order. Driven by
    * `VibeIngestScheduler.inboxDrainTick` every 30s.
+   *
+   * Runs regardless of `scanner.analysisEnabled` — the gate is only
+   * on the AI enqueue inside `processOne`.
    */
   async drainReceived(): Promise<number> {
-    const analysisEnabled = await this.settings.getBooleanForKey(
-      SK.SCANNER_ANALYSIS_ENABLED,
-      true,
-    );
-    if (!analysisEnabled) {
-      this.logger.log(
-        'drainReceived: skipped (scanner.analysisEnabled=false — events stay RECEIVED until re-enabled)',
-      );
-      return 0;
-    }
-
     const rows = await this.prisma.jobPostIngestEvent.findMany({
       where: { status: JobPostIngestStatus.RECEIVED },
       orderBy: { receivedAt: 'asc' },
@@ -123,29 +115,49 @@ export class VibeIngestProcessorService {
       return;
     }
 
+    // Reading `scanner.analysisEnabled` and creating the JobPost
+    // must happen in ONE Postgres transaction, under a row-level
+    // lock on the Setting row (FOR SHARE). Otherwise:
+    //   • a reader outside the lock can see the pre-commit value
+    //     of an in-flight enable txn (the writer holds FOR UPDATE);
+    //   • the row lands as BACKLOG even though the operator
+    //     already flipped the switch;
+    //   • scheduler's reconcile only drives `PENDING`, so the
+    //     mis-flagged BACKLOG never auto-recovers.
+    // The lock is released on commit, so concurrent ingestions
+    // run in parallel (FOR SHARE doesn't block FOR SHARE); only
+    // enable's FOR UPDATE serialises.
     let jobPostId: string;
     let justCreated: boolean;
+    let initialEnqueueState: 'PENDING' | 'BACKLOG' = 'BACKLOG';
     try {
       const result = await this.commitLink(row.id, mapped);
       jobPostId = result.jobPostId;
       justCreated = result.justCreated;
+      initialEnqueueState = result.initialEnqueueState;
     } catch (err) {
       await this.markFailed(row.id, (err as Error).message);
       throw err;
     }
 
-    if (justCreated) {
+    if (justCreated && initialEnqueueState === 'PENDING') {
+      // Best-effort hot-path push. On failure the row stays PENDING
+      // and `queueReconcileTick` drains it on the next scheduler
+      // tick — no event is ever lost.
       try {
         await this.queue.enqueue(jobPostId);
       } catch (err) {
-        // DB side is already committed as PROCESSED → JobPost(NEW).
-        // The queue-level recovery in JobPostQueueService.onModuleInit
-        // will enqueue every NEW JobPost on next boot, so the message
-        // never gets lost. We only warn here.
         this.logger.warn(
-          `JobPost ${jobPostId} committed but enqueue failed: ${(err as Error).message}`,
+          `JobPost ${jobPostId} committed as PENDING; initial enqueue failed, scheduler will retry: ${(err as Error).message}`,
         );
       }
+    } else if (justCreated) {
+      this.logger.log(
+        `JobPost ${jobPostId} saved as NEW/BACKLOG; AI paused — waiting for enable-analysis strategy`,
+      );
+    }
+    if (justCreated) {
+      this.liveEvents.emitJobPostChanged('created');
     }
   }
 
@@ -162,8 +174,26 @@ export class VibeIngestProcessorService {
   private async commitLink(
     eventId: string,
     mapped: ReturnType<typeof mapVibeJobPayload> & object,
-  ): Promise<{ jobPostId: string; justCreated: boolean }> {
+  ): Promise<{
+    jobPostId: string;
+    justCreated: boolean;
+    initialEnqueueState: 'PENDING' | 'BACKLOG';
+  }> {
     return this.prisma.$transaction(async (tx) => {
+      // Read the flag UNDER the row-level FOR SHARE lock, bypassing
+      // the in-process settings cache. This is what closes the
+      // ingestion ↔ enable race: a concurrent enable txn's FOR
+      // UPDATE blocks us here until it commits, so we never see
+      // the pre-flip value.
+      const analysisEnabled = await this.settings.getBooleanInsideTx(
+        tx,
+        SK.SCANNER_ANALYSIS_ENABLED,
+        true,
+      );
+      const initialEnqueueState: 'PENDING' | 'BACKLOG' = analysisEnabled
+        ? 'PENDING'
+        : 'BACKLOG';
+
       const existing = await tx.jobPost.findUnique({
         where: { providerJobId: mapped.providerJobId },
         select: { id: true },
@@ -182,13 +212,41 @@ export class VibeIngestProcessorService {
             title: mapped.title || null,
             jobUrl: mapped.jobUrl || null,
             scanner: mapped.scanner,
+            // Legacy display fields.
             location: mapped.location,
             budget: mapped.budget,
             totalSpent: mapped.totalSpent,
             avgRatePaid: mapped.avgRatePaid,
             hireRate: mapped.hireRate,
             hSkillsKeywords: mapped.hSkillsKeywords,
+            // Phase A — normalised payload columns.
+            budgetType: mapped.budgetType,
+            budgetMin: mapped.budgetMin,
+            budgetMax: mapped.budgetMax,
+            budgetCurrency: mapped.budgetCurrency,
+            postedAt: mapped.postedAt,
+            contractType: mapped.contractType,
+            duration: mapped.duration,
+            hoursPerWeek: mapped.hoursPerWeek,
+            experienceLevel: mapped.experienceLevel,
+            connectsRequired: mapped.connectsRequired,
+            categories: mapped.categories,
+            questions:
+              mapped.questions == null
+                ? Prisma.DbNull
+                : (mapped.questions as Prisma.InputJsonValue),
+            country: mapped.country,
+            city: mapped.city,
+            clientPaymentVerified: mapped.clientPaymentVerified,
+            clientRating: mapped.clientRating,
+            clientHires: mapped.clientHires,
+            clientJobsPosted: mapped.clientJobsPosted,
+            clientReviewCount: mapped.clientReviewCount,
+            clientRankLabel: mapped.clientRankLabel,
+            clientRankScore: mapped.clientRankScore,
+            clientLocationRestriction: mapped.clientLocationRestriction,
             status: 'NEW',
+            enqueueState: initialEnqueueState,
           },
           select: { id: true },
         });
@@ -206,7 +264,7 @@ export class VibeIngestProcessorService {
           attempts: { increment: 1 },
         },
       });
-      return { jobPostId, justCreated };
+      return { jobPostId, justCreated, initialEnqueueState };
     });
   }
 

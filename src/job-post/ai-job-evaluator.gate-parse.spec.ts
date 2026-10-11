@@ -6,17 +6,23 @@ import {
 } from './ai-job-evaluator.service';
 
 describe('GATEKEEPER_TOOL — schema contract', () => {
-  it('declares both fit and reason as required with the right shapes', () => {
+  it('declares fit, confidence, and reason as required with the right shapes', () => {
     const schema = GATEKEEPER_TOOL.input_schema as unknown as {
       required: string[];
       properties: {
         fit: { type: string };
+        confidence: { type: string; minimum: number; maximum: number };
         reason: { type: string; minLength: number; maxLength: number };
       };
       additionalProperties: boolean;
     };
-    expect(schema.required).toEqual(expect.arrayContaining(['fit', 'reason']));
+    expect(schema.required).toEqual(
+      expect.arrayContaining(['fit', 'confidence', 'reason']),
+    );
     expect(schema.properties.fit.type).toBe('boolean');
+    expect(schema.properties.confidence.type).toBe('number');
+    expect(schema.properties.confidence.minimum).toBe(0);
+    expect(schema.properties.confidence.maximum).toBe(1);
     expect(schema.properties.reason.type).toBe('string');
     expect(schema.properties.reason.minLength).toBe(1);
     expect(schema.properties.reason.maxLength).toBe(200);
@@ -25,27 +31,44 @@ describe('GATEKEEPER_TOOL — schema contract', () => {
 });
 
 describe('parseGatekeeperInput — valid structured output', () => {
-  it('accepts fit=true + non-empty reason', () => {
-    const r = parseGatekeeperInput({ fit: true, reason: 'Node + Stripe' });
-    expect(r).toEqual({ fit: true, reason: 'Node + Stripe' });
+  it('accepts fit=true + confidence + non-empty reason', () => {
+    const r = parseGatekeeperInput({
+      fit: true,
+      confidence: 0.75,
+      reason: 'Node + Stripe',
+    });
+    expect(r).toEqual({ fit: true, confidence: 0.75, reason: 'Node + Stripe' });
   });
 
-  it('accepts fit=false + non-empty reason', () => {
+  it('accepts fit=false + high confidence + non-empty reason', () => {
     const r = parseGatekeeperInput({
       fit: false,
+      confidence: 0.95,
       reason: 'Shopify-only build',
     });
-    expect(r).toEqual({ fit: false, reason: 'Shopify-only build' });
+    expect(r).toEqual({
+      fit: false,
+      confidence: 0.95,
+      reason: 'Shopify-only build',
+    });
   });
 
   it('trims surrounding whitespace in the reason', () => {
-    const r = parseGatekeeperInput({ fit: true, reason: '  pass  ' });
+    const r = parseGatekeeperInput({
+      fit: true,
+      confidence: 0.6,
+      reason: '  pass  ',
+    });
     expect(r.reason).toBe('pass');
   });
 
   it('defensively truncates a long reason (schema caps at 200)', () => {
     const long = 'x'.repeat(500);
-    const r = parseGatekeeperInput({ fit: false, reason: long });
+    const r = parseGatekeeperInput({
+      fit: false,
+      confidence: 0.9,
+      reason: long,
+    });
     expect(r.reason.length).toBe(200);
   });
 });
@@ -57,35 +80,80 @@ describe('parseGatekeeperInput — throws GatekeeperResponseError', () => {
   };
 
   it('missing reason → throws', () => {
-    expectThrows({ fit: true }, /reason is missing or not string/);
+    expectThrows(
+      { fit: true, confidence: 0.5 },
+      /reason is missing or not string/,
+    );
   });
 
   it('empty reason → throws', () => {
-    expectThrows({ fit: true, reason: '' }, /reason is missing or not string|reason is empty/);
+    expectThrows(
+      { fit: true, confidence: 0.5, reason: '' },
+      /reason is missing or not string|reason is empty/,
+    );
   });
 
   it('whitespace-only reason → throws', () => {
-    expectThrows({ fit: false, reason: '   ' }, /reason is empty/);
+    expectThrows(
+      { fit: false, confidence: 0.5, reason: '   ' },
+      /reason is empty/,
+    );
   });
 
   it('non-string reason → throws', () => {
-    expectThrows({ fit: true, reason: 123 }, /reason is missing or not string/);
+    expectThrows(
+      { fit: true, confidence: 0.5, reason: 123 },
+      /reason is missing or not string/,
+    );
   });
 
   it('null reason → throws', () => {
-    expectThrows({ fit: false, reason: null }, /reason is missing or not string/);
+    expectThrows(
+      { fit: false, confidence: 0.5, reason: null },
+      /reason is missing or not string/,
+    );
   });
 
   it('fit missing → throws', () => {
-    expectThrows({ reason: 'ok' }, /fit is missing or not boolean/);
+    expectThrows(
+      { confidence: 0.5, reason: 'ok' },
+      /fit is missing or not boolean/,
+    );
   });
 
   it('fit as string → throws', () => {
-    expectThrows({ fit: 'true', reason: 'ok' }, /fit is missing or not boolean/);
+    expectThrows(
+      { fit: 'true', confidence: 0.5, reason: 'ok' },
+      /fit is missing or not boolean/,
+    );
   });
 
   it('fit as null → throws', () => {
-    expectThrows({ fit: null, reason: 'ok' }, /fit is missing or not boolean/);
+    expectThrows(
+      { fit: null, confidence: 0.5, reason: 'ok' },
+      /fit is missing or not boolean/,
+    );
+  });
+
+  it('confidence missing → throws', () => {
+    expectThrows(
+      { fit: true, reason: 'ok' },
+      /confidence is missing or out of \[0,1\]/,
+    );
+  });
+
+  it('confidence out of range → throws', () => {
+    expectThrows(
+      { fit: true, confidence: 1.5, reason: 'ok' },
+      /confidence is missing or out of \[0,1\]/,
+    );
+  });
+
+  it('confidence negative → throws', () => {
+    expectThrows(
+      { fit: true, confidence: -0.1, reason: 'ok' },
+      /confidence is missing or out of \[0,1\]/,
+    );
   });
 
   it('null input → throws (malformed structured payload)', () => {
@@ -93,11 +161,17 @@ describe('parseGatekeeperInput — throws GatekeeperResponseError', () => {
   });
 
   it('array input → throws (malformed structured payload)', () => {
-    expectThrows([{ fit: true, reason: 'ok' }], /tool input is not an object/);
+    expectThrows(
+      [{ fit: true, confidence: 0.5, reason: 'ok' }],
+      /tool input is not an object/,
+    );
   });
 
   it('string input → throws (malformed structured payload)', () => {
-    expectThrows('{"fit":true,"reason":"ok"}', /tool input is not an object/);
+    expectThrows(
+      '{"fit":true,"confidence":0.5,"reason":"ok"}',
+      /tool input is not an object/,
+    );
   });
 
   it('error carries a sanitised sample of the raw payload', () => {

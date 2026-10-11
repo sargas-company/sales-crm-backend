@@ -1,7 +1,18 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { AuditResult, ClientCallClientType, Prisma } from '@prisma/client';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  AuditResult,
+  ClientCallClientType,
+  ClientCallStatus,
+  Prisma,
+} from '@prisma/client';
 
 import { AuditEventService } from '../audit-event/audit-event.service';
+import { NotificationService } from '../notification/notification.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateClientCallDto } from './dto/create-client-call.dto';
 import {
@@ -54,55 +65,62 @@ function enrichCall<T extends { scheduledAt: Date; clientTimezone: string }>(
 
 @Injectable()
 export class ClientCallsService {
+  private readonly logger = new Logger(ClientCallsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditEventService,
+    private readonly notifications: NotificationService,
   ) {}
 
   async create(dto: CreateClientCallDto, createdById: string) {
-    // Exactly-one-owner invariant. The DB CHECK constraint
-    // `ClientCall_exactly_one_owner` is the final arbiter; this check
-    // raises a friendlier 400 before the SQL error surfaces, and
-    // additionally refuses extraneous owner ids that don't match the
-    // declared `clientType` discriminator.
+    // ClientCall owner restricted to Lead or Client only. The
+    // `client_request` discriminator is kept in the enum for schema
+    // compatibility with historical rows, but new calls MUST NOT be
+    // created against a Website Request. The guard here is backed
+    // by the DB CHECK `ClientCall_exactly_one_owner`.
+    if (
+      dto.clientType === ClientCallClientType.client_request ||
+      dto.clientRequestId
+    ) {
+      throw new BadRequestException(
+        'Calls can only be created for a Lead or a Client. Website Request is no longer a supported owner.',
+      );
+    }
     const providedIds = {
       leadId: dto.leadId ?? null,
       crmClientId: dto.crmClientId ?? null,
-      clientRequestId: dto.clientRequestId ?? null,
     };
     const providedCount = Object.values(providedIds).filter((v) => !!v).length;
     if (providedCount !== 1) {
       throw new BadRequestException(
-        'Exactly one of leadId / crmClientId / clientRequestId must be set',
+        'Exactly one of leadId / crmClientId must be set',
       );
     }
     const expectedKey =
-      dto.clientType === ClientCallClientType.lead
-        ? 'leadId'
-        : dto.clientType === ClientCallClientType.client
-          ? 'crmClientId'
-          : 'clientRequestId';
+      dto.clientType === ClientCallClientType.lead ? 'leadId' : 'crmClientId';
     if (!providedIds[expectedKey]) {
       throw new BadRequestException(
         `clientType=${dto.clientType} but ${expectedKey} is missing`,
       );
     }
 
+    // Scheduled time must be at least 30 minutes in the future so an
+    // operator can't book a call that would miss the 60-minute
+    // reminder window and would land in the past before anyone could
+    // react. Rescheduling an existing call is checked by `update`.
+    this.assertScheduledInFuture(new Date(dto.scheduledAt));
+
     if (dto.clientType === ClientCallClientType.lead) {
       const lead = await this.prisma.lead.findUnique({
         where: { id: dto.leadId! },
       });
       if (!lead) throw new NotFoundException('Lead not found');
-    } else if (dto.clientType === ClientCallClientType.client) {
+    } else {
       const c = await this.prisma.client.findUnique({
         where: { id: dto.crmClientId! },
       });
       if (!c) throw new NotFoundException('Client not found');
-    } else {
-      const cr = await this.prisma.clientRequest.findUnique({
-        where: { id: dto.clientRequestId! },
-      });
-      if (!cr) throw new NotFoundException('ClientRequest not found');
     }
 
     const call = await this.prisma.clientCall.create({
@@ -114,10 +132,7 @@ export class ClientCallsService {
           dto.clientType === ClientCallClientType.client
             ? dto.crmClientId!
             : null,
-        clientRequestId:
-          dto.clientType === ClientCallClientType.client_request
-            ? dto.clientRequestId!
-            : null,
+        clientRequestId: null,
         createdById,
         callTitle: dto.callTitle,
         meetingUrl: dto.meetingUrl ?? null,
@@ -128,8 +143,71 @@ export class ClientCallsService {
     });
 
     await this.emitCallCreatedActivity(call, createdById);
+    // "Call scheduled" PMS alert — fires once per successful create
+    // of a scheduled (non-cancelled, non-completed) call.
+    await this.emitScheduledNotification(call.id);
 
     return enrichCall(call);
+  }
+
+  /**
+   * Guard used by create() and update() when the operator sets or
+   * changes `scheduledAt`. Required by product: an operator cannot
+   * save a call that would land in the past, and the 30-minute floor
+   * keeps the 10-minute reminder from firing before the row has even
+   * been committed.
+   */
+  private assertScheduledInFuture(when: Date): void {
+    const minMs = Date.now() + 30 * 60 * 1000;
+    if (when.getTime() < minMs) {
+      throw new BadRequestException(
+        'Scheduled time must be at least 30 minutes in the future.',
+      );
+    }
+  }
+
+  /**
+   * Fires the "Call scheduled" PMS NotificationEvent after a call
+   * has been committed. Pulled into a method so the call-site in
+   * create() is a one-liner and the audit emission + notification
+   * emission stay side by side.
+   */
+  private async emitScheduledNotification(callId: string): Promise<void> {
+    try {
+      await this.notifications.createEvent('CALL_SCHEDULED', { callId });
+    } catch (err) {
+      this.logger?.error(
+        `Failed to create CALL_SCHEDULED NotificationEvent for call ${callId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  private async emitRescheduledNotification(
+    callId: string,
+    oldScheduledAt: Date,
+    newScheduledAt: Date,
+  ): Promise<void> {
+    try {
+      await this.notifications.createEvent('CALL_RESCHEDULED', {
+        callId,
+        oldScheduledAt: oldScheduledAt.toISOString(),
+        newScheduledAt: newScheduledAt.toISOString(),
+      });
+    } catch (err) {
+      this.logger?.error(
+        `Failed to create CALL_RESCHEDULED NotificationEvent for call ${callId}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  private async emitCancelledNotification(callId: string): Promise<void> {
+    try {
+      await this.notifications.createEvent('CALL_CANCELLED', { callId });
+    } catch (err) {
+      this.logger?.error(
+        `Failed to create CALL_CANCELLED NotificationEvent for call ${callId}: ${(err as Error).message}`,
+      );
+    }
   }
 
   /**
@@ -291,12 +369,31 @@ export class ClientCallsService {
     const call = await this.prisma.clientCall.findUnique({ where: { id } });
     if (!call) throw new NotFoundException('ClientCall not found');
 
+    // Detect the two state transitions that trigger PMS notifications
+    // AND reminder-row maintenance: a REAL time change (same ISO
+    // string = not a reschedule) and a transition INTO cancelled.
+    const newScheduledAt = dto.scheduledAt ? new Date(dto.scheduledAt) : null;
+    const timeChanged =
+      newScheduledAt !== null &&
+      newScheduledAt.getTime() !== call.scheduledAt.getTime();
+    const becomesCancelled =
+      dto.status === ClientCallStatus.cancelled &&
+      call.status !== ClientCallStatus.cancelled;
+
+    // A reschedule to a past-ish time is just as invalid as a create
+    // in the past — but editing notes / finishing / cancelling an
+    // old call must still succeed, so we only check when the time is
+    // actually changing.
+    if (timeChanged && dto.status !== ClientCallStatus.cancelled && dto.status !== ClientCallStatus.completed) {
+      this.assertScheduledInFuture(newScheduledAt!);
+    }
+
     const updated = await this.prisma.clientCall.update({
       where: { id },
       data: {
         callTitle: dto.callTitle,
         meetingUrl: dto.meetingUrl,
-        scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
+        scheduledAt: newScheduledAt ?? undefined,
         clientTimezone: dto.clientTimezone,
         duration: dto.duration,
         status: dto.status,
@@ -306,6 +403,21 @@ export class ClientCallsService {
         aiSummary: dto.aiSummary,
       },
     });
+
+    if (timeChanged) {
+      // Clear old reminder stamps so the cron can re-fire for the
+      // new scheduledAt. We delete BEFORE emitting the Rescheduled
+      // notification so a crash between the two leaves the call in
+      // the state the user asked for: reminders will fire again,
+      // and the notification can be re-queued by hand if needed.
+      await this.prisma.callReminderSent.deleteMany({
+        where: { callId: id },
+      });
+      await this.emitRescheduledNotification(id, call.scheduledAt, newScheduledAt!);
+    }
+    if (becomesCancelled) {
+      await this.emitCancelledNotification(id);
+    }
 
     return enrichCall(updated);
   }

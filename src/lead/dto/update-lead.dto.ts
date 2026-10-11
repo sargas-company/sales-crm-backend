@@ -118,4 +118,15 @@ export class UpdateLeadDto {
   @IsString()
   @MaxLength(4000)
   notes?: string | null;
+
+  @ApiPropertyOptional({
+    example: 'c0ff33b0-…',
+    description:
+      'Platform id from the shared directory. Pass `null` to clear.',
+    nullable: true,
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(36)
+  platformId?: string | null;
 }

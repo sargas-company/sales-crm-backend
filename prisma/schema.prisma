@@ -29,6 +29,7 @@ model User {
   employeeLink    Employee?
   timeOffsCreated TimeOff[]  @relation("TimeOffCreatedBy")
   jobPostViews    JobPostView[]
+  attachments     Attachment[]
 }
 
 model Role {
@@ -103,6 +104,31 @@ enum JobPostStatus {
   PROCESSING
   PROCESSED
   FAILED
+  // Operator / user explicitly declined to analyse this post. The
+  // post stays visible in the triage list; a manual action can
+  // still re-queue it. See `JobPostQueueService.enqueue` + the
+  // enable-analysis strategy flow.
+  SKIPPED
+}
+
+/**
+ * Outbox-style handoff state between the Postgres write that saved a
+ * JobPost and the Redis push that enqueues it for AI analysis.
+ *
+ *   BACKLOG  — stored while AI was paused; nothing moves until the
+ *              operator chooses a strategy (process all / recent /
+ *              new only).
+ *   PENDING  — AI is on, DB row is committed, Redis push has NOT
+ *              been confirmed yet. The scheduler re-tries the push
+ *              on every tick until it succeeds. Also set manually
+ *              on BACKLOG → PENDING by the enable-analysis command.
+ *   ENQUEUED — Redis acknowledged the add. Terminal states
+ *              (PROCESSED / FAILED / SKIPPED) carry enqueueState = NULL.
+ */
+enum JobPostEnqueueState {
+  BACKLOG
+  PENDING
+  ENQUEUED
 }
 
 enum JobPostDecision {
@@ -147,6 +173,8 @@ model Platform {
 
   accounts  Account[]
   proposals Proposal[]
+  leads     Lead[]
+  clients   Client[]
 }
 
 // ─── Account ─────────────────────────────────────────────────────────────────
@@ -174,6 +202,10 @@ enum LeadStatus {
   ON_HOLD
   WON
   LOST
+  // Marks a lead whose owner became a paying client. The Lead row
+  // and all its history stay in the Leads list; conversion to a
+  // Client is a SEPARATE manual action in the Clients section.
+  CLIENT
 }
 
 enum LeadTemperature {
@@ -251,17 +283,54 @@ model JobPost {
   createdAt        DateTime         @default(now())
   processedAt      DateTime?
 
-  // parsed fields
+  // parsed fields — legacy "flat" layer kept for backwards
+  // compatibility with pre-Phase-A rows and quick-glance list cells.
   title            String?
   jobUrl           String?
   scanner          String?
-  gigRadarScore    Int?
   location         String?
   budget           String?
   totalSpent       Float?
   avgRatePaid      Float?
   hireRate         Float?
   hSkillsKeywords  String[]
+
+  // Phase A — normalised payload columns. Nullable; populated by
+  // the ingest mapper for new rows and by an optional backfill
+  // script for old ones.
+  budgetType                String?
+  budgetMin                 Float?
+  budgetMax                 Float?
+  budgetCurrency            String?
+  postedAt                  DateTime?
+  contractType              String?
+  duration                  String?
+  hoursPerWeek              String?
+  experienceLevel           String?
+  connectsRequired          Int?
+  categories                String[] @default([])
+  questions                 Json?
+  country                   String?
+  city                      String?
+  clientPaymentVerified     Boolean?
+  clientRating              Float?
+  clientHires               Int?
+  clientJobsPosted          Int?
+  clientReviewCount         Int?
+  clientRankLabel           String?
+  clientRankScore           Float?
+  clientLocationRestriction String?
+
+  // Phase A — analysis bookkeeping. `enqueuedAt` separates "sitting
+  // in the backlog" (NEW && enqueuedAt IS NULL) from "already in
+  // Redis / processing" (enqueuedAt IS NOT NULL). Attempts cap +
+  // sanitised error enable bounded retry.
+  analysisAttempts     Int                  @default(0)
+  lastAnalysisError    String?
+  lastAnalysisAt       DateTime?
+  analysisModelVersion String?
+  enqueuedAt           DateTime?
+  enqueueState         JobPostEnqueueState?
 
   proposal     Proposal?
   ingestEvents JobPostIngestEvent[]
@@ -270,6 +339,12 @@ model JobPost {
   @@unique([chatId, messageId])
   @@index([status])
   @@index([decision])
+  @@index([status, createdAt(sort: Desc)])
+  @@index([decision, createdAt(sort: Desc)])
+  @@index([country])
+  @@index([budgetType])
+  @@index([enqueueState])
+  @@index([status, enqueueState])
 }
 
 /// Per-user "I've opened this job post" record. Used to show a tiny
@@ -314,6 +389,11 @@ model Lead {
   id          String           @id @default(uuid())
   number      Int              @unique @default(autoincrement())
   proposalId  String?          @unique
+  // Optional platform where the lead was sourced (Upwork, LinkedIn,
+  // etc.). Independent of Client.platformId — the same person may
+  // have a different platform in each table. Platform delete is
+  // SET NULL so losing a Platform never cascades into Leads.
+  platformId  String?
   firstName   String?
   lastName    String?
   companyName String?
@@ -341,12 +421,15 @@ model Lead {
   holdAt      DateTime?
 
   proposal    Proposal?    @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+  platform    Platform?    @relation(fields: [platformId], references: [id], onDelete: SetNull)
   clientCalls ClientCall[]
+  attachments Attachment[]
 
   @@index([status])
   @@index([temperature])
   @@index([source])
   @@index([createdAt])
+  @@index([platformId])
 }
 
 /// Independent CRM Client entity. Deliberately NOT a renamed Counterparty
@@ -355,6 +438,14 @@ model Lead {
 /// is unaffected by this model.
 model Client {
   id          String       @id @default(uuid())
+  // Public-facing sequential number, mirrors Lead.number — stable
+  // across sorts, safe to show in the list "#" column instead of a
+  // per-page row index.
+  number      Int          @unique @default(autoincrement())
+  // Optional platform where the client was sourced (Upwork, LinkedIn,
+  // etc.). Independent of Lead.platformId. Platform delete is
+  // SET NULL — losing a Platform never cascades into Clients.
+  platformId  String?
   firstName   String
   lastName    String?
   company     String?
@@ -365,16 +456,23 @@ model Client {
   status      ClientStatus @default(ACTIVE)
   clientSince DateTime?
   notes       String?
+  // Free-text location mirror of Lead.location — stores either a
+  // country name or "City, Country"; the UI edits the two parts
+  // through a Country autocomplete + optional City input.
+  location    String?
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
 
-  calls    ClientCall[]
-  projects Project[]
+  calls       ClientCall[]
+  projects    Project[]
+  platform    Platform?    @relation(fields: [platformId], references: [id], onDelete: SetNull)
+  attachments Attachment[]
 
   @@index([status])
   @@index([source])
   @@index([clientSince])
   @@index([createdAt])
+  @@index([platformId])
 }
 
 model Prompt {
@@ -390,6 +488,32 @@ model Prompt {
   updatedBy String?
 
   @@index([type])
+}
+
+// ─── Sales Attachments ───────────────────────────────────────────────────────
+
+/// Free-form file uploads attached to a Lead or a Client. Exactly
+/// one of `leadId` / `clientId` is set at a time (DB CHECK enforces
+/// this). On owner delete the attachment row cascades; the physical
+/// file is cleaned up by the service layer.
+model Attachment {
+  id            String   @id @default(uuid())
+  leadId        String?
+  clientId      String?
+  originalName  String
+  storageKey    String   @unique
+  mimeType      String
+  size          Int
+  uploadedById  String?
+  createdAt     DateTime @default(now())
+
+  lead       Lead?   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  client     Client? @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  uploadedBy User?   @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  @@index([leadId])
+  @@index([clientId])
+  @@index([createdAt])
 }
 
 // ─── Counterparty ────────────────────────────────────────────────────────────
@@ -502,6 +626,9 @@ enum NotificationType {
   JOB_POST_MATCH
   CLIENT_REQUEST
   CALL_REMINDER
+  CALL_SCHEDULED
+  CALL_RESCHEDULED
+  CALL_CANCELLED
 }
 
 enum NotificationDeliveryStatus {

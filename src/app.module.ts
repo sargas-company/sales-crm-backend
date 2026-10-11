@@ -7,6 +7,7 @@ import { HealthController } from './common/http/health.controller';
 import { StorageModule } from './storage/storage.module';
 
 import { AccountModule } from './account/account.module';
+import { AttachmentsModule } from './attachments/attachments.module';
 import { ClientCallsModule } from './client-calls/client-calls.module';
 import { AuthModule } from './auth/auth.module';
 import { ClientRequestsModule } from './client-requests/client-requests.module';
@@ -47,6 +48,7 @@ import { ProjectAnalyticsModule } from './project-analytics/project-analytics.mo
 import { FinanceWeeklyModule } from './finance-weekly/finance-weekly.module';
 import { AttentionModule } from './attention/attention.module';
 import { DiscordIntegrationModule } from './discord-integration/discord-integration.module';
+import { LiveEventsModule } from './live-events/live-events.module';
 
 @Module({
   controllers: [HealthController],
@@ -77,6 +79,7 @@ import { DiscordIntegrationModule } from './discord-integration/discord-integrat
     CounterpartyModule,
     ClientModule,
     ClientCallsModule,
+    AttachmentsModule,
     SettingsModule,
     VibeWorkerWebhookModule,
     AnalyticsModule,
@@ -95,6 +98,7 @@ import { DiscordIntegrationModule } from './discord-integration/discord-integrat
     FinanceWeeklyModule,
     AttentionModule,
     DiscordIntegrationModule,
+    LiveEventsModule,
   ],
 })
 export class AppModule {}

@@ -100,7 +100,10 @@ describe('DiscordLateReportService.tick — compact PMS card', () => {
       };
     };
     expect(embed.color).toBe(LEGACY_BLUE);
-    expect(embed.title).toBe('⏰ Late report — Legacy Snapshot Project');
+    // Title is the project name alone (the `⏰ Late report —`
+    // prefix was removed by product decision). Keep the invariant
+    // that the project name appears verbatim as the title.
+    expect(embed.title).toBe('Legacy Snapshot Project');
     expect(embed.description).toBeUndefined();
     expect(embed.fields?.map((f) => f.name)).toEqual([
       '🕒 Hours',

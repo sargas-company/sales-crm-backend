@@ -107,6 +107,18 @@ export class ListLeadsDto {
   @MaxLength(80)
   source?: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Partial, case-insensitive match on Lead.location. Accepts a country name, city, or any fragment the autocomplete produced.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() || undefined : value,
+  )
+  location?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsDateString()

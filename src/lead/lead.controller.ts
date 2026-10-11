@@ -49,6 +49,15 @@ export class LeadController {
     return this.leadService.findAll(dto);
   }
 
+  @Get('sources')
+  @RequirePermission('leads:view')
+  @ApiOperation({
+    summary: 'Distinct non-null Lead.source values, sorted — fuels the Source filter dropdown.',
+  })
+  listSources() {
+    return this.leadService.listSources();
+  }
+
   @Get('duplicates')
   @RequirePermission('leads:view')
   @ApiOperation({

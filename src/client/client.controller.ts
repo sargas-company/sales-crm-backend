@@ -49,6 +49,15 @@ export class ClientController {
     return this.clients.findAll(dto);
   }
 
+  @Get('sources')
+  @RequirePermission('clients:view')
+  @ApiOperation({
+    summary: 'Distinct non-null Client.source values, sorted — fuels the Source filter dropdown.',
+  })
+  listSources() {
+    return this.clients.listSources();
+  }
+
   @Get('duplicates')
   @RequirePermission('clients:view')
   @ApiOperation({

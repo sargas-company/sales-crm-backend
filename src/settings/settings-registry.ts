@@ -262,7 +262,7 @@ export const SETTINGS_REGISTRY: Record<string, RegistryEntry> = {
     viewPermission: SETTINGS_VIEW,
     editPermission: OWNER_ONLY,
     effectHint:
-      'Off: posts are saved raw but never scored. On: full AI pipeline runs.',
+      'Pause here (On → Off) is allowed. Resuming (Off → On) is NOT allowed from this toggle — accumulated posts need a Process / Skip decision. Use "Resume AI" in Sales Analytics.',
   },
   [SK.SCANNER_DISCORD_ALERTS_ENABLED]: {
     key: SK.SCANNER_DISCORD_ALERTS_ENABLED,

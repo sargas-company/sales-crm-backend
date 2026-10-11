@@ -3,7 +3,10 @@ export interface CallReminderPayload {
   callTitle: string;
   reminderType: '60min' | '10min';
   clientName: string;
-  clientType: 'lead' | 'client_request';
+  // `client` is the current path (Sales rework). `client_request` is
+  // kept for compatibility with historical reminder payloads so a
+  // mid-flight BullMQ job doesn't fail to parse after deploy.
+  clientType: 'lead' | 'client' | 'client_request';
   clientDateTime: string;
   clientTimezone: string;
   clientTimezoneAbbr: string;
@@ -27,7 +30,12 @@ export function parseCallReminderPayload(
   if (typeof p.callTitle !== 'string') return null;
   if (p.reminderType !== '60min' && p.reminderType !== '10min') return null;
   if (typeof p.clientName !== 'string') return null;
-  if (p.clientType !== 'lead' && p.clientType !== 'client_request') return null;
+  if (
+    p.clientType !== 'lead' &&
+    p.clientType !== 'client' &&
+    p.clientType !== 'client_request'
+  )
+    return null;
   if (typeof p.clientDateTime !== 'string') return null;
   if (typeof p.clientTimezone !== 'string') return null;
   if (typeof p.clientTimezoneAbbr !== 'string') return null;

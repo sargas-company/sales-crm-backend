@@ -38,12 +38,39 @@ export interface VibeJobMapped {
   rawText: string;
   rawPayload: unknown;
   scanner: string;
+  // Legacy display-only fields — kept for the list cells that still
+  // read them.
   location: string | null;
   budget: string | null;
   totalSpent: number | null;
   avgRatePaid: number | null;
   hireRate: number | null;
   hSkillsKeywords: string[];
+  // Phase A — normalised columns derived from the Vibe payload. All
+  // nullable; absent values stay null and the UI falls back to the
+  // legacy field where applicable.
+  budgetType: string | null;
+  budgetMin: number | null;
+  budgetMax: number | null;
+  budgetCurrency: string | null;
+  postedAt: Date | null;
+  contractType: string | null;
+  duration: string | null;
+  hoursPerWeek: string | null;
+  experienceLevel: string | null;
+  connectsRequired: number | null;
+  categories: string[];
+  questions: unknown | null;
+  country: string | null;
+  city: string | null;
+  clientPaymentVerified: boolean | null;
+  clientRating: number | null;
+  clientHires: number | null;
+  clientJobsPosted: number | null;
+  clientReviewCount: number | null;
+  clientRankLabel: string | null;
+  clientRankScore: number | null;
+  clientLocationRestriction: string | null;
 }
 
 interface MaybeVibePayload {
@@ -72,6 +99,10 @@ export function mapVibeJobPayload(raw: unknown): VibeJobMapped | null {
   if (!isVibeJobMatchedPayload(raw)) return null;
   const job = raw.job as Record<string, unknown> & { id: string };
   const client = (raw.client ?? {}) as Record<string, unknown>;
+  const budgetRaw = (job.budget ?? {}) as Record<string, unknown>;
+  const jobType = str(job.type);
+  const { country, city } = splitLocation(str(client.location));
+  const postedAt = parseIsoDate(str(job.postedAt));
 
   return {
     providerJobId: job.id,
@@ -80,12 +111,36 @@ export function mapVibeJobPayload(raw: unknown): VibeJobMapped | null {
     rawText: buildAiText(raw),
     rawPayload: raw,
     scanner: VIBE_SCANNER_LABEL,
+    // Legacy flat fields.
     location: str(client.location),
-    budget: formatBudget(job.budget, str(job.type)),
+    budget: formatBudget(job.budget, jobType),
     totalSpent: num(client.totalSpent),
     avgRatePaid: num(client.avgHourlyRate),
     hireRate: num(client.hireRate),
     hSkillsKeywords: toStringArray(job.skills),
+    // Phase A — normalised payload fields.
+    budgetType: jobType,
+    budgetMin: num(budgetRaw.min),
+    budgetMax: num(budgetRaw.max),
+    budgetCurrency: str(budgetRaw.currency),
+    postedAt,
+    contractType: str(job.contractType),
+    duration: str(job.duration),
+    hoursPerWeek: str(job.hoursPerWeek),
+    experienceLevel: str(job.experienceLevel),
+    connectsRequired: numInt(job.connectsRequired),
+    categories: toStringArray(job.categories),
+    questions: Array.isArray(job.questions) ? job.questions : null,
+    country,
+    city,
+    clientPaymentVerified: boolOrNull(client.paymentVerified),
+    clientRating: num(client.rating),
+    clientHires: numInt(client.hires),
+    clientJobsPosted: numInt(client.jobsPosted),
+    clientReviewCount: numInt(client.reviewCount),
+    clientRankLabel: str(client.rankLabel),
+    clientRankScore: num(client.rankScore),
+    clientLocationRestriction: str(client.locationRestriction),
   };
 }
 
@@ -100,6 +155,35 @@ function str(v: unknown): string | null {
 function num(v: unknown): number | null {
   if (typeof v !== 'number' || !Number.isFinite(v)) return null;
   return v;
+}
+
+function numInt(v: unknown): number | null {
+  const n = num(v);
+  return n === null ? null : Math.trunc(n);
+}
+
+function boolOrNull(v: unknown): boolean | null {
+  return typeof v === 'boolean' ? v : null;
+}
+
+function parseIsoDate(v: string | null): Date | null {
+  if (!v) return null;
+  const d = new Date(v);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+/**
+ * Vibe's `client.location` is a free-form "City, Country" / "Country"
+ * / ISO2 string. We take the trailing comma segment as country and
+ * everything before as city. Pure-ISO2 inputs stay as-is in
+ * `country`; the display layer upgrades them to a full name + flag.
+ */
+function splitLocation(raw: string | null): { country: string | null; city: string | null } {
+  if (!raw) return { country: null, city: null };
+  const parts = raw.split(',').map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 0) return { country: null, city: null };
+  if (parts.length === 1) return { country: parts[0], city: null };
+  return { country: parts[parts.length - 1], city: parts.slice(0, -1).join(', ') };
 }
 
 function toStringArray(v: unknown): string[] {

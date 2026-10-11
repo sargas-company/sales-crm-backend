@@ -125,4 +125,14 @@ export class CreateLeadDto {
   @IsString()
   @MaxLength(4000)
   notes?: string | null;
+
+  @ApiPropertyOptional({
+    example: 'c0ff33b0-…',
+    description:
+      'Platform (Upwork, LinkedIn, …) the lead was sourced from. Chosen from the shared Platforms directory. Optional and independent of the Client platform selection.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(36)
+  platformId?: string | null;
 }

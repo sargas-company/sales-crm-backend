@@ -9,6 +9,7 @@ import { createHash } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SettingsService } from '../../settings/settings.service';
 import { SK } from '../../settings/settings-registry';
+import { LiveEventsService } from '../../live-events/live-events.service';
 
 export interface CapturedEventResult {
   eventId: string;
@@ -22,6 +23,7 @@ export class VibeWorkerWebhookService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly settings: SettingsService,
+    private readonly liveEvents: LiveEventsService,
   ) {}
 
   async captureJobPost(
@@ -74,6 +76,7 @@ export class VibeWorkerWebhookService {
           providedEventId ? 'header/body' : 'sha256'
         })`,
       );
+      this.liveEvents.emitWebhookReceived();
       return { eventId: created.id, duplicate: false };
     } catch (err) {
       // Race with a concurrent duplicate delivery. The unique index on

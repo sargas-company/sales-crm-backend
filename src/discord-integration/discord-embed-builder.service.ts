@@ -83,9 +83,7 @@ export class DiscordEmbedBuilderService {
         { name: '📝 Details', value: args.text, inline: false },
       ],
       footer: {
-        text: args.isLate
-          ? 'Posted via Discord · marked LATE'
-          : 'Posted via Discord',
+        text: 'Posted via Discord',
       },
     });
   }
@@ -121,7 +119,7 @@ export class DiscordEmbedBuilderService {
     reportDate: Date;
   }): DiscordEmbed {
     return normaliseEmbed({
-      title: `⏰ Late report — ${args.projectName}`,
+      title: `${args.projectName}`,
       color: reportColorForHours(args.hours, DAILY_REPORT_HOURS_THRESHOLD),
       fields: [
         { name: '🕒 Hours', value: String(args.hours), inline: true },
@@ -173,7 +171,7 @@ export class DiscordEmbedBuilderService {
   reminderContent(managerRoleId: string | null, reportsUrl?: string): string {
     const prefix = managerRoleId ? `<@&${managerRoleId}>, ` : '';
     const suffix = reportsUrl ? ` ${reportsUrl}` : '';
-    return `${prefix}please file the daily reports.${suffix}`;
+    return `${prefix}please fill the daily reports.${suffix}`;
   }
 
   absencesEmbeds(

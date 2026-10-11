@@ -127,34 +127,33 @@ async function activateOnly(
 async function seedJobPost(opts: {
   title?: string;
   jobUrl?: string | null;
-  location?: string | null;
   budget?: string | null;
   totalSpent?: number | null;
-  hireRate?: number | null;
-  avgRatePaid?: number | null;
-  skills?: string[];
-  rawPayload?: unknown;
-  aiResponse?: unknown;
+  country?: string | null;
+  postedAt?: Date | null;
+  decision?: 'approve' | 'maybe' | 'decline';
+  priority?: 'high' | 'medium' | 'low' | null;
+  matchScore?: number;
 }) {
   const jp = await prisma.jobPost.create({
     data: {
       providerJobId: `${TAG}_${Date.now()}_${Math.random()}`,
       rawText: 'raw text sample',
-      rawPayload: (opts.rawPayload ?? {}) as never,
+      rawPayload: {} as never,
       status: 'PROCESSED',
       scanner: 'vibe-worker',
       title: opts.title ?? 'Sample vacancy',
-      jobUrl: opts.jobUrl ?? 'https://www.upwork.com/jobs/~abc',
-      location: opts.location ?? null,
+      // Use `in opts` so an explicit `null` means "no URL", while an
+      // omitted key falls back to the sample URL.
+      jobUrl: 'jobUrl' in opts ? opts.jobUrl : 'https://www.upwork.com/jobs/~abc',
       budget: opts.budget ?? null,
       totalSpent: opts.totalSpent ?? null,
-      hireRate: opts.hireRate ?? null,
-      avgRatePaid: opts.avgRatePaid ?? null,
-      hSkillsKeywords: opts.skills ?? [],
-      aiResponse: opts.aiResponse as never,
-      matchScore: 85,
-      decision: 'approve',
-      priority: 'high',
+      country: opts.country ?? null,
+      postedAt: opts.postedAt ?? null,
+      hSkillsKeywords: [],
+      matchScore: opts.matchScore ?? 85,
+      decision: opts.decision ?? 'approve',
+      priority: 'priority' in opts ? opts.priority : 'high',
     },
     select: { id: true },
   });
@@ -175,33 +174,36 @@ function makePayload(jobPostId: string, overrides: Record<string, unknown> = {})
   };
 }
 
-describe('JobPostDiscordNotifierService — happy path', () => {
-  it('TEST active → embed goes to TEST.salesChannelId with parse:[] mentions', async () => {
+describe('JobPostDiscordNotifierService — compact format', () => {
+  it('Approve full data: emerald bar + single Verdict field + Links + no description/AI', async () => {
     const testChannel = '1111111111111111111';
     await activateOnly(DiscordProfileName.TEST, testChannel);
+    const posted = new Date('2026-10-11T09:30:00Z');
     const jobPostId = await seedJobPost({
-      budget: 'USD 60–90/hr',
-      location: 'United States',
-      totalSpent: 125000,
-      hireRate: 0.85,
-      skills: ['Node.js', 'Stripe'],
-      rawPayload: {
-        job: { type: 'hourly', duration: '3+ months', experienceLevel: 'expert' },
-        client: { rating: 4.9, paymentVerified: true, location: 'US' },
-        match: { reasoning: 'High fit; Stripe + marketplace.' },
-      },
-      aiResponse: {
-        gatekeeper: { fit: true, reason: 'Node + Stripe' },
-        evaluation: { reasoning: 'Strong product-side rebuild.' },
-      },
+      budget: '$3,500 fixed · USD',
+      totalSpent: 42180,
+      country: 'US',
+      postedAt: posted,
+      decision: 'approve',
+      priority: 'high',
+      matchScore: 82,
     });
     const bot = makeBot({ ok: true, messageId: 'msg-1' });
     const svc = new JobPostDiscordNotifierService(
       prisma as unknown as PrismaService,
       bot,
     );
+    process.env.FRONTEND_URL = 'https://admin.sargas.io';
 
-    await svc.send('event-1', makePayload(jobPostId));
+    await svc.send('event-1', {
+      jobPostId,
+      score: 82,
+      title: 'Sample vacancy',
+      url: 'https://www.upwork.com/jobs/~abc',
+      decision: 'approve',
+      priority: 'high',
+      rawText: 'short preview',
+    });
 
     expect(bot.postMessage).toHaveBeenCalledTimes(1);
     const args = bot.postMessage.mock.calls[0][0] as {
@@ -215,23 +217,140 @@ describe('JobPostDiscordNotifierService — happy path', () => {
     const embed = args.embeds[0] as {
       title: string;
       url?: string;
+      color: number;
+      description?: string;
+      fields: Array<{ name: string; value: string }>;
+      footer?: unknown;
+    };
+    // Title has NO 🔥 prefix anymore.
+    expect(embed.title).toBe('Sample vacancy');
+    expect(embed.url).toBe('https://www.upwork.com/jobs/~abc');
+    // Emerald (approve).
+    expect(embed.color).toBe(0x22c55e);
+    // Description + AI reasoning are gone, footer is gone.
+    expect(embed.description).toBeUndefined();
+    expect(embed.footer).toBeUndefined();
+    // Exactly two fields: Verdict + Links.
+    const names = embed.fields.map((f) => f.name);
+    expect(names).toEqual(['Verdict', 'Links']);
+    expect(names).not.toContain('AI verdict');
+    expect(names).not.toContain('Skills');
+    expect(names).not.toContain('Client');
+
+    const verdict = embed.fields.find((f) => f.name === 'Verdict')!.value;
+    expect(verdict.startsWith('**82**/100 · approve · high')).toBe(true);
+    expect(verdict).toContain('💰 $3,500 fixed · USD');
+    expect(verdict).toContain('👤 Total spent $42,180');
+    expect(verdict).toContain('🇺🇸 US');
+    expect(verdict).toContain(`🕐 posted <t:${Math.floor(posted.getTime() / 1000)}:R>`);
+
+    const links = embed.fields.find((f) => f.name === 'Links')!.value;
+    expect(links).toContain(`[Open in CRM](https://admin.sargas.io/job-posts/preview/${jobPostId})`);
+    expect(links).toContain('[Open on Upwork](https://www.upwork.com/jobs/~abc)');
+  });
+
+  it('Maybe with missing optional data: amber bar, Verdict shows only present rows, no Upwork link when jobUrl missing', async () => {
+    const testChannel = '1212121212121212121';
+    await activateOnly(DiscordProfileName.TEST, testChannel);
+    const jobPostId = await seedJobPost({
+      jobUrl: null,
+      budget: '$35–$55 /hr · USD',
+      totalSpent: null,
+      country: null,
+      postedAt: null,
+      decision: 'maybe',
+      priority: null,
+      matchScore: 64,
+    });
+    const bot = makeBot({ ok: true, messageId: 'msg-2' });
+    const svc = new JobPostDiscordNotifierService(
+      prisma as unknown as PrismaService,
+      bot,
+    );
+    process.env.FRONTEND_URL = 'https://admin.sargas.io';
+
+    await svc.send('event-2', {
+      jobPostId,
+      score: 64,
+      title: 'Shopify theme refactor',
+      url: null,
+      decision: 'maybe',
+      priority: null,
+      rawText: 'short preview',
+    });
+
+    const embed = (bot.postMessage.mock.calls[0][0] as {
+      embeds: Array<Record<string, unknown>>;
+    }).embeds[0] as {
+      title: string;
+      color: number;
+      description?: string;
       fields: Array<{ name: string; value: string }>;
     };
-    expect(embed.title).toMatch(/Sample vacancy/);
-    expect(embed.url).toBe('https://www.upwork.com/jobs/~abc');
-    const fieldNames = embed.fields.map((f) => f.name);
-    expect(fieldNames).toEqual(
-      expect.arrayContaining(['Score', 'Decision', 'Priority', 'Budget / Type', 'Location', 'Client', 'Skills', 'AI verdict']),
+    expect(embed.title).toBe('Shopify theme refactor');
+    expect(embed.color).toBe(0xf59e0b);
+    expect(embed.description).toBeUndefined();
+
+    const verdict = embed.fields.find((f) => f.name === 'Verdict')!.value;
+    expect(verdict.startsWith('**64**/100 · maybe')).toBe(true);
+    expect(verdict).not.toContain('null');
+    expect(verdict).not.toContain('Unknown');
+    expect(verdict).toContain('💰 $35–$55 /hr · USD');
+    // Client row absent (no totalSpent AND no country).
+    expect(verdict).not.toContain('👤');
+    // Posted row absent (no postedAt).
+    expect(verdict).not.toContain('🕐');
+
+    const links = embed.fields.find((f) => f.name === 'Links');
+    // CRM link still rendered; no Upwork link because jobUrl is null.
+    expect(links?.value).toContain('[Open in CRM]');
+    expect(links?.value).not.toContain('[Open on Upwork]');
+  });
+
+  it('Minimal (no budget/client/posted): Verdict is a single headline line, Links only has CRM', async () => {
+    const testChannel = '1313131313131313131';
+    await activateOnly(DiscordProfileName.TEST, testChannel);
+    const jobPostId = await seedJobPost({
+      jobUrl: null,
+      budget: null,
+      totalSpent: null,
+      country: null,
+      postedAt: null,
+      decision: 'approve',
+      priority: null,
+      matchScore: 71,
+      title: 'Zapier integration',
+    });
+    const bot = makeBot({ ok: true, messageId: 'msg-3' });
+    const svc = new JobPostDiscordNotifierService(
+      prisma as unknown as PrismaService,
+      bot,
     );
-    const skillsField = embed.fields.find((f) => f.name === 'Skills');
-    expect(skillsField?.value).toContain('Node.js');
-    const clientField = embed.fields.find((f) => f.name === 'Client');
-    expect(clientField?.value).toContain('verified');
-    expect(clientField?.value).toContain('rating: 4.90');
-    expect(clientField?.value).toContain('spent: $125000');
-    expect(clientField?.value).toContain('85%');
-    const ai = embed.fields.find((f) => f.name === 'AI verdict');
-    expect(ai?.value).toContain('product-side rebuild');
+    process.env.FRONTEND_URL = 'https://admin.sargas.io';
+
+    await svc.send('event-3', {
+      jobPostId,
+      score: 71,
+      title: 'Zapier integration',
+      url: null,
+      decision: 'approve',
+      priority: null,
+      rawText: null,
+    });
+
+    const embed = (bot.postMessage.mock.calls[0][0] as {
+      embeds: Array<Record<string, unknown>>;
+    }).embeds[0] as {
+      title: string;
+      color: number;
+      fields: Array<{ name: string; value: string }>;
+    };
+    expect(embed.title).toBe('Zapier integration');
+    expect(embed.color).toBe(0x22c55e);
+    const verdict = embed.fields.find((f) => f.name === 'Verdict')!.value;
+    expect(verdict).toBe('**71**/100 · approve');
+    const links = embed.fields.find((f) => f.name === 'Links');
+    expect(links?.value).toBe(`[Open in CRM](https://admin.sargas.io/job-posts/preview/${jobPostId})`);
   });
 
   it('after atomic PRODUCTION activation → same code targets PRODUCTION.salesChannelId', async () => {
@@ -304,7 +423,7 @@ describe('JobPostDiscordNotifierService — retryable failure cases', () => {
 });
 
 describe('JobPostDiscordNotifierService — safety caps on embed content', () => {
-  it('truncates an overly long title and preserves the embed under Discord limits', async () => {
+  it('truncates an overly long title to the Discord 256-char cap', async () => {
     await activateOnly(DiscordProfileName.TEST, '4444444444444444444');
     const absurdlyLongTitle = 'T'.repeat(900);
     const jobPostId = await seedJobPost({ title: absurdlyLongTitle });
@@ -319,11 +438,11 @@ describe('JobPostDiscordNotifierService — safety caps on embed content', () =>
     );
     const embed = (bot.postMessage.mock.calls[0][0] as { embeds: Array<{ title: string }> })
       .embeds[0];
-    expect(embed.title.length).toBeLessThanOrEqual(256 + 3); // "🔥 " = 2 UTF-16 units + space
+    expect(embed.title.length).toBeLessThanOrEqual(256);
     expect(embed.title.endsWith('…')).toBe(true);
   });
 
-  it('truncates a long rawText description', async () => {
+  it('never includes `description` (full rawText) — the compact format drops it entirely', async () => {
     await activateOnly(DiscordProfileName.TEST, '5555555555555555555');
     const jobPostId = await seedJobPost({});
     const bot = makeBot({ ok: true, messageId: 'ok' });
@@ -336,25 +455,6 @@ describe('JobPostDiscordNotifierService — safety caps on embed content', () =>
     const embed = (bot.postMessage.mock.calls[0][0] as {
       embeds: Array<{ description?: string }>;
     }).embeds[0];
-    expect(embed.description!.length).toBeLessThanOrEqual(2000);
-  });
-
-  it('truncates a very long skills list down to the field 1024-char limit', async () => {
-    await activateOnly(DiscordProfileName.TEST, '6666666666666666666');
-    const skills = Array.from({ length: 200 }).map(
-      (_, i) => `skill-with-a-fairly-long-name-${i}`,
-    );
-    const jobPostId = await seedJobPost({ skills });
-    const bot = makeBot({ ok: true, messageId: 'ok' });
-    const svc = new JobPostDiscordNotifierService(
-      prisma as unknown as PrismaService,
-      bot,
-    );
-    await svc.send('event-skills', makePayload(jobPostId));
-    const embed = (bot.postMessage.mock.calls[0][0] as {
-      embeds: Array<{ fields: Array<{ name: string; value: string }> }>;
-    }).embeds[0];
-    const skillsField = embed.fields.find((f) => f.name === 'Skills')!;
-    expect(skillsField.value.length).toBeLessThanOrEqual(1024);
+    expect(embed.description).toBeUndefined();
   });
 });

@@ -51,6 +51,7 @@ export class LeadService {
         source: dto.source ?? null,
         profileUrl: dto.profileUrl ?? null,
         notes: dto.notes ?? null,
+        platformId: dto.platformId ?? null,
       },
     });
 
@@ -99,6 +100,9 @@ export class LeadService {
         ? { temperature: { in: dto.temperature } }
         : {}),
       ...(dto.source ? { source: dto.source } : {}),
+      ...(dto.location
+        ? { location: { contains: dto.location, mode: 'insensitive' } }
+        : {}),
       ...(dto.createdFrom || dto.createdTo
         ? {
             createdAt: {
@@ -128,7 +132,10 @@ export class LeadService {
         orderBy,
         skip: offset,
         take: limit,
-        include: { proposal: { select: { id: true, title: true } } },
+        include: {
+          proposal: { select: { id: true, title: true } },
+          platform: { select: { id: true, title: true, slug: true, imageUrl: true } },
+        },
       }),
       this.prisma.lead.count({ where }),
     ]);
@@ -174,7 +181,10 @@ export class LeadService {
   async findOne(id: string) {
     const lead = await this.prisma.lead.findUnique({
       where: { id },
-      include: { proposal: true },
+      include: {
+        proposal: true,
+        platform: { select: { id: true, title: true, slug: true, imageUrl: true } },
+      },
     });
     if (!lead) throw new NotFoundException('Lead not found');
     return lead;
@@ -238,6 +248,7 @@ export class LeadService {
         ...(dto.source !== undefined ? { source: dto.source } : {}),
         ...(dto.profileUrl !== undefined ? { profileUrl: dto.profileUrl } : {}),
         ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+        ...(dto.platformId !== undefined ? { platformId: dto.platformId } : {}),
         ...(isBecomingHold && { holdAt: now }),
         ...(isBecomingWon && { acceptedAt: now }),
       },
@@ -328,6 +339,21 @@ export class LeadService {
     }
 
     return updated;
+  }
+
+  /**
+   * Distinct non-null Lead.source values, sorted. Used by the list
+   * filter dropdown — no pagination, no filtering, no auth-specific
+   * trimming. Keep it cheap: a single Prisma `distinct` call.
+   */
+  async listSources(): Promise<string[]> {
+    const rows = await this.prisma.lead.findMany({
+      where: { source: { not: null } },
+      select: { source: true },
+      distinct: ['source'],
+      orderBy: { source: 'asc' },
+    });
+    return rows.map((r) => r.source).filter((s): s is string => !!s);
   }
 
   async findDuplicates(opts: {

@@ -18,11 +18,11 @@ describe('DiscordEmbedBuilderService.reminderContent', () => {
   });
   it('omits the URL cleanly when not provided', () => {
     const content = svc.reminderContent('123456789012345678', '');
-    expect(content).toBe('<@&123456789012345678>, please file the daily reports.');
+    expect(content).toBe('<@&123456789012345678>, please fill the daily reports.');
   });
   it('omits the mention prefix when managerRoleId is null', () => {
     const content = svc.reminderContent(null, 'https://admin.example/x');
-    expect(content).toBe('please file the daily reports. https://admin.example/x');
+    expect(content).toBe('please fill the daily reports. https://admin.example/x');
   });
 });
 

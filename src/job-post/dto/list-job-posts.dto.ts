@@ -108,12 +108,13 @@ export class ListJobPostsDto {
   offset?: number = 0;
 
   @ApiPropertyOptional({
+    description:
+      'When omitted, returns posts in ANY status. Pass a specific enum value to narrow.',
     enum: JobPostStatus,
-    default: JobPostStatus.PROCESSED,
   })
   @IsOptional()
   @IsEnum(JobPostStatus)
-  status?: JobPostStatus = JobPostStatus.PROCESSED;
+  status?: JobPostStatus;
 
   @ApiPropertyOptional({ example: '2026-04-01T00:00:00.000Z' })
   @IsOptional()
@@ -124,4 +125,26 @@ export class ListJobPostsDto {
   @IsOptional()
   @IsDateString()
   createdTo?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Filter by the current user\'s view state. "viewed" returns only posts the user has opened; "unviewed" returns only posts they have not. Omit for both.',
+    enum: ['viewed', 'unviewed'],
+  })
+  @IsOptional()
+  @IsEnum(['viewed', 'unviewed'] as unknown as object)
+  viewed?: 'viewed' | 'unviewed';
+
+  @ApiPropertyOptional({
+    description:
+      'Case-insensitive substring match against the normalised `country` field; falls through to the legacy `location` string so legacy ingestions are searchable too.',
+    example: 'germ',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim() || undefined : value,
+  )
+  country?: string;
 }

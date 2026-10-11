@@ -85,10 +85,19 @@ export class AnalyticsService {
       lastAnalyzed,
       receivedLastHour,
       receivedToday,
+      // Processed today REGARDLESS of received date — this is the
+      // actual AI throughput operators care about ("we worked
+      // through yesterday's backlog" shows up here, correctly).
+      analyzedToday,
+      // Subset of posts received-today that were also analyzed-today.
+      // Bounded by receivedToday → safe to render as a share without
+      // clamping to 100 %.
+      analyzedOfTodaysReceived,
       receivedInPeriod,
       analyzedInPeriod,
       errorsInPeriod,
-      discordFailuresInPeriod,
+      discordSentToday,
+      discordFailuresToday,
     ] = await Promise.all([
       this.prisma.jobPostIngestEvent.findFirst({
         orderBy: { receivedAt: 'desc' },
@@ -104,6 +113,17 @@ export class AnalyticsService {
       }),
       this.prisma.jobPostIngestEvent.count({
         where: { receivedAt: { gte: todayWindow.from, lt: todayWindow.to } },
+      }),
+      this.prisma.jobPostIngestEvent.count({
+        where: {
+          processedAt: { gte: todayWindow.from, lt: todayWindow.to },
+        },
+      }),
+      this.prisma.jobPostIngestEvent.count({
+        where: {
+          receivedAt: { gte: todayWindow.from, lt: todayWindow.to },
+          processedAt: { gte: todayWindow.from, lt: todayWindow.to },
+        },
       }),
       this.prisma.jobPostIngestEvent.count({
         where: { receivedAt: { gte: window.from, lt: window.to } },
@@ -123,8 +143,15 @@ export class AnalyticsService {
       this.prisma.notificationDelivery.count({
         where: {
           channel: 'DISCORD',
+          status: 'SENT',
+          sentAt: { gte: todayWindow.from, lt: todayWindow.to },
+        },
+      }),
+      this.prisma.notificationDelivery.count({
+        where: {
+          channel: 'DISCORD',
           status: 'FAILED',
-          createdAt: { gte: window.from, lt: window.to },
+          createdAt: { gte: todayWindow.from, lt: todayWindow.to },
         },
       }),
     ]);
@@ -149,20 +176,25 @@ export class AnalyticsService {
       lastAnalyzedAt: lastAnalyzed?.processedAt
         ? lastAnalyzed.processedAt.toISOString()
         : null,
+      // Timezone that defined `today` for every "today" field below.
+      // Frontend uses it for day-boundary detection and to render
+      // relative-time labels consistently with the backend window.
+      timezone: DEFAULT_TIMEZONE,
       receivedLastHour,
       receivedToday,
-      // No mapper yet → analyzer rate is 0 until Scanner Core finishes.
+      analyzedToday,
+      analyzedOfTodaysReceived,
       processingRatePerHour: 0,
       medianProcessingLatencyMs: null,
       dataFreshnessSeconds,
       webhookErrors: errorsInPeriod,
       analyzerErrors: 0,
-      discordDeliveryErrors: discordFailuresInPeriod,
+      discordDeliveryErrors: discordFailuresToday,
       duplicates: 0,
       period,
       receivedInPeriod,
       analyzedInPeriod,
-      discordAlertsInPeriod: 0,
+      discordAlertsInPeriod: discordSentToday,
       duplicatesInPeriod: 0,
       errorsInPeriod,
     };

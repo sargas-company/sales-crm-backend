@@ -69,8 +69,11 @@ describe('working-channel reportEmbed — always LEGACY_BLUE', () => {
       isLate: true,
     });
     expect(e.color).toBe(LEGACY_BLUE);
-    // Footer carries the late marker; color MUST remain blue.
-    expect(e.footer?.text).toContain('LATE');
+    // Footer no longer carries a LATE marker (removed by product
+    // decision — late state is conveyed by the Late-report PMS card
+    // instead). The invariant we care about here is colour: late
+    // must still render as LEGACY_BLUE, not red/yellow.
+    expect(e.footer?.text).toBe('Posted via Discord');
   });
 
   it('keeps the detailed shape — Hours / Date / Details fields', () => {
@@ -144,7 +147,11 @@ describe('Late report PMS card — own 2-field shape, shared color rule', () => 
       hours: 9,
       reportDate: forDay,
     });
-    expect(e.title).toBe('⏰ Late report — Omega');
+    // Title no longer carries the `⏰ Late report —` prefix —
+    // the project name alone is the title; late-state is conveyed
+    // by the card's position in the PMS feed. Keep the invariant
+    // that the project name appears verbatim as the title.
+    expect(e.title).toBe('Omega');
   });
 
   it('6.00 → LEGACY_RED', () => {

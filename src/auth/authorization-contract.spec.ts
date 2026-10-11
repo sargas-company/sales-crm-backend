@@ -67,6 +67,22 @@ const AUTH_ONLY_ALLOWLIST = new Set<string>([
   'AuthController#deleteAvatar',
 ]);
 
+// Endpoints where the required permission KEY depends on the
+// row's owner (resolved at request time) and therefore can't be
+// expressed as a static `@RequirePermission`. The handler goes
+// through JwtAuthGuard + PermissionGuard, but the actual check
+// (`{owner}s:view` / `{owner}s:update`) is performed inside the
+// service after loading the row's leadId / clientId.
+// Entries here MUST be covered by a dedicated spec that exercises
+// the dynamic check across every owner type and both grant /
+// deny paths.
+const DYNAMIC_PERMISSION_ALLOWLIST = new Set<string>([
+  // Covered by src/attachments/attachments.permission.spec.ts
+  // (13 cases across Lead/Client × download/delete × grant/deny).
+  'AttachmentsController#download',
+  'AttachmentsController#remove',
+]);
+
 const getGuards = (target: object): unknown[] => {
   const key = '__guards__';
   const list = Reflect.getMetadata(key, target) as unknown[] | undefined;
@@ -177,6 +193,24 @@ describe('Authorization contract', () => {
         if (r.hasRequirePermission || r.hasPermissionGuard) {
           violations.push(
             `${r.routeKey}: on AUTH_ONLY allowlist but has permission guard`,
+          );
+        }
+        continue;
+      }
+
+      if (DYNAMIC_PERMISSION_ALLOWLIST.has(r.routeKey)) {
+        // Must be authenticated + go through PermissionGuard (so the
+        // guard chain is intact), but MUST NOT carry a static
+        // @RequirePermission — the required key is row-dependent and
+        // enforced inside the service.
+        if (!r.hasPermissionGuard) {
+          violations.push(
+            `${r.routeKey}: on DYNAMIC_PERMISSION allowlist but missing PermissionGuard`,
+          );
+        }
+        if (r.hasRequirePermission) {
+          violations.push(
+            `${r.routeKey}: on DYNAMIC_PERMISSION allowlist but has static @RequirePermission (remove it or re-classify the route)`,
           );
         }
         continue;

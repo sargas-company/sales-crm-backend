@@ -7,6 +7,8 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { JobPostQueueService } from '../../job-post/job-post-queue.service';
+import { SettingsService } from '../../settings/settings.service';
+import { SK } from '../../settings/settings-registry';
 import { VibeIngestProcessorService } from './vibe-ingest-processor.service';
 
 /**
@@ -85,6 +87,7 @@ export class VibeIngestScheduler implements OnApplicationBootstrap {
     private readonly prisma: PrismaService,
     private readonly processor: VibeIngestProcessorService,
     private readonly queue: JobPostQueueService,
+    private readonly settings: SettingsService,
   ) {}
 
   /**
@@ -147,6 +150,40 @@ export class VibeIngestScheduler implements OnApplicationBootstrap {
           return;
         }
       }
+      // Reconcile BullMQ global pause-state to the current
+      // scanner.analysisEnabled setting. This is what makes a
+      // settings-write effective across worker instances without a
+      // Nest-level event bus: the kill-switch is in Postgres, the
+      // runtime consequence is a `queue.pause()` /
+      // `queue.resume()` call that persists in Redis. Idempotent;
+      // every tick re-asserts the target state so a crashed worker
+      // can't leave the queue stuck.
+      try {
+        const analysisEnabled = await this.settings.getBooleanForKey(
+          SK.SCANNER_ANALYSIS_ENABLED,
+          true,
+        );
+        await this.queue.reconcilePauseState(!analysisEnabled);
+      } catch (err) {
+        this.logger.warn(
+          `queueReconcileTick: pause-state reconcile failed, continuing: ${(err as Error).message}`,
+        );
+      }
+      // Resurrect ENQUEUED rows whose BullMQ job is no longer in
+      // Redis (orphaned by a Redis flush or terminal race). Bounded
+      // batch per tick keeps the Redis round-trips sane.
+      try {
+        const resurrected = await this.queue.reconcileLostEnqueued();
+        if (resurrected > 0) {
+          this.logger.log(
+            `queueReconcileTick: resurrected ${resurrected} orphaned ENQUEUED → PENDING`,
+          );
+        }
+      } catch (err) {
+        this.logger.warn(
+          `queueReconcileTick: lost-enqueued sweep failed, continuing: ${(err as Error).message}`,
+        );
+      }
       const enqueued = await this.reconcileNewJobPosts();
       this.logger.log(`queueReconcileTick finished: enqueued ${enqueued} NEW JobPost(s)`);
     } catch (err) {
@@ -188,25 +225,35 @@ export class VibeIngestScheduler implements OnApplicationBootstrap {
 
   /**
    * Public entry point so tests (and ops tooling) can drive one
-   * reconciliation pass deterministically. BullMQ enqueue is idempotent
-   * by `jobId=jobPostId`, so a repeat call for the same JobPost does
-   * not create a second queue job.
+   * reconciliation pass deterministically.
+   *
+   * Picks `status=NEW AND enqueueState=PENDING` only:
+   *   - BACKLOG rows wait for the operator's enable-analysis
+   *     strategy and must NEVER be auto-enqueued here.
+   *   - ENQUEUED rows are already in Redis.
+   *   - NULL rows are legacy pre-Phase-A posts; we leave them alone.
+   *
+   * BullMQ enqueue is idempotent by its deterministic jobId, so a
+   * repeat call for the same JobPost is safe — Redis returns the
+   * existing job and the state transitions to ENQUEUED on success.
    */
   async reconcileNewJobPosts(): Promise<number> {
     const rows = await this.prisma.jobPost.findMany({
-      where: { status: 'NEW' },
+      where: { status: 'NEW', enqueueState: 'PENDING' },
       select: { id: true },
       take: 500,
     });
-    this.logger.log(`reconcileNewJobPosts: found ${rows.length} NEW JobPost(s)`);
+    this.logger.log(
+      `reconcileNewJobPosts: found ${rows.length} PENDING JobPost(s)`,
+    );
     let enqueued = 0;
     for (const row of rows) {
       try {
         await this.queue.enqueue(row.id);
         enqueued += 1;
       } catch (err) {
-        // Row-level failure (Redis still down) — leave the row NEW
-        // so the next tick retries.
+        // Row-level failure (Redis still down) — row stays PENDING
+        // for the next tick.
         this.logger.warn(
           `enqueue(${row.id}) failed, will retry next tick: ${(err as Error).message}`,
         );

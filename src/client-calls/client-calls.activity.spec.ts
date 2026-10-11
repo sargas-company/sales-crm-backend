@@ -25,9 +25,14 @@ const audit = {
 	},
 } as unknown as AuditEventService;
 
+const notificationsStub = {
+	createEvent: async () => undefined,
+} as unknown as import('../notification/notification.service').NotificationService;
+
 const svc = new ClientCallsService(
 	prisma as unknown as PrismaService,
 	audit,
+	notificationsStub,
 );
 
 const TAG = `cc-activity-${randomUUID().slice(0, 8)}`;
@@ -38,9 +43,21 @@ let crId: string | null = null;
 const createdCallIds: string[] = [];
 
 beforeAll(async () => {
-	const user = await prisma.user.findFirst({ select: { id: true } });
-	if (!user) throw new Error('No user — missing fixture');
-	creatorId = user.id;
+	const existing = await prisma.user.findFirst({ select: { id: true } });
+	if (existing) {
+		creatorId = existing.id;
+	} else {
+		const u = await prisma.user.create({
+			data: {
+				email: `${TAG}@test.local`,
+				firstName: 'Spec',
+				lastName: 'Runner',
+				passwordHash: 'x',
+			},
+			select: { id: true },
+		});
+		creatorId = u.id;
+	}
 	const lead = await prisma.lead.create({ data: { firstName: `${TAG}-l` } });
 	const client = await prisma.client.create({
 		data: { firstName: `${TAG}-c` },
@@ -64,10 +81,13 @@ afterAll(async () => {
 	await prisma.$disconnect();
 });
 
+// scheduledAt must be at least 30 minutes in the future per the
+// new validation rule — use a 2-hour horizon from "now" so a slow
+// CI run still passes the check.
 const base = () => ({
 	callTitle: 'Confidential strategy call',
-	scheduledAt: '2026-12-02T14:00:00.000Z',
-	clientTimezone: 'Europe/Kiev',
+	scheduledAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+	clientTimezone: 'Europe/Kyiv',
 	duration: 45,
 });
 
@@ -111,26 +131,20 @@ describe('ClientCall activity emission', () => {
 		expect(evt?.targetId).toBe(clientId);
 	});
 
-	it('emits client_request.call_created on a ClientRequest-owned call', async () => {
+	it('rejects a new call owned by a Website Request (Sales rework forbids this path)', async () => {
 		if (!crId) {
-			// No ClientRequest in local DB — skip, not a bug.
+			// No ClientRequest in local DB — nothing to try against.
 			return;
 		}
-		recorded.length = 0;
-		const call = await svc.create(
-			{
-				...base(),
-				clientType: ClientCallClientType.client_request,
-				clientRequestId: crId,
-			} as unknown as CreateClientCallDto,
-			creatorId,
-		);
-		createdCallIds.push(call.id);
-		const evt = recorded.find(
-			(r) => r.action === 'client_request.call_created',
-		);
-		expect(evt).toBeDefined();
-		expect(evt?.targetType).toBe('ClientRequest');
-		expect(evt?.targetId).toBe(crId);
+		await expect(
+			svc.create(
+				{
+					...base(),
+					clientType: ClientCallClientType.client_request,
+					clientRequestId: crId,
+				} as unknown as CreateClientCallDto,
+				creatorId,
+			),
+		).rejects.toThrow(/Website Request is no longer a supported owner/);
 	});
 });

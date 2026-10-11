@@ -277,29 +277,10 @@ export class DiscordSchedulersService {
 
   private async runReminder(profile: DiscordProfile): Promise<void> {
     if (!profile.pmsChannelId) throw new Error('pmsChannelId missing');
-    const isWeekend = [0, 6].includes(this.currentDow(profile.timezone));
-    let shouldPing = !isWeekend;
-    if (isWeekend) {
-      const projects = await this.prisma.project.findMany({
-        where: { status: { in: ['active', 'planned'] } },
-        select: { id: true },
-      });
-      const range = this.weekRange(profile.timezone);
-      for (const p of projects) {
-        const sum = await this.prisma.projectReport.aggregate({
-          where: {
-            projectId: p.id,
-            reportDate: { gte: range.gte, lte: range.lte },
-          },
-          _sum: { hours: true },
-        });
-        if ((sum._sum.hours ?? 0) < 40) {
-          shouldPing = true;
-          break;
-        }
-      }
-    }
-    if (!shouldPing) return;
+    // 18:00 ping is a weekday-only courtesy. Weekend reports still
+    // flow through runDailyDigest (19:00) and the late-report block
+    // on their own — both are data-driven and don't need the ping.
+    if ([0, 6].includes(this.currentDow(profile.timezone))) return;
     const reportsUrl = this.reportsUrl();
     const content = this.embeds.reminderContent(
       profile.managerRoleId,
