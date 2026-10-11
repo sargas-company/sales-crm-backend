@@ -1,5 +1,14 @@
 # Sales CRM — System Overview
 
+> ⚠️ **Partially stale (2026-10-12).** Canonical architecture lives in
+> the workspace: `docs/architecture/overview.md` + `docs/ops/production.md`.
+> Known drift in this file: roles are DB-driven RBAC (`Role` /
+> `Permission` tables — there is no `ADMIN | MANAGER` enum and no
+> `POST /auth/register`); file storage is **not** B2-only — Lead/Client
+> attachments live on the local filesystem (`ATTACHMENTS_DIR`);
+> `make backup` is a working target, not a stub. Kept for
+> endpoint-level notes only.
+
 ## Stack
 
 - **Runtime:** Node.js + NestJS 11

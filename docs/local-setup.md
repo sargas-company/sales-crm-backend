@@ -38,7 +38,7 @@ make setup
 | `APP_ENV` | `local` (обязательно; иначе guard провалится) |
 | `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5433/ai_dashboard` |
 | `JWT_SECRET`, `JWT_REFRESH_SECRET` | любые непустые строки |
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | реальные ключи для AI-путей |
+| `ANTHROPIC_API_KEY` | реальный ключ для AI-пайплайна Job Posts (OpenAI не используется) |
 
 Порт `5433` — публикация Postgres-контейнера на хост (внутри
 контейнера всё ещё `5432`). Guard `scripts/assert-local-db.ts`
@@ -80,8 +80,8 @@ npm run start:dev
 | Сервис | Адрес |
 |---|---|
 | REST API | `http://localhost:3000` |
-| Swagger | `http://localhost:3000/swagger` (`NODE_ENV=development`) |
-| WebSocket | `http://localhost:3001` |
+| Swagger | `http://localhost:3000/swagger` (`NODE_ENV` ≠ `production`) |
+| SSE live-analytics | `GET http://localhost:3000/analytics/stream` |
 
 ## Локальный `make local-reset`
 
@@ -110,8 +110,10 @@ make local-reset
 
 ## Что нельзя запускать локально
 
-- `make init`, `make deploy`, `make backup` — deprecation-заглушки,
-  завершаются с ненулевым кодом.
+- `make init`, `make deploy` — deprecation-заглушки, завершаются с
+  ненулевым кодом.
+- `make backup` — **рабочая** цель (pg_dump → B2): локально запускать
+  только осознанно, с настроенными `B2_*`-переменными.
 - `prisma migrate reset` напрямую (в обход `make local-reset`) —
   формально работает, но обходит гвард и подтверждение. Используйте
   цель.

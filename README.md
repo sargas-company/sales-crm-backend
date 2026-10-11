@@ -1,22 +1,22 @@
-# AI Proposal Assistant — Backend
+# Sargas CRM — Backend
 
-AI-инструмент для менеджеров: вместо 10–15 минут на обдумывание и написание ответа клиенту — 1–2 строки контекста и готовый текст за секунды.
-
-## Что делает система
-
-1. **Понимает ситуацию** — менеджер вставляет текст вакансии и пишет своё сообщение
-2. **Принимает решение** — AI анализирует и выдаёт `bid / decline / clarify` с обоснованием
-3. **Формирует ответ** — готовый текст с учётом базы знаний компании и системного промпта
-4. **Сохраняет историю** — чат переходит из proposal в lead при получении ответа от клиента
+> ⚠️ Описание «AI Proposal Assistant» ниже устарело: проект вырос в
+> internal CRM (Sales / Leads / Clients / Projects / Finance /
+> Discord). Канонический обзор архитектуры — workspace-файл
+> `docs/architecture/overview.md`; операционный канон —
+> `docs/ops/production.md` (оба уровнем выше этого репозитория).
 
 ## Стек
 
 - **NestJS 11** — фреймворк
-- **PostgreSQL 16 + pgvector** — БД + векторный поиск
-- **Prisma** — ORM
-- **Claude claude-sonnet-4-6** (Anthropic) — анализ и генерация
-- **text-embedding-3-small** (OpenAI) — эмбеддинги для RAG
-- **Socket.IO** — стриминг ответов в реальном времени
+- **PostgreSQL 16** — БД (vector-полей нет; pgvector нужен только
+  init-миграции при деплое с нуля)
+- **Prisma 6** — ORM
+- **Redis + BullMQ** — очереди (`notifications`, `job-post-processing`)
+- **Anthropic SDK** — двухступенчатый AI-анализ Job Posts
+  (gatekeeper → evaluator); OpenAI/эмбеддинги/RAG удалены вместе с
+  legacy-чатом
+- **Discord Bot API** — уведомления и `/report`
 - **JWT** — access token (1h) + refresh token (30d)
 
 ## Быстрый старт
@@ -47,11 +47,12 @@ npm run start:dev   # старт NestJS
 Дополнительные локальные цели: `make local-down` (остановить контейнеры,
 volumes сохраняются), `make local-logs` (`docker compose logs -f`).
 
-> `make init`, `make deploy`, `make backup` теперь являются
-> deprecation-заглушками и завершаются с ненулевым кодом. Ручной
-> production-деплой описан в
-> [`docs/runbooks/production-deploy.md`](docs/runbooks/production-deploy.md);
-> охраняемый production-набор команд отложен до отдельной feature.
+> Deprecation-заглушки — только `make init` и `make deploy`.
+> `make backup` — **рабочая** цель (pg_dump → B2 c верификацией).
+> Операторские `make prod-*` цели существуют; production-процедуры —
+> в workspace-файле `docs/ops/production.md` (старый
+> `docs/runbooks/production-deploy.md` упразднён и оставлен
+> указателем).
 
 ## Сервисы
 
@@ -59,9 +60,10 @@ volumes сохраняются), `make local-logs` (`docker compose logs -f`).
 |---|---|
 | REST API | `http://localhost:3000` |
 | Swagger | `http://localhost:3000/swagger` |
-| WebSocket | `http://localhost:3001` |
 
-> Swagger доступен только при `NODE_ENV=development`
+> Swagger доступен при `NODE_ENV` ≠ `production`. WebSocket удалён
+> вместе с legacy-чатом; realtime — единственный SSE-эндпоинт
+> `GET /analytics/stream`.
 
 ## Основные эндпоинты
 
@@ -84,39 +86,17 @@ GET    /proposals/:id/chat      — история чата с decision и reaso
 POST   /proposals/:id/analyze   — только анализ, без генерации текста
 
 GET    /leads                   — все leads с пагинацией
-GET    /leads/:id               — lead с вложенным proposal
+GET    /leads/:id               — lead
 PATCH  /leads/:id               — обновить статус, имя, ставку и т.д.
 DELETE /leads/:id               — удалить
-GET    /leads/:id/chat          — история чата (сквозная с proposal)
-
-GET    /chats                   — все чаты (?type=proposal|lead&cursor=...&limit=20)
-
-POST   /base-knowledge          — добавить запись в базу знаний
-GET    /base-knowledge          — список с пагинацией (?page=1&limit=8)
-GET    /base-knowledge/search   — семантический поиск (?q=...)
-
-PUT    /settings                — обновить системный промпт
+GET    /leads/:id/activity      — activity timeline (AuditEvent)
 ```
 
-Полная документация по API — [FRONTEND.md](FRONTEND.md)
-
-Архитектура и алгоритмы — [ARCHITECTURE.md](ARCHITECTURE.md)
-
-## WebSocket
-
-Подключение требует передачи `accessToken`:
-
-```js
-const socket = io('http://localhost:3001', {
-  auth: { token: accessToken }
-});
-
-socket.emit('send_message', { proposalId, content });
-
-socket.on('analysis', ({ decision, reasoning }) => { ... }); // сначала
-socket.on('chunk',    ({ text }) => { ... });                 // потом текст
-socket.on('done',     () => { ... });
-```
+Это лишь срез — полная актуальная поверхность API (44 модуля: clients,
+client-requests, client-calls, attachments, invoices, projects,
+employees, linkedin, phone-numbers, credentials vault, analytics/SSE и
+т.д.) — в Swagger и в workspace-файле `docs/architecture/overview.md`.
+Legacy-эндпоинты чатов/базы знаний удалены (`legacy-cleanup`).
 
 ## Тесты
 
