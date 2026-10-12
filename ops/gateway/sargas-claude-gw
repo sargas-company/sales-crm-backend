@@ -45,6 +45,15 @@ readonly PM2_PROCESS='sales-crm-back-end'
 # PM2 default; UNKNOWN until install — a custom log path makes
 # backend-logs refuse (fail closed), it cannot widen access.
 readonly PM2_LOGS_DIR='/home/spawn/.pm2/logs'
+# Daemon-compatible PM2 (operator smoke, 2026-10-12): pm2 6.0.14 under
+# Node 24 prints ">>>> In-memory PM2 is out-of-date..." into stdout
+# BEFORE the JSON, breaking jlist consumers. Never strip warnings or
+# guess where the JSON starts — call the 6.0.13 binary that matches
+# the running daemon. The JSON extractor stays pinned to the Node 24
+# runtime the app itself uses.
+readonly PM2_BIN='/home/spawn/.nvm/versions/node/v18.20.8/bin/pm2'
+readonly PM2_BIN_DIR='/home/spawn/.nvm/versions/node/v18.20.8/bin'
+readonly NODE_BIN='/home/spawn/.nvm/versions/node/v24.4.1/bin/node'
 readonly NGINX_API_CONF='/etc/nginx/sites-enabled/api.sargas.io.conf'
 readonly BACKEND_HEALTH_URL='http://127.0.0.1:3006/health'
 readonly FRONTEND_PROBE_URL='https://admin.sargas.io/'
@@ -135,6 +144,23 @@ readonly VERB LOG_N
 # 3 = required resource unreadable/missing, anything else = failed.
 # ---------------------------------------------------------------------------
 
+# Single source of pm2 process JSON for every PM2-dependent verb, so the
+# invocation logic cannot drift. STRICT contract:
+#   rc == 0  -> stdout is exactly pm2's jlist JSON (the compatible
+#               6.0.13 binary emits clean JSON; the downstream
+#               JSON.parse still fail-closes on anything else);
+#   rc != 0  -> stdout is EMPTY: raw/partial pm2 output is discarded
+#               here and must never be printed by callers. Covers
+#               missing/non-executable pinned binaries (rc=3), timeout
+#               (124) and any unexpected pm2 exit.
+pm2_jlist_json() {
+  [[ -x "$PM2_BIN" && -x "$NODE_BIN" ]] || return 3
+  local out rc=0
+  out="$(PATH="$PM2_BIN_DIR:/usr/bin:/bin" timeout "$VERB_TIMEOUT" "$PM2_BIN" jlist 2>/dev/null)" || rc=$?
+  (( rc == 0 )) || return "$rc"
+  printf '%s' "$out"
+}
+
 v_release_status() {
   local repo name branch head dirty
   for repo in "$BACKEND_DIR" "$FRONTEND_DIR"; do
@@ -154,8 +180,15 @@ v_release_status() {
 # Allowlisted-fields extractor: never prints pm2 jlist wholesale, never
 # prints process env. Process name is passed as argv, not interpolated.
 v_services() {
-  timeout "$VERB_TIMEOUT" pm2 jlist 2>/dev/null \
-    | timeout "$VERB_TIMEOUT" node -e '
+  local json rc=0
+  json="$(pm2_jlist_json)" || rc=$?
+  if (( rc != 0 )); then
+    # Fixed-string diagnostic only — $json is empty by helper contract
+    # and raw jlist must never reach the client on an error path.
+    printf 'pm2: unavailable or failed (rc=%d); output suppressed\n' "$rc"
+    return "$rc"
+  fi
+  printf '%s' "$json" | timeout "$VERB_TIMEOUT" "$NODE_BIN" -e '
 const want = process.argv[1];
 const chunks = [];
 process.stdin.on("data", (c) => chunks.push(c));
@@ -219,11 +252,17 @@ v_migrations_status() {
 }
 
 v_backend_logs() {
-  local n="$1" p real paths
-  # Log paths come from pm2 at runtime (never assumed), via the same
-  # allowlisted extractor pattern.
-  paths="$(timeout "$VERB_TIMEOUT" pm2 jlist 2>/dev/null \
-    | timeout "$VERB_TIMEOUT" node -e '
+  local n="$1" p real paths json rc=0
+  # Log paths come from pm2 at runtime (never assumed), via the shared
+  # pm2_jlist_json helper and the same allowlisted extractor pattern.
+  json="$(pm2_jlist_json)" || rc=$?
+  if (( rc != 0 )); then
+    # Fixed-string diagnostic only — $json is empty by helper contract
+    # and raw jlist must never reach the client on an error path.
+    printf 'pm2: unavailable or failed (rc=%d); output suppressed\n' "$rc"
+    return "$rc"
+  fi
+  paths="$(printf '%s' "$json" | timeout "$VERB_TIMEOUT" "$NODE_BIN" -e '
 const want = process.argv[1];
 const chunks = [];
 process.stdin.on("data", (c) => chunks.push(c));
