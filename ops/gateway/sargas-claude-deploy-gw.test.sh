@@ -469,6 +469,17 @@ t2 'S1 state deployed'      '[[ "$(sget deployed_backend_sha)" == "$SHA_CODE" ]]
 t2 'S1 state published'     '[[ "$(sget published_frontend_sha)" == "$SHA_FE" ]]'
 t2 'S1 dist swapped'        '[[ "$(readlink "$FE/dist")" == "$WT/crm/fe-releases/$RID" ]]'
 
+# --- S1c regression: external umask 077 must still yield an nginx-readable release ---
+perm() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null; }
+reset_world "$SHA_CODE" "$SHA_FE"
+( umask 077; w "deploy-run $SHA_CODE $SHA_FE" >/dev/null )
+wait_done
+REL1C="$(readlink "$FE/dist")"
+t2 'S1c deployed under umask 077' 'grep -q "^DEPLOYED$" "$WT/.sargas-deploy/logs/"*.log'
+t2 'S1c release dir 755'   '[[ "$(perm "$REL1C")" == 755 ]]'
+t2 'S1c index.html 644'    '[[ "$(perm "$REL1C/index.html")" == 644 ]]'
+t2 'S1c asset 644'         '[[ "$(perm "$REL1C/assets/app.js")" == 644 ]]'
+
 # --- S2 migration path: backup before first DB write ---
 reset_world "$SHA_MIG" "$SHA_FE"
 w "deploy-run $SHA_MIG $SHA_FE" >/dev/null; wait_done

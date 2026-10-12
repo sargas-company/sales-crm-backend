@@ -661,13 +661,19 @@ step_run() { # step_run <label> <timeout> <cmd...> ; output masked into journal
   return "$rc"
 }
 
-step_run_in() { # step_run_in <dir> <label> <timeout> <cmd...>
+step_run_in() { # step_run_in [-pub] <dir> <label> <timeout> <cmd...>
+  # -pub: run under umask 022 — the step produces PUBLIC artifacts
+  # (nginx must read them); everything else keeps the gateway's 077.
+  local pub=''
+  if [[ "$1" == '-pub' ]]; then pub=1; shift; fi
   local dir="$1"; shift
   local label="$1" t="$2"; shift 2
   jraw "== step $label =="
   lock_set_step "$label"
   set +e
-  ( cd "$dir" && timeout "$t" "$@" ) 2>&1 | mask >> "$RUN_JOURNAL"
+  ( cd "$dir" || exit 1
+    if [[ -n "$pub" ]]; then umask 022; fi
+    timeout "$t" "$@" ) 2>&1 | mask >> "$RUN_JOURNAL"
   local rc=${PIPESTATUS[0]}
   set -e
   if (( rc != 0 )); then
@@ -812,7 +818,8 @@ process.stdin.on("end", () => {
   step_run_in "$FRONTEND_DIR" '11-fe-npm-ci' "$BUILD_TIMEOUT" "$NPM_BIN" ci --legacy-peer-deps || exit 1
   step_run_in "$FRONTEND_DIR" '11-fe-tsc'    "$BUILD_TIMEOUT" "$FE_TSC_BIN" --noEmit || exit 1
   mkdir -p -- "$rel"
-  step_run_in "$FRONTEND_DIR" '11-fe-vite'   "$BUILD_TIMEOUT" "$FE_VITE_BIN" build --outDir "$rel" || exit 1
+  chmod 755 "$rel"   # public release root (abs path): nginx must traverse it
+  step_run_in -pub "$FRONTEND_DIR" '11-fe-vite' "$BUILD_TIMEOUT" "$FE_VITE_BIN" build --outDir "$rel" || exit 1
   jraw '== step 12-fe-artifacts =='
   lock_set_step '12-fe-artifacts'
   if [[ ! -f "$rel/index.html" ]] || [[ -z "$(ls -A -- "$rel/assets" 2>/dev/null)" ]]; then
