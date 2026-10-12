@@ -9,8 +9,10 @@
 # sales-crm-backend/ops/gateway/sargas-claude-gw. Install / smoke-check /
 # rollback: docs/ops/production.md (workspace root).
 #
-# Status: PREPARED — NOT INSTALLED. Nothing in this file has run on the
-# production host yet.
+# Status: OPERATOR-VERIFIED 2026-10-12 — installed as
+# /usr/local/sbin/sargas-claude-gw (root:root 0755), byte-identical to
+# this source. Operational record: docs/ops/production.md (workspace
+# root) § Access policy and the read-only gateway.
 #
 # Contract
 #   - exactly one read-only verb per connection, parsed from

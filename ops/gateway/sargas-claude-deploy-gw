@@ -1,0 +1,667 @@
+#!/bin/bash
+# sargas-claude-deploy-gw — controlled production DEPLOY gateway for
+# Claude Code (Wave 3, Card 1: FOUNDATION ONLY).
+# Interpreter is pinned (not /usr/bin/env): a root-owned forced-command
+# security boundary must not resolve bash through the ambient PATH.
+#
+# Forced-command target for the dedicated DEPLOY key (separate from the
+# read-only gateway key; `restrict,command=` entry on the spawn
+# account). Reviewed canonical source:
+# sales-crm-backend/ops/gateway/sargas-claude-deploy-gw. Install /
+# smoke / rollback will live in docs/ops/production.md (Card 2/3).
+#
+# Status: PREPARED — NOT INSTALLED. Nothing here has run on the
+# production host.
+#
+# Card 1 scope: grammar + non-release-mutating preflight
+# (`deploy-plan`), observation (`deploy-status`), lock release
+# (`deploy-unlock`), and the pure helpers (classifier, seed guard,
+# state/lock/PID identity). `deploy-run` is NOT implemented and NOT
+# accepted by the parser. No npm ci/build, no backup, no Prisma
+# mutation, no PM2 restart, no frontend publish, no detached runner.
+#
+# Contract (mirrors the read-only gateway):
+#   - exactly one verb per connection, parsed from
+#     SSH_ORIGINAL_COMMAND under a strict whole-string grammar;
+#   - fail closed: unknown verb (incl. deploy-run), bad SHA, bad N,
+#     control chars, overlong input, trailers -> usage/badarg, exit 2;
+#   - user input never reaches a shell — fixed argv only;
+#   - all verb output (stdout+stderr) -> secret mask -> byte cap ->
+#     trailing "-- ok" / "-- error <code>";
+#   - `deploy-plan` is a NON-RELEASE-MUTATING PREFLIGHT: its
+#     `git fetch` updates remote-tracking refs only; it never touches
+#     working trees, the application, or the database.
+#
+# Local test hooks (full inventory): the forced command runs this
+# script with NO argv (sshd ignores the client's command line), so
+# positional arguments are unreachable from SSH. `--test-root <dir>`
+# (argv), SARGAS_DEPLOY_GW_LIB_ONLY=1 (env; sshd AcceptEnv passes only
+# LANG/LC_*) and PROC_ROOT (env; honored ONLY in lib-only mode) exist
+# for the sibling test file alone. If any were somehow set on the
+# server the script degrades to a no-op or a redirected state dir —
+# never to wider access.
+
+set -euo pipefail
+IFS=$' \t\n'
+umask 077
+
+export LC_ALL=C
+export PATH='/home/spawn/.nvm/versions/node/v24.4.1/bin:/usr/bin:/bin'
+export GIT_OPTIONAL_LOCKS=0
+
+# --- test hook (argv unreachable via SSH; see header) ----------------
+TEST_ROOT=''
+if [[ "${1:-}" == '--test-root' && -n "${2:-}" ]]; then
+  TEST_ROOT="$2"
+fi
+
+# --- pinned binaries and paths (OPERATOR-VERIFIED topology) ----------
+NODE_BIN='/home/spawn/.nvm/versions/node/v24.4.1/bin/node'
+NPM_BIN='/home/spawn/.nvm/versions/node/v24.4.1/bin/npm'
+GIT_BIN='/usr/bin/git'
+PM2_BIN='/home/spawn/.nvm/versions/node/v18.20.8/bin/pm2'   # daemon-compatible 6.0.13
+CRM_ROOT='/var/www/sales-crm'
+BACKEND_DIR="$CRM_ROOT/sales-crm-backend"
+FRONTEND_DIR="$CRM_ROOT/sales-crm-frontend"
+
+HOME_ROOT="${TEST_ROOT:-/home/spawn}"
+STATE_DIR="$HOME_ROOT/.sargas-deploy"
+STATE_FILE="$STATE_DIR/state.json"
+LOCK_DIR="$STATE_DIR/lock"           # the ONLY path deploy-unlock may remove
+LOCK_META="$LOCK_DIR/meta"
+JOURNAL_DIR="$STATE_DIR/logs"
+
+MAX_CMD_LEN=128
+MAX_OUTPUT_BYTES=65536
+VERB_TIMEOUT=30                       # fetch/status calls inside plan
+DISK_MAX_USE_PCT=90
+
+SEED_WATCH_PATHS=(
+  'prisma/seed-system.ts'
+  'src/auth/system-role-presets.ts'
+  'prisma/tsconfig-seed.json'
+  'package.json'
+)
+SEED_IMPORT_ALLOWLIST='../src/auth/system-role-presets'
+
+usage() {
+  printf 'usage: one of\n'
+  printf '  deploy-plan <backend-sha40> <frontend-sha40>   (lowercase hex)\n'
+  printf '  deploy-status [N]                              (N = 1..200)\n'
+  printf '  deploy-unlock <deploy-id>\n'
+  printf 'note: deploy-run is not part of this foundation build\n'
+}
+
+fail() { # fail <usage|badarg|unreadable|failed|migration-class>
+  printf -- '-- error %s\n' "$1"
+  case "$1" in usage|badarg) exit 2 ;; *) exit 1 ;; esac
+}
+
+# Secret mask — identical policy to the read-only gateway: fail-closed,
+# over-masking acceptable. Applied to ALL verb output before the cap.
+mask() {
+  sed -E \
+    -e '/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/,/-----END [A-Z0-9 ]*PRIVATE KEY-----/d' \
+    -e '/PRIVATE KEY/d' \
+    -e 's#(://)[^@[:space:]]+@#\1[MASKED]@#g' \
+    -e 's#(DATABASE_URL|REDIS_URL|B2_[A-Z0-9_]+|[A-Z0-9_]*(PASSWORD|SECRET|TOKEN|API_KEY|APP_KEY|KEY_ID)[A-Z0-9_]*)([[:space:]]*[=:][[:space:]]*)[^[:space:]]+#\1\3[MASKED]#g' \
+    -e 's#("[A-Za-z0-9_]*([Pp]assword|[Ss]ecret|[Tt]oken|[Aa]pi[_]?[Kk]ey|[Aa]pp[_]?[Kk]ey|[Kk]ey[_]?[Ii]d)[A-Za-z0-9_]*"[[:space:]]*:[[:space:]]*)("[^"]*"|[^",[:space:]}]+)#\1"[MASKED]"#g' \
+    -e 's#[Bb]earer[[:space:]]+[^[:space:]]+#Bearer [MASKED]#g' \
+    -e 's#eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{4,}(\.[A-Za-z0-9_-]+)?#[MASKED-JWT]#g'
+}
+
+# ---------------------------------------------------------------------
+# Pure helpers (unit-tested by the sibling test file via lib-only mode)
+# ---------------------------------------------------------------------
+
+is_sha40()      { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }
+is_deploy_id()  { [[ "$1" =~ ^d[0-9]{9,12}-[0-9a-f]{4}$ ]]; }
+
+new_deploy_id() {
+  printf 'd%s-%s\n' "$(date +%s)" \
+    "$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n')"
+}
+
+# /proc start-identity: field 22 of /proc/<pid>/stat, parsed AFTER the
+# last ')' so a comm containing spaces/parens cannot shift fields.
+# PROC_ROOT is honored ONLY in lib-only (test) mode; a normal forced
+# -command run always reads the real /proc.
+proc_starttime() {
+  local pid="$1" line rest procroot='/proc'
+  if [[ "${SARGAS_DEPLOY_GW_LIB_ONLY:-0}" == '1' && -n "${PROC_ROOT:-}" ]]; then
+    procroot="$PROC_ROOT"
+  fi
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  [[ -r "$procroot/$pid/stat" ]] || return 1
+  IFS= read -r line < "$procroot/$pid/stat" || return 1
+  rest="${line##*) }"
+  # shellcheck disable=SC2086
+  set -- $rest
+  [[ -n "${20:-}" ]] || return 1
+  printf '%s\n' "${20}"
+}
+
+runner_alive() { # runner_alive <pid> <recorded-starttime> -> 0 iff alive AND identity matches
+  local st
+  st="$(proc_starttime "$1")" || return 1
+  [[ "$st" == "$2" ]]
+}
+
+lock_present() { [[ -d "$LOCK_DIR" ]]; }
+
+lock_acquire() { # lock_acquire <deploy-id> <be-sha> <fe-sha> <prev-be> <prev-fe> <pid> <starttime>
+  mkdir "$LOCK_DIR" 2>/dev/null || return 1
+  {
+    printf 'DEPLOY_ID=%s\n'  "$1"
+    printf 'BE_SHA=%s\n'     "$2"
+    printf 'FE_SHA=%s\n'     "$3"
+    printf 'PREV_BE=%s\n'    "$4"
+    printf 'PREV_FE=%s\n'    "$5"
+    printf 'PID=%s\n'        "$6"
+    printf 'STARTTIME=%s\n'  "$7"
+    printf 'STEP=%s\n'       '0'
+    printf 'CREATED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$LOCK_META"
+}
+
+lock_get() { # lock_get <KEY> — value validated by shape before use
+  [[ -r "$LOCK_META" ]] || return 1
+  local v
+  v="$(grep -m1 "^$1=" "$LOCK_META" 2>/dev/null)" || return 1
+  printf '%s\n' "${v#*=}"
+}
+
+# state.json: strict schema; any parse/shape problem is a hard error.
+STATE_KEYS='schema deployed_backend_sha previous_backend_sha published_frontend_sha previous_frontend_sha fe_release_dir'
+
+state_get() { # state_get <key>; exit codes: 3 unreadable/invalid
+  [[ -r "$STATE_FILE" ]] || return 3
+  [[ -x "$NODE_BIN" ]] || return 3
+  "$NODE_BIN" -e '
+const fs = require("fs");
+const file = process.argv[1], key = process.argv[2];
+let o;
+try { o = JSON.parse(fs.readFileSync(file, "utf8")); } catch { process.exit(3); }
+const req = ["schema","deployed_backend_sha","previous_backend_sha",
+             "published_frontend_sha","previous_frontend_sha","fe_release_dir"];
+for (const k of req) if (!(k in o)) process.exit(3);
+const v = o[key];
+if (v === undefined || v === null) process.exit(3);
+if (typeof v !== "string" && typeof v !== "number") process.exit(3);
+process.stdout.write(String(v));
+' "$STATE_FILE" "$1" 2>/dev/null
+}
+
+state_valid() { state_get schema >/dev/null 2>&1; }
+
+# ---------------------------------------------------------------------
+# Migration classifier — FAIL-CLOSED ALLOWLIST heuristic.
+# HONESTY CONTRACT: this classifier can only err toward blocking. It is
+# NOT a semantic-safety proof — an allowed INSERT can still be wrong.
+# Real guarantees remain: review, the additive-first migrations policy,
+# the VERIFIED backup gate, and exact-SHA approval. Anything the
+# tokenizer cannot confidently split or match is manual-required.
+# ---------------------------------------------------------------------
+
+# Single-pass character-level SQL tokenizer (awk state machine).
+# States: Normal / 'string' / "identifier" / -- line comment /
+# /* block comment (nested, as PostgreSQL nests them) */.
+# String and identifier CONTENT is discarded ('LIT' / "ID"), comments
+# are consumed by state — so a comment marker inside quotes, or a
+# quote inside a comment, can never desync the stripper from the
+# parser: they are the same automaton. `;` splits statements only in
+# the Normal state (emitted as newlines). EOF in any non-Normal state
+# prints DESYNC and fails. Dollar-quoting and backslashes are rejected
+# by gates BEFORE this tokenizer runs.
+sql_tokenize() { # stdin -> one blanked UPPER statement per line; rc 1 on desync
+  awk '
+    BEGIN { st = "N"; depth = 0; out = "" }
+    {
+      line = $0 "\n"
+      i = 1
+      while (i <= length(line)) {
+        c = substr(line, i, 1); n = substr(line, i, 2)
+        if (st == "N") {
+          if (n == "--") { st = "L"; i += 2; continue }
+          if (n == "/*") { st = "B"; depth = 1; i += 2; continue }
+          if (c == "\047") { st = "S"; i++; continue }   # \047 = POSIX octal apostrophe (mawk has no \x)
+          if (c == "\"")   { st = "D"; i++; continue }
+          if (c == ";")    { out = out "\n"; i++; continue }
+          if (c == "\n")   { out = out " ";  i++; continue }
+          out = out c; i++; continue
+        }
+        if (st == "L") { if (c == "\n") { st = "N"; out = out " " }; i++; continue }
+        if (st == "B") {
+          if (n == "/*") { depth++; i += 2; continue }
+          if (n == "*/") { depth--; i += 2; if (depth == 0) { st = "N"; out = out " " }; continue }
+          i++; continue
+        }
+        if (st == "S") {
+          if (n == "\047\047") { i += 2; continue }
+          if (c == "\047") { st = "N"; out = out "\047LIT\047"; i++; continue }
+          i++; continue
+        }
+        if (st == "D") {
+          if (n == "\"\"") { i += 2; continue }
+          if (c == "\"") { st = "N"; out = out "\"ID\""; i++; continue }
+          i++; continue
+        }
+      }
+    }
+    END {
+      if (st != "N" || depth != 0) { print "DESYNC"; exit 1 }
+      printf "%s", out
+    }
+  ' | tr '[:lower:]' '[:upper:]' | sed -e 's/[[:space:]]\{1,\}/ /g'
+}
+
+sql_strip_parens() { # remove (...) groups iteratively (for comma check)
+  local s="$1" prev=''
+  while [[ "$s" != "$prev" ]]; do
+    prev="$s"
+    s="$(printf '%s' "$s" | sed 's/([^()]*)//g')"
+  done
+  printf '%s\n' "$s"
+}
+
+classify_sql_stream() { # stdin: migration.sql; stdout: verdict lines; rc 0=auto 1=manual
+  local raw blanked manual=0 stmt check stripped nonempty=0
+  raw="$(cat)"
+  # Gate 1: dollar-quoting lets '--' and ';' live inside literals, and
+  # PostgreSQL allows non-ASCII letters in $tag$ names — no character
+  # class is trustworthy. Fail closed on ANY '$' in the raw stream.
+  if printf '%s' "$raw" | grep -q '\$'; then
+    printf '  manual: dollar sign present — dollar-quoting cannot be ruled out\n'
+    return 1
+  fi
+  # Gate 2: backslashes (E'\'' escape strings and friends) would need
+  # escape-aware string parsing; standard DDL never requires them.
+  if printf '%s' "$raw" | grep -q '\\'; then
+    printf '  manual: backslash present — escape-string parsing not attempted\n'
+    return 1
+  fi
+  # Single-automaton tokenize: comments, strings and identifiers are
+  # resolved in one pass, so no marker hidden inside quotes (or quote
+  # hidden inside a comment) can desync stripping from parsing.
+  if ! blanked="$(printf '%s\n' "$raw" | sql_tokenize)"; then
+    printf '  manual: tokenizer desync (unterminated string/identifier/comment)\n'
+    return 1
+  fi
+  while IFS= read -r stmt; do
+    stmt="${stmt#"${stmt%%[![:space:]]*}"}"
+    stmt="${stmt%"${stmt##*[![:space:]]}"}"
+    [[ -z "$stmt" ]] && continue
+    nonempty=1
+    # Statements arrive already blanked ('LIT' / "ID") by the tokenizer.
+    check="$stmt"
+    if [[ "$check" == ALTER\ TABLE\ * ]]; then
+      # Multi-clause ALTER TABLE is auto-eligible ONLY when EVERY
+      # clause matches an explicitly additive shape (prisma routinely
+      # emits "ADD COLUMN a, ADD COLUMN b"). Any other clause — DROP,
+      # RENAME, SET NOT NULL, SET DATA TYPE, anything unrecognized —
+      # fails the whole statement closed.
+      stripped="$(sql_strip_parens "$check")"
+      local clause first=1 bad_clause=0
+      local OLDIFS2="$IFS"
+      IFS=','
+      # shellcheck disable=SC2086
+      set -- $stripped
+      IFS="$OLDIFS2"
+      for clause in "$@"; do
+        clause="${clause#"${clause%%[![:space:]]*}"}"
+        clause="${clause%"${clause##*[![:space:]]}"}"
+        if (( first == 1 )); then
+          first=0
+          if [[ "$clause" =~ ^ALTER\ TABLE\ .*\ ADD\ COLUMN\  ]] \
+          || [[ "$clause" =~ ^ALTER\ TABLE\ .*\ ADD\ CONSTRAINT\  ]] \
+          || [[ "$clause" =~ ^ALTER\ TABLE\ .*\ ALTER\ COLUMN\ .*\ (SET|DROP)\ DEFAULT ]]; then
+            continue
+          fi
+        else
+          if [[ "$clause" =~ ^ADD\ COLUMN\  ]] \
+          || [[ "$clause" =~ ^ADD\ CONSTRAINT\  ]] \
+          || [[ "$clause" =~ ^ALTER\ COLUMN\ .*\ (SET|DROP)\ DEFAULT ]]; then
+            continue
+          fi
+        fi
+        bad_clause=1
+        break
+      done
+      if (( bad_clause == 0 )); then
+        continue
+      fi
+      printf '  manual: ALTER TABLE clause outside additive allowlist: %.60s...\n' "$stmt"
+      manual=1; continue
+    fi
+    if [[ "$check" =~ ^CREATE\ (UNIQUE\ )?INDEX(\ CONCURRENTLY)?(\ IF\ NOT\ EXISTS)?\  ]] \
+    || [[ "$check" =~ ^CREATE\ TABLE(\ IF\ NOT\ EXISTS)?\  ]] \
+    || [[ "$check" =~ ^CREATE\ TYPE\  ]] \
+    || [[ "$check" =~ ^CREATE\ SEQUENCE(\ IF\ NOT\ EXISTS)?\  ]] \
+    || [[ "$check" =~ ^CREATE\ EXTENSION\ IF\ NOT\ EXISTS\  ]] \
+    || [[ "$check" =~ ^ALTER\ TYPE\ .*\ ADD\ VALUE ]] \
+    || [[ "$check" =~ ^INSERT\ INTO\  ]] \
+    || [[ "$check" =~ ^COMMENT\ ON\  ]]; then
+      continue
+    fi
+    printf '  manual: unrecognized statement: %.60s...\n' "$stmt"
+    manual=1
+  done <<< "$blanked"
+  if (( nonempty == 0 )); then
+    printf '  manual: empty or unreadable migration SQL\n'
+    return 1
+  fi
+  return "$manual"
+}
+
+classify_sql_file() { # <path>; rc 0=auto 1=manual 3=unreadable
+  [[ -r "$1" ]] || return 3
+  classify_sql_stream < "$1"
+}
+
+# ---------------------------------------------------------------------
+# Deltas (computed against fetched objects; read-only on the repo)
+# ---------------------------------------------------------------------
+
+migration_delta() { # <repo> <sha> -> prints new migration dir names
+  timeout "$VERB_TIMEOUT" "$GIT_BIN" -C "$1" diff --name-only "HEAD..$2" -- prisma/migrations 2>/dev/null \
+    | sed -n 's#^prisma/migrations/\([^/]*\)/.*#\1#p' | sort -u
+}
+
+extract_rel_imports() { # stdin: TS source -> relative import specifiers
+  grep -oE "from[[:space:]]+['\"]\.\.?/[^'\"]+['\"]|require\(['\"]\.\.?/[^'\"]+['\"]\)" 2>/dev/null \
+    | sed -E "s/.*['\"](\.\.?\/[^'\"]+)['\"].*/\1/" | sort -u
+}
+
+seed_delta() { # <repo> <sha>; rc 0 delta present, 1 none; prints reasons
+  local repo="$1" sha="$2" changed imp bad=0
+  changed="$(timeout "$VERB_TIMEOUT" "$GIT_BIN" -C "$repo" diff --name-only "HEAD..$sha" -- "${SEED_WATCH_PATHS[@]}" 2>/dev/null)"
+  if [[ -n "$changed" ]]; then
+    printf '%s\n' "$changed" | sed 's/^/  changed: /'
+    bad=1
+  fi
+  # Import guard: any relative import outside the allowlist in the
+  # TARGET revision's seed files over-triggers seed_delta (fail closed).
+  while IFS= read -r imp; do
+    [[ -z "$imp" ]] && continue
+    if [[ "$imp" != "$SEED_IMPORT_ALLOWLIST" ]]; then
+      printf '  import-guard: seed-system.ts imports %s (outside allowlist)\n' "$imp"
+      bad=1
+    fi
+  done < <(timeout "$VERB_TIMEOUT" "$GIT_BIN" -C "$repo" show "$sha:prisma/seed-system.ts" 2>/dev/null | extract_rel_imports)
+  while IFS= read -r imp; do
+    [[ -z "$imp" ]] && continue
+    printf '  import-guard: system-role-presets.ts gained an import: %s\n' "$imp"
+    bad=1
+  done < <(timeout "$VERB_TIMEOUT" "$GIT_BIN" -C "$repo" show "$sha:src/auth/system-role-presets.ts" 2>/dev/null | extract_rel_imports)
+  (( bad == 1 )) && return 0
+  return 1
+}
+
+# ---------------------------------------------------------------------
+# Verbs
+# ---------------------------------------------------------------------
+
+plan_fail() { printf 'plan: BLOCKED — %s\n' "$1"; return "${2:-1}"; }
+
+v_deploy_plan() { # <be-sha> <fe-sha>  (non-release-mutating preflight)
+  local be="$1" fe="$2" b repo sha tip head dirty branch dep
+  printf 'deploy-plan (non-release-mutating preflight; remote-tracking refs may update, nothing else)\n'
+
+  for b in "$NODE_BIN" "$NPM_BIN" "$GIT_BIN" "$PM2_BIN"; do
+    [[ -x "$b" ]] || { plan_fail "pinned binary missing: $b" 3; return 3; }
+  done
+  printf 'binaries: ok\n'
+
+  local use
+  use="$(df -P "$CRM_ROOT" 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}')" \
+    || { plan_fail "df failed for $CRM_ROOT" 3; return 3; }
+  [[ "$use" =~ ^[0-9]+$ ]] || { plan_fail 'disk usage unparseable' 3; return 3; }
+  (( use < DISK_MAX_USE_PCT )) || { plan_fail "disk ${use}% >= ${DISK_MAX_USE_PCT}%"; return 1; }
+  printf 'disk: %s%% used\n' "$use"
+
+  state_valid || { plan_fail "state file missing/invalid: $STATE_FILE (initialized at install — Card 3)" 3; return 3; }
+  printf 'state: valid (schema %s)\n' "$(state_get schema)"
+
+  lock_present && { plan_fail 'another deploy holds the lock (see deploy-status)'; return 1; }
+  printf 'lock: absent\n'
+
+  for repo in "$BACKEND_DIR" "$FRONTEND_DIR"; do
+    case "$repo" in
+      "$BACKEND_DIR")  sha="$be"; dep="$(state_get deployed_backend_sha)"  ;;
+      *)               sha="$fe"; dep="$(state_get published_frontend_sha)" ;;
+    esac
+    [[ -d "$repo/.git" ]] || { plan_fail "repo missing: $repo" 3; return 3; }
+    branch="$(timeout "$VERB_TIMEOUT" "$GIT_BIN" -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)" \
+      || { plan_fail "cannot read branch in $repo" 3; return 3; }
+    [[ "$branch" == main ]] || { plan_fail "$repo is on '$branch', expected main"; return 1; }
+    dirty="$(timeout "$VERB_TIMEOUT" "$GIT_BIN" -C "$repo" status --porcelain 2>/dev/null)" \
+      || { plan_fail "git status failed in $repo" 3; return 3; }
+    [[ -z "$dirty" ]] || { plan_fail "$repo working tree not clean"; return 1; }
+    timeout "$VERB_TIMEOUT" "$GIT_BIN" -C "$repo" fetch origin main >/dev/null 2>&1 \
+      || { plan_fail "git fetch failed in $repo"; return 1; }
+    tip="$(timeout "$VERB_TIMEOUT" "$GIT_BIN" -C "$repo" rev-parse origin/main 2>/dev/null)" \
+      || { plan_fail "cannot resolve origin/main in $repo"; return 1; }
+    [[ "$tip" == "$sha" ]] || { plan_fail "requested SHA is not the origin/main tip in ${repo##*/} (tip: $tip)"; return 1; }
+    head="$(timeout "$VERB_TIMEOUT" "$GIT_BIN" -C "$repo" rev-parse HEAD 2>/dev/null)"
+    timeout "$VERB_TIMEOUT" "$GIT_BIN" -C "$repo" merge-base --is-ancestor HEAD "$sha" 2>/dev/null \
+      || [[ "$head" == "$sha" ]] \
+      || { plan_fail "fast-forward impossible in ${repo##*/} (HEAD $head)"; return 1; }
+    if [[ "$head" != "$dep" && "$head" != "$sha" ]]; then
+      plan_fail "state/HEAD mismatch in ${repo##*/}: HEAD $head, deployed $dep — resolve manually"
+      return 1
+    fi
+    printf 'repo %s: branch main, clean, tip match, ff ok (HEAD %.12s, deployed %.12s)\n' \
+      "${repo##*/}" "$head" "$dep"
+  done
+
+  # DB baseline relative to the CURRENTLY deployed backend, pre-move.
+  local mig_out
+  mig_out="$(cd "$BACKEND_DIR" && timeout "$VERB_TIMEOUT" ./node_modules/.bin/prisma migrate status --config=./prisma.config.ts 2>&1)" \
+    || { printf '%s\n' "$mig_out" | tail -n 5; plan_fail 'current DB is not clean against deployed HEAD'; return 1; }
+  printf 'db-baseline: up to date against current HEAD\n'
+
+  # Deltas + classifier
+  local mnames m rc_class=0 any_manual=0 migd=0 seedd=0
+  mnames="$(migration_delta "$BACKEND_DIR" "$be")"
+  if [[ -n "$mnames" ]]; then
+    migd=1
+    printf 'migration_delta:\n'
+    while IFS= read -r m; do
+      [[ -z "$m" ]] && continue
+      printf ' migration %s:\n' "$m"
+      local msql=''
+      msql="$(timeout "$VERB_TIMEOUT" "$GIT_BIN" -C "$BACKEND_DIR" show "$be:prisma/migrations/$m/migration.sql" 2>/dev/null)" || msql=''
+      if [[ -z "$msql" ]]; then
+        printf '  manual: migration.sql missing or unreadable at target SHA\n'
+        printf '  verdict: manual-required\n'
+        any_manual=1
+      elif printf '%s\n' "$msql" | classify_sql_stream; then
+        printf '  verdict: auto-eligible\n'
+      else
+        printf '  verdict: manual-required\n'
+        any_manual=1
+      fi
+    done <<< "$mnames"
+  else
+    printf 'migration_delta: none\n'
+  fi
+
+  printf 'seed_delta:\n'
+  if seed_delta "$BACKEND_DIR" "$be"; then
+    seedd=1
+  else
+    printf '  none\n'
+  fi
+
+  local needs=false
+  (( migd == 1 || seedd == 1 )) && needs=true
+  printf 'needs_db_write: %s (migration_delta=%s seed_delta=%s)\n' "$needs" "$migd" "$seedd"
+  if [[ "$needs" == true ]]; then
+    printf 'backup: a fresh PRE_MIGRATION backup + --current-run-id gate will be REQUIRED before any DB op\n'
+  fi
+
+  if (( any_manual == 1 )); then
+    plan_fail 'migration-class manual-required — route this release through the operator path'
+    return 4
+  fi
+  printf 'plan: OK for %.12s / %.12s (deploy-run is not available in this foundation build)\n' "$be" "$fe"
+  return 0
+}
+
+v_deploy_status() { # <N>
+  local n="$1" id pid st verdict k v
+  printf '== lock ==\n'
+  if lock_present; then
+    for k in DEPLOY_ID BE_SHA FE_SHA PREV_BE PREV_FE STEP CREATED_AT; do
+      v="$(lock_get "$k")" || v='?'
+      printf '%s: %s\n' "$k" "$v"
+    done
+    pid="$(lock_get PID)" || pid=''
+    st="$(lock_get STARTTIME)" || st=''
+    if [[ "$pid" =~ ^[0-9]+$ && -n "$st" ]] && runner_alive "$pid" "$st"; then
+      verdict="alive (pid $pid, starttime match)"
+    elif [[ "$pid" =~ ^[0-9]+$ ]] && proc_starttime "$pid" >/dev/null 2>&1; then
+      verdict="dead (pid $pid reused — starttime mismatch)"
+    else
+      verdict="dead (no such process)"
+    fi
+    printf 'runner: %s\n' "$verdict"
+  else
+    printf 'lock: absent\n'
+  fi
+
+  printf '== state ==\n'
+  if state_valid; then
+    for k in deployed_backend_sha previous_backend_sha published_frontend_sha previous_frontend_sha fe_release_dir; do
+      printf '%s: %s\n' "$k" "$(state_get "$k")"
+    done
+  else
+    printf 'state: missing/invalid (%s)\n' "$STATE_FILE"
+  fi
+
+  printf '== repo heads ==\n'
+  local repo
+  for repo in "$BACKEND_DIR" "$FRONTEND_DIR"; do
+    if [[ -d "$repo/.git" ]]; then
+      printf 'repo_head %s: %s\n' "${repo##*/}" \
+        "$(timeout "$VERB_TIMEOUT" "$GIT_BIN" -C "$repo" rev-parse HEAD 2>/dev/null || echo '?')"
+    else
+      printf 'repo_head %s: repo not found\n' "${repo##*/}"
+    fi
+  done
+
+  printf '== journal (last %s lines) ==\n' "$n"
+  local latest
+  latest="$(ls -1t "$JOURNAL_DIR" 2>/dev/null | head -n1)"
+  if [[ -n "$latest" && -r "$JOURNAL_DIR/$latest" ]]; then
+    printf '[%s]\n' "$latest"
+    tail -n "$n" -- "$JOURNAL_DIR/$latest"
+  else
+    printf 'journal: none\n'
+  fi
+}
+
+v_deploy_unlock() { # <deploy-id>
+  local want="$1" have pid st
+  lock_present || { printf 'unlock: no lock present\n'; return 1; }
+  have="$(lock_get DEPLOY_ID)" || { printf 'unlock: lock meta unreadable\n'; return 1; }
+  if [[ "$have" != "$want" ]]; then
+    printf 'unlock: deploy-id mismatch (lock holds %s)\n' "$have"
+    return 1
+  fi
+  pid="$(lock_get PID)" || pid=''
+  st="$(lock_get STARTTIME)" || st=''
+  if [[ "$pid" =~ ^[0-9]+$ && -n "$st" ]] && runner_alive "$pid" "$st"; then
+    printf 'unlock: REFUSED — runner pid %s is alive with matching start identity\n' "$pid"
+    return 1
+  fi
+  # Only the fixed constant path is ever removed; user input is compared,
+  # never used to build a path.
+  rm -rf -- "$LOCK_DIR"
+  printf 'unlock: removed lock %s (runner proven dead)\n' "$want"
+}
+
+# ---------------------------------------------------------------------
+# Lib-only gate for the sibling test file (env unreachable via sshd;
+# worst case if set server-side: the gateway no-ops — fail closed).
+# ---------------------------------------------------------------------
+if [[ "${SARGAS_DEPLOY_GW_LIB_ONLY:-0}" == '1' ]]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+# ---------------------------------------------------------------------
+# Parser — whole-string grammar over SSH_ORIGINAL_COMMAND. deploy-run
+# is deliberately NOT in the grammar in this foundation build.
+# ---------------------------------------------------------------------
+
+RAW="${SSH_ORIGINAL_COMMAND:-}"
+
+if (( ${#RAW} > MAX_CMD_LEN )); then usage; fail usage; fi
+case "$RAW" in
+  *[![:print:]]*) usage; fail usage ;;
+esac
+
+VERB=''
+ARG1=''
+ARG2=''
+STATUS_N=40
+case "$RAW" in
+  deploy-status)
+    VERB=deploy-status
+    ;;
+  'deploy-status '*)
+    VERB=deploy-status
+    ARG1="${RAW#deploy-status }"
+    case "$ARG1" in ''|*[!0-9]*) usage; fail badarg ;; esac
+    [[ "$ARG1" =~ ^([1-9][0-9]?|1[0-9][0-9]|200)$ ]] || { usage; fail badarg; }
+    STATUS_N="$ARG1"
+    ;;
+  'deploy-plan '*)
+    VERB=deploy-plan
+    rest="${RAW#deploy-plan }"
+    [[ "$rest" == *' '* ]] || { usage; fail badarg; }
+    ARG1="${rest%% *}"
+    ARG2="${rest#* }"
+    [[ "$ARG2" != *' '* ]] || { usage; fail badarg; }
+    is_sha40 "$ARG1" || { usage; fail badarg; }
+    is_sha40 "$ARG2" || { usage; fail badarg; }
+    ;;
+  'deploy-unlock '*)
+    VERB=deploy-unlock
+    ARG1="${RAW#deploy-unlock }"
+    is_deploy_id "$ARG1" || { usage; fail badarg; }
+    ;;
+  deploy-plan|deploy-unlock)
+    usage; fail badarg
+    ;;
+  *)
+    usage; fail usage
+    ;;
+esac
+readonly VERB ARG1 ARG2 STATUS_N
+
+run_verb() {
+  case "$VERB" in
+    deploy-plan)   v_deploy_plan "$ARG1" "$ARG2" ;;
+    deploy-status) v_deploy_status "$STATUS_N" ;;
+    deploy-unlock) v_deploy_unlock "$ARG1" ;;
+  esac
+}
+
+set +e
+run_verb 2>&1 | mask | head -c "$MAX_OUTPUT_BYTES"
+rc=${PIPESTATUS[0]}
+set -e
+
+logger -t sargas-claude-deploy-gw -- "verb=$VERB rc=$rc" 2>/dev/null || true
+
+if (( rc == 0 )); then
+  printf -- '-- ok\n'
+  exit 0
+elif (( rc == 3 )); then
+  fail unreadable
+elif (( rc == 4 )); then
+  fail migration-class
+else
+  fail failed
+fi
