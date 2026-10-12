@@ -2,7 +2,6 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 import { ClientStatus } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
-  IsDateString,
   IsEnum,
   IsInt,
   IsOptional,
@@ -11,6 +10,9 @@ import {
   Min,
 } from 'class-validator';
 
+/* `clientSince` sort option intentionally removed (rev-5 2026-10-12):
+ * the field left the UI; the list no longer surfaces it as a column
+ * or filter. The DB column stays. */
 export enum ClientSortBy {
   number = 'number',
   firstName = 'firstName',
@@ -18,7 +20,6 @@ export enum ClientSortBy {
   email = 'email',
   phone = 'phone',
   status = 'status',
-  clientSince = 'clientSince',
   updatedAt = 'updatedAt',
   createdAt = 'createdAt',
 }
@@ -90,14 +91,4 @@ export class ListClientsDto {
     typeof value === 'string' ? value.trim() || undefined : value,
   )
   location?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsDateString()
-  clientSinceFrom?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsDateString()
-  clientSinceTo?: string;
 }

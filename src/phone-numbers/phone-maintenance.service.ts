@@ -68,7 +68,6 @@ export class PhoneMaintenanceService {
             number: true,
             operator: true,
             status: true,
-            holder: { select: { firstName: true, lastName: true } },
           },
         },
       },

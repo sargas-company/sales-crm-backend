@@ -43,20 +43,6 @@ export class CreatePhoneNumberDto {
   @IsEnum(PhoneStatus)
   status?: PhoneStatus;
 
-  @ApiPropertyOptional({ description: 'Linked Employee id.', nullable: true })
-  @IsOptional()
-  @ValidateIf((_, v) => v !== null)
-  @IsUUID()
-  holderEmployeeId?: string | null;
-
-  @ApiPropertyOptional({ nullable: true })
-  @IsOptional()
-  @Transform(nullOrTrimmedString)
-  @ValidateIf((_, v) => v !== null)
-  @IsString()
-  @MaxLength(120)
-  holderName?: string | null;
-
   @ApiPropertyOptional()
   @IsOptional()
   @IsBoolean()

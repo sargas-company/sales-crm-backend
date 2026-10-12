@@ -741,6 +741,12 @@ model ClientCall {
 
   createdAt       DateTime             @default(now())
   updatedAt       DateTime             @updatedAt
+  // Set in the same transaction as a real `scheduledAt` change (notes
+  // / title / status edits do NOT touch it). Reminder cron uses
+  // `rescheduledAt ?? createdAt` as the anchor for the "did the user
+  // ever have enough notice for this threshold?" guard — see
+  // `call-reminder.service.ts`.
+  rescheduledAt   DateTime?
 
   lead          Lead?          @relation(fields: [leadId], references: [id], onDelete: Cascade)
   crmClient     Client?        @relation(fields: [crmClientId], references: [id], onDelete: Cascade)

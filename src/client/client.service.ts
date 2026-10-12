@@ -39,19 +39,20 @@ export class ClientService {
   ) {}
 
   async create(dto: CreateClientDto, user: AuthUser) {
+    // `platformId` and `clientSince` deliberately not written here
+    // (rev-5 2026-10-12 — DTO stopped accepting them; legacy DB
+    // columns stay for existing rows and are left as-is).
     const created = await this.prisma.client.create({
       data: {
         firstName: dto.firstName,
-        lastName: dto.lastName ?? null,
-        company: dto.company ?? null,
-        email: dto.email ?? null,
+        lastName: dto.lastName,
+        company: dto.company,
+        email: dto.email,
         phone: dto.phone ?? null,
         source: dto.source ?? null,
         profileUrl: dto.profileUrl ?? null,
         status: dto.status ?? ClientStatus.ACTIVE,
-        clientSince: dto.clientSince ? new Date(dto.clientSince) : null,
         notes: dto.notes ?? null,
-        platformId: dto.platformId ?? null,
         location: dto.location ?? null,
       },
     });
@@ -91,18 +92,6 @@ export class ClientService {
       ...(dto.source ? { source: dto.source } : {}),
       ...(dto.location
         ? { location: { contains: dto.location, mode: 'insensitive' } }
-        : {}),
-      ...(dto.clientSinceFrom || dto.clientSinceTo
-        ? {
-            clientSince: {
-              ...(dto.clientSinceFrom
-                ? { gte: new Date(dto.clientSinceFrom) }
-                : {}),
-              ...(dto.clientSinceTo
-                ? { lte: new Date(dto.clientSinceTo) }
-                : {}),
-            },
-          }
         : {}),
       ...(dto.search
         ? {
@@ -159,13 +148,7 @@ export class ClientService {
       ...(dto.source !== undefined ? { source: dto.source } : {}),
       ...(dto.profileUrl !== undefined ? { profileUrl: dto.profileUrl } : {}),
       ...(dto.status !== undefined ? { status: dto.status } : {}),
-      ...(dto.clientSince !== undefined
-        ? {
-            clientSince: dto.clientSince ? new Date(dto.clientSince) : null,
-          }
-        : {}),
       ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
-      ...(dto.platformId !== undefined ? { platformId: dto.platformId } : {}),
       ...(dto.location !== undefined ? { location: dto.location } : {}),
     };
 
@@ -336,8 +319,6 @@ export class ClientService {
         return { phone: { sort: dir, nulls: 'last' } };
       case ClientSortBy.status:
         return { status: dir };
-      case ClientSortBy.clientSince:
-        return { clientSince: { sort: dir, nulls: 'last' } };
       case ClientSortBy.updatedAt:
         return { updatedAt: dir };
       case ClientSortBy.createdAt:

@@ -2,7 +2,6 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ClientStatus } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
-  IsDateString,
   IsEmail,
   IsEnum,
   IsOptional,
@@ -15,12 +14,9 @@ import {
 
 const E164_RE = /^\+[1-9]\d{1,14}$/;
 
-const normaliseEmail = (value: unknown): string | undefined | null => {
-  if (value === null) return null;
+const normaliseEmail = (value: unknown): string | undefined => {
   if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  return trimmed.toLowerCase();
+  return value.trim().toLowerCase();
 };
 
 const normalisePhone = (value: unknown): string | undefined | null => {
@@ -38,6 +34,19 @@ const trim = (value: unknown): string | undefined | null => {
   return trimmed === '' ? null : trimmed;
 };
 
+/**
+ * Create-client DTO (rev-5 2026-10-12 — Client-zone contract parity
+ * with Lead-zone):
+ *
+ * - firstName / lastName / company / email are REQUIRED. The owner
+ *   decided a Client always identifies a real person at a real
+ *   company and must be reachable by email.
+ * - `platformId` and `clientSince` are deliberately absent — the UI
+ *   stopped editing them; the backend columns stay to preserve
+ *   existing data, but no write-path accepts them any more.
+ * - `rate` was never a Client field (unlike Lead); kept here as a
+ *   negative note so future readers don't look for it.
+ */
 export class CreateClientDto {
   @ApiProperty()
   @IsString()
@@ -46,26 +55,25 @@ export class CreateClientDto {
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   firstName: string;
 
-  @ApiPropertyOptional()
-  @IsOptional()
+  @ApiProperty()
   @IsString()
+  @MinLength(1)
   @MaxLength(80)
-  @Transform(({ value }) => trim(value))
-  lastName?: string | null;
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  lastName: string;
 
-  @ApiPropertyOptional()
-  @IsOptional()
+  @ApiProperty()
   @IsString()
+  @MinLength(1)
   @MaxLength(160)
-  @Transform(({ value }) => trim(value))
-  company?: string | null;
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  company: string;
 
-  @ApiPropertyOptional()
-  @IsOptional()
+  @ApiProperty()
   @IsEmail()
   @MaxLength(254)
   @Transform(({ value }) => normaliseEmail(value))
-  email?: string | null;
+  email: string;
 
   @ApiPropertyOptional({ description: 'Phone in E.164, e.g. +14155550123' })
   @IsOptional()
@@ -96,26 +104,10 @@ export class CreateClientDto {
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsDateString()
-  clientSince?: string | null;
-
-  @ApiPropertyOptional()
-  @IsOptional()
   @IsString()
   @MaxLength(4000)
   @Transform(({ value }) => trim(value))
   notes?: string | null;
-
-  @ApiPropertyOptional({
-    example: 'c0ff33b0-…',
-    description:
-      'Platform (Upwork, LinkedIn, …) from the shared directory. Independent of the Lead platform selection.',
-    nullable: true,
-  })
-  @IsOptional()
-  @IsString()
-  @MaxLength(36)
-  platformId?: string | null;
 
   @ApiPropertyOptional({
     description:

@@ -307,9 +307,9 @@ export class ClientCallsService {
           clientRequest: {
             select: { id: true, name: true, company: true },
           },
-          createdBy: {
-            select: { id: true, firstName: true, lastName: true },
-          },
+          // `createdBy` deliberately not selected (rev 2026-10-12 —
+          // "created by" removed from the Client-Calls UI contract).
+          // The `createdById` column stays on the row for audit.
         },
       }),
       this.prisma.clientCall.count({ where }),
@@ -331,8 +331,6 @@ export class ClientCallsService {
         return { clientTimezone: dir };
       case ClientCallSortBy.status:
         return { status: dir };
-      case ClientCallSortBy.createdBy:
-        return { createdBy: { firstName: dir } };
       case ClientCallSortBy.createdAt:
         return { createdAt: dir };
       case ClientCallSortBy.scheduledAt:
@@ -353,9 +351,6 @@ export class ClientCallsService {
         },
         clientRequest: {
           select: { id: true, name: true, company: true },
-        },
-        createdBy: {
-          select: { id: true, firstName: true, lastName: true },
         },
       },
     });
@@ -388,31 +383,42 @@ export class ClientCallsService {
       this.assertScheduledInFuture(newScheduledAt!);
     }
 
-    const updated = await this.prisma.clientCall.update({
-      where: { id },
-      data: {
-        callTitle: dto.callTitle,
-        meetingUrl: dto.meetingUrl,
-        scheduledAt: newScheduledAt ?? undefined,
-        clientTimezone: dto.clientTimezone,
-        duration: dto.duration,
-        status: dto.status,
-        notes: dto.notes,
-        summary: dto.summary,
-        transcriptUrl: dto.transcriptUrl,
-        aiSummary: dto.aiSummary,
-      },
+    // Atomic: when the time changes we must update `scheduledAt`,
+    // bump `rescheduledAt` (the reminder-anchor) and purge the old
+    // `CallReminderSent` stamps as one unit. A crash between any two
+    // of those left the previous version with stale stamps against a
+    // new schedule — so the cron would skip reminders that should now
+    // fire. Non-time edits (notes, title, status, etc.) stay a plain
+    // single-row update.
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const row = await tx.clientCall.update({
+        where: { id },
+        data: {
+          callTitle: dto.callTitle,
+          meetingUrl: dto.meetingUrl,
+          scheduledAt: newScheduledAt ?? undefined,
+          clientTimezone: dto.clientTimezone,
+          duration: dto.duration,
+          status: dto.status,
+          notes: dto.notes,
+          summary: dto.summary,
+          transcriptUrl: dto.transcriptUrl,
+          aiSummary: dto.aiSummary,
+          ...(timeChanged ? { rescheduledAt: new Date() } : {}),
+        },
+      });
+
+      if (timeChanged) {
+        await tx.callReminderSent.deleteMany({ where: { callId: id } });
+      }
+
+      return row;
     });
 
+    // Notifications are kicked outside the transaction: the DB state
+    // the user asked for is already committed; a Discord-queue hiccup
+    // must not roll back the reschedule itself.
     if (timeChanged) {
-      // Clear old reminder stamps so the cron can re-fire for the
-      // new scheduledAt. We delete BEFORE emitting the Rescheduled
-      // notification so a crash between the two leaves the call in
-      // the state the user asked for: reminders will fire again,
-      // and the notification can be re-queued by hand if needed.
-      await this.prisma.callReminderSent.deleteMany({
-        where: { callId: id },
-      });
       await this.emitRescheduledNotification(id, call.scheduledAt, newScheduledAt!);
     }
     if (becomesCancelled) {

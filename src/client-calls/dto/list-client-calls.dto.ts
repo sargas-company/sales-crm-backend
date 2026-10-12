@@ -15,7 +15,6 @@ export enum ClientCallSortBy {
   duration = 'duration',
   clientTimezone = 'clientTimezone',
   status = 'status',
-  createdBy = 'createdBy',
   createdAt = 'createdAt',
 }
 

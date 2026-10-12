@@ -48,7 +48,6 @@ const trackCreate = async (payload: Partial<CreateClientDto>) => {
     source: payload.source ?? null,
     profileUrl: payload.profileUrl ?? null,
     status: payload.status,
-    clientSince: payload.clientSince ?? null,
     notes: payload.notes ?? null,
   } as unknown as CreateClientDto;
   const row = await svc.create(dto, user);

@@ -26,8 +26,6 @@ interface CreatePhoneDto {
   number: string;
   operator?: PhoneOperator;
   status?: PhoneStatus;
-  holderEmployeeId?: string | null;
-  holderName?: string | null;
   maintenanceRequired?: boolean;
   nextMaintenanceAt?: string | null;
   lastTopUpAt?: string | null;
@@ -77,15 +75,6 @@ export class PhoneNumbersService {
             OR: [
               { number: { contains: query.q, mode: 'insensitive' } },
               { notes: { contains: query.q, mode: 'insensitive' } },
-              {
-                holder: {
-                  OR: [
-                    { firstName: { contains: query.q, mode: 'insensitive' } },
-                    { lastName: { contains: query.q, mode: 'insensitive' } },
-                    { email: { contains: query.q, mode: 'insensitive' } },
-                  ],
-                },
-              },
               {
                 bindings: {
                   some: {
@@ -179,8 +168,6 @@ export class PhoneNumbersService {
         number,
         operator: dto.operator ?? PhoneOperator.OTHER,
         status: dto.status ?? PhoneStatus.ACTIVE,
-        holderEmployeeId: dto.holderEmployeeId ?? null,
-        holderName: dto.holderName?.trim() || null,
         maintenanceRequired: dto.maintenanceRequired ?? true,
         nextMaintenanceAt: nextMaintenance,
         lastTopUpAt: dto.lastTopUpAt ? new Date(dto.lastTopUpAt) : null,
@@ -223,12 +210,6 @@ export class PhoneNumbersService {
         ...(normalized !== undefined ? { number: normalized } : {}),
         ...(dto.operator !== undefined ? { operator: dto.operator } : {}),
         ...(dto.status !== undefined ? { status: dto.status } : {}),
-        ...(dto.holderEmployeeId !== undefined
-          ? { holderEmployeeId: dto.holderEmployeeId }
-          : {}),
-        ...(dto.holderName !== undefined
-          ? { holderName: dto.holderName?.trim() || null }
-          : {}),
         ...(dto.maintenanceRequired !== undefined
           ? { maintenanceRequired: dto.maintenanceRequired }
           : {}),
@@ -259,7 +240,6 @@ export class PhoneNumbersService {
         number: existing.number,
         operator: existing.operator,
         status: existing.status,
-        holderEmployeeId: existing.holderEmployeeId,
         maintenanceRequired: existing.maintenanceRequired,
         nextMaintenanceAt: existing.nextMaintenanceAt?.toISOString() ?? null,
       },
@@ -267,17 +247,14 @@ export class PhoneNumbersService {
         number: updated.number,
         operator: updated.operator,
         status: updated.status,
-        holderEmployeeId: updated.holderEmployeeId,
         maintenanceRequired: updated.maintenanceRequired,
         nextMaintenanceAt: updated.nextMaintenanceAt?.toISOString() ?? null,
       },
     );
     const action =
-      existing.holderEmployeeId !== updated.holderEmployeeId
-        ? 'phone.holder.change'
-        : existing.status !== updated.status
-          ? 'phone.status.change'
-          : 'phone.update';
+      existing.status !== updated.status
+        ? 'phone.status.change'
+        : 'phone.update';
     await this.audit.recordSafe({
       actorUserId: actorId,
       domain: 'SETTINGS',
@@ -504,9 +481,6 @@ export class PhoneNumbersService {
 
   private defaultInclude(): Prisma.PhoneNumberInclude {
     return {
-      holder: {
-        select: { id: true, firstName: true, lastName: true, email: true },
-      },
       bindings: {
         orderBy: { updatedAt: 'desc' },
         include: {
