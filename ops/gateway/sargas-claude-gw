@@ -1,0 +1,319 @@
+#!/bin/bash
+# sargas-claude-gw — restricted read-only production gateway for Claude Code.
+# Interpreter is pinned (not /usr/bin/env): a root-owned forced-command
+# security boundary must not resolve bash through the ambient PATH.
+#
+# Forced-command target for the dedicated gateway key: the
+# `restrict,command=` entry in spawn's authorized_keys runs this script
+# regardless of what the client asked for. Reviewed canonical source:
+# sales-crm-backend/ops/gateway/sargas-claude-gw. Install / smoke-check /
+# rollback: docs/ops/production.md (workspace root).
+#
+# Status: PREPARED — NOT INSTALLED. Nothing in this file has run on the
+# production host yet.
+#
+# Contract
+#   - exactly one read-only verb per connection, parsed from
+#     SSH_ORIGINAL_COMMAND under a strict whole-string grammar;
+#   - fail closed: unknown verb, bad arg, control chars, overlong input,
+#     trailing garbage -> usage + "-- error usage|badarg", exit 2;
+#   - no user input ever reaches a shell (no eval / sh -c / bash -c /
+#     dynamically assembled commands) — verbs run fixed argv only;
+#   - all verb output (stdout+stderr) passes the secret mask, then a
+#     64 KiB hard cap; the trailing status line is "-- ok" on verb
+#     success or "-- error <usage|badarg|unreadable|failed>";
+#   - "-- ok" means "the verb ran", not "the system is healthy" — the
+#     body carries the diagnostics (e.g. health FAIL, pending
+#     migrations) by design;
+#   - if output exceeds the 64 KiB cap, the writer dies on SIGPIPE and
+#     the verb reports "-- error failed" (fail-closed truncation).
+
+set -euo pipefail
+IFS=$' \t\n'
+umask 077
+
+export LC_ALL=C
+# Node/pm2 live in spawn's nvm bin (OPERATOR-VERIFIED path, see
+# docs/ops/production.md). No other lookup paths.
+export PATH='/home/spawn/.nvm/versions/node/v24.4.1/bin:/usr/bin:/bin'
+export GIT_OPTIONAL_LOCKS=0
+
+readonly CRM_ROOT='/var/www/sales-crm'
+readonly BACKEND_DIR="$CRM_ROOT/sales-crm-backend"
+readonly FRONTEND_DIR="$CRM_ROOT/sales-crm-frontend"
+readonly PM2_PROCESS='sales-crm-back-end'
+# PM2 default; UNKNOWN until install — a custom log path makes
+# backend-logs refuse (fail closed), it cannot widen access.
+readonly PM2_LOGS_DIR='/home/spawn/.pm2/logs'
+readonly NGINX_API_CONF='/etc/nginx/sites-enabled/api.sargas.io.conf'
+readonly BACKEND_HEALTH_URL='http://127.0.0.1:3006/health'
+readonly FRONTEND_PROBE_URL='https://admin.sargas.io/'
+readonly MAX_CMD_LEN=64
+readonly MAX_OUTPUT_BYTES=65536   # 64 KiB global output cap
+readonly VERB_TIMEOUT=10          # seconds per external command
+readonly MIGRATIONS_TIMEOUT=30    # prisma CLI needs more than plain reads
+
+usage() {
+  printf 'usage: one of\n'
+  printf '  release-status | services | health | migrations-status\n'
+  printf '  nginx-sse | disk | backend-logs [N]   (N = 1..200)\n'
+}
+
+fail() { # fail <usage|badarg|unreadable|failed>
+  printf -- '-- error %s\n' "$1"
+  case "$1" in usage|badarg) exit 2 ;; *) exit 1 ;; esac
+}
+
+# Secret mask — applied to ALL verb output (stdout+stderr), fail-closed:
+# over-masking is acceptable, leaking is not.
+#   1. PRIVATE KEY blocks (BEGIN..END range, plus any stray line);
+#   2. URL userinfo  ...://user:pass@host -> ...://[MASKED]@host
+#      (userinfo may contain '/', so only '@' and whitespace end it);
+#   3. values after sensitive UPPER_CASE names (DATABASE_URL,
+#      REDIS_URL, B2_*, *PASSWORD*, *SECRET*, *TOKEN*, *API_KEY*,
+#      *APP_KEY*, *KEY_ID*);
+#   4. JSON-style quoted keys with the same stems, any case
+#      ("password":"...", "apiKey": ..., "accessToken": "...");
+#   5. Bearer <token> header values;
+#   6. JWT-shaped tokens (eyJ...).
+mask() {
+  sed -E \
+    -e '/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/,/-----END [A-Z0-9 ]*PRIVATE KEY-----/d' \
+    -e '/PRIVATE KEY/d' \
+    -e 's#(://)[^@[:space:]]+@#\1[MASKED]@#g' \
+    -e 's#(DATABASE_URL|REDIS_URL|B2_[A-Z0-9_]+|[A-Z0-9_]*(PASSWORD|SECRET|TOKEN|API_KEY|APP_KEY|KEY_ID)[A-Z0-9_]*)([[:space:]]*[=:][[:space:]]*)[^[:space:]]+#\1\3[MASKED]#g' \
+    -e 's#("[A-Za-z0-9_]*([Pp]assword|[Ss]ecret|[Tt]oken|[Aa]pi[_]?[Kk]ey|[Aa]pp[_]?[Kk]ey|[Kk]ey[_]?[Ii]d)[A-Za-z0-9_]*"[[:space:]]*:[[:space:]]*)("[^"]*"|[^",[:space:]}]+)#\1"[MASKED]"#g' \
+    -e 's#[Bb]earer[[:space:]]+[^[:space:]]+#Bearer [MASKED]#g' \
+    -e 's#eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{4,}(\.[A-Za-z0-9_-]+)?#[MASKED-JWT]#g'
+}
+
+# ---------------------------------------------------------------------------
+# Parser — validates the WHOLE SSH_ORIGINAL_COMMAND string. No word
+# splitting into a shell, no ignored trailers, no control characters.
+# ---------------------------------------------------------------------------
+
+readonly RAW="${SSH_ORIGINAL_COMMAND:-}"
+
+if (( ${#RAW} > MAX_CMD_LEN )); then
+  usage; fail usage
+fi
+
+case "$RAW" in
+  *[![:print:]]*)   # rejects CR, LF, TAB, NUL and every other control char
+    usage; fail usage ;;
+esac
+
+VERB=''
+LOG_N=50
+case "$RAW" in
+  release-status|services|health|migrations-status|nginx-sse|disk)
+    VERB="$RAW"
+    ;;
+  backend-logs)
+    VERB='backend-logs'
+    ;;
+  'backend-logs '*)
+    VERB='backend-logs'
+    arg="${RAW#backend-logs }"
+    case "$arg" in
+      ''|*[!0-9]*)                 # empty, non-digits, or any trailer
+        usage; fail badarg ;;
+    esac
+    if [[ "$arg" =~ ^([1-9][0-9]?|1[0-9][0-9]|200)$ ]]; then
+      LOG_N="$arg"                 # 1..200, no leading zeros
+    else
+      usage; fail badarg
+    fi
+    ;;
+  *)
+    usage; fail usage ;;
+esac
+readonly VERB LOG_N
+
+# ---------------------------------------------------------------------------
+# Verbs — fixed argv only; return 0 = verb ran (output is the diagnosis),
+# 3 = required resource unreadable/missing, anything else = failed.
+# ---------------------------------------------------------------------------
+
+v_release_status() {
+  local repo name branch head dirty
+  for repo in "$BACKEND_DIR" "$FRONTEND_DIR"; do
+    name="${repo##*/}"
+    if [[ ! -d "$repo/.git" ]]; then
+      printf '%s: repo not found at %s\n' "$name" "$repo"
+      return 3
+    fi
+    branch="$(timeout "$VERB_TIMEOUT" git -C "$repo" rev-parse --abbrev-ref HEAD 2>&1)" || branch='?'
+    head="$(timeout "$VERB_TIMEOUT" git -C "$repo" rev-parse HEAD 2>&1)" || head='?'
+    dirty="$(timeout "$VERB_TIMEOUT" git -C "$repo" status --porcelain 2>/dev/null | head -n 500 | wc -l | tr -d ' ')" || dirty='?'
+    printf '%s\n  branch: %s\n  head:   %s\n  dirty:  %s file(s)\n' \
+      "$name" "$branch" "$head" "$dirty"
+  done
+}
+
+# Allowlisted-fields extractor: never prints pm2 jlist wholesale, never
+# prints process env. Process name is passed as argv, not interpolated.
+v_services() {
+  timeout "$VERB_TIMEOUT" pm2 jlist 2>/dev/null \
+    | timeout "$VERB_TIMEOUT" node -e '
+const want = process.argv[1];
+const chunks = [];
+process.stdin.on("data", (c) => chunks.push(c));
+process.stdin.on("end", () => {
+  let list;
+  try { list = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+  catch { console.log("services: pm2 jlist unparseable"); process.exit(1); }
+  const p = (Array.isArray(list) ? list : []).find((x) => x && x.name === want);
+  if (!p) { console.log("services: process not found: " + want); process.exit(1); }
+  const e = p.pm2_env || {};
+  const m = p.monit || {};
+  const rows = [
+    ["name", p.name],
+    ["status", e.status],
+    ["pid", p.pid],
+    ["restarts", e.restart_time],
+    ["uptime_s", e.pm_uptime ? Math.round((Date.now() - e.pm_uptime) / 1000) : null],
+    ["memory_mb", m.memory != null ? Math.round(m.memory / 1048576) : null],
+    ["cpu_pct", m.cpu],
+    ["pm_cwd", e.pm_cwd],
+    ["pm_exec_path", e.pm_exec_path],
+    ["out_log", e.pm_out_log_path],
+    ["err_log", e.pm_err_log_path],
+  ];
+  for (const [k, v] of rows) console.log(k + ": " + (v == null ? "-" : v));
+});' "$PM2_PROCESS"
+}
+
+v_health() {
+  local code
+  if code="$(timeout "$VERB_TIMEOUT" curl -fsS -o /dev/null -w '%{http_code}' --max-time 5 "$BACKEND_HEALTH_URL" 2>/dev/null)"; then
+    printf 'backend: %s\n' "$code"
+  else
+    printf 'backend: FAIL\n'
+  fi
+  if code="$(timeout "$VERB_TIMEOUT" curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "$FRONTEND_PROBE_URL" 2>/dev/null)"; then
+    printf 'frontend: %s\n' "$code"
+  else
+    printf 'frontend: FAIL\n'
+  fi
+}
+
+# Never sources .env, never parses DATABASE_URL. The repo-local prisma
+# binary resolves its own config exactly as the app does; a non-zero
+# prisma exit (pending/failed migrations) is a DIAGNOSTIC result here,
+# not a gateway error. Output goes through the global mask like
+# everything else.
+v_migrations_status() {
+  if [[ ! -d "$BACKEND_DIR" ]]; then
+    printf 'migrations-status: backend dir missing: %s\n' "$BACKEND_DIR"
+    return 3
+  fi
+  if [[ ! -x "$BACKEND_DIR/node_modules/.bin/prisma" ]]; then
+    printf 'migrations-status: repo-local prisma binary missing\n'
+    return 3
+  fi
+  local out rc=0
+  out="$(cd "$BACKEND_DIR" && timeout "$MIGRATIONS_TIMEOUT" ./node_modules/.bin/prisma migrate status --config=./prisma.config.ts 2>&1)" || rc=$?
+  printf '%s\n' "$out" | head -n 40
+  printf 'prisma-exit: %d (non-zero usually means pending or failed migrations — diagnostic, not a gateway error)\n' "$rc"
+}
+
+v_backend_logs() {
+  local n="$1" p real paths
+  # Log paths come from pm2 at runtime (never assumed), via the same
+  # allowlisted extractor pattern.
+  paths="$(timeout "$VERB_TIMEOUT" pm2 jlist 2>/dev/null \
+    | timeout "$VERB_TIMEOUT" node -e '
+const want = process.argv[1];
+const chunks = [];
+process.stdin.on("data", (c) => chunks.push(c));
+process.stdin.on("end", () => {
+  let list;
+  try { list = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+  catch { process.exit(1); }
+  const p = (Array.isArray(list) ? list : []).find((x) => x && x.name === want);
+  if (!p) process.exit(1);
+  const e = p.pm2_env || {};
+  for (const v of [e.pm_out_log_path, e.pm_err_log_path]) if (v) console.log(v);
+});' "$PM2_PROCESS")" || { printf 'backend-logs: cannot resolve log paths from pm2\n'; return 1; }
+  if [[ -z "$paths" ]]; then
+    printf 'backend-logs: pm2 reported no log paths\n'
+    return 1
+  fi
+  while IFS= read -r p; do
+    # realpath resolves symlinks BEFORE the prefix check: a log path (or
+    # symlink) pointing outside the pm2 logs dir is refused, not followed.
+    if ! real="$(realpath -e -- "$p" 2>/dev/null)"; then
+      printf '== %s: unreadable ==\n' "$p"
+      continue
+    fi
+    case "$real" in
+      "$PM2_LOGS_DIR"/*) ;;
+      *)
+        printf '== %s: outside %s — refused ==\n' "$real" "$PM2_LOGS_DIR"
+        continue
+        ;;
+    esac
+    printf '== %s (last %s lines) ==\n' "$real" "$n"
+    timeout "$VERB_TIMEOUT" tail -n "$n" -- "$real" 2>&1
+  done <<< "$paths"
+}
+
+v_nginx_sse() {
+  if [[ ! -r "$NGINX_API_CONF" ]]; then
+    printf 'nginx-sse: %s not readable by this account\n' "$NGINX_API_CONF"
+    return 3
+  fi
+  local block
+  block="$(awk '
+    /location/ && /analytics\/stream/ { grab = 1 }
+    grab {
+      print
+      o += gsub(/\{/, "{")
+      c += gsub(/\}/, "}")
+      if (o > 0 && o == c) exit
+    }
+  ' "$NGINX_API_CONF" | head -n 60)"
+  if [[ -n "$block" ]]; then
+    printf '%s\n' "$block"
+  else
+    printf 'nginx-sse: no location block matching analytics/stream found\n'
+  fi
+}
+
+v_disk() {
+  timeout "$VERB_TIMEOUT" df -h -- "$CRM_ROOT" 2>&1 | head -n 5
+}
+
+run_verb() {
+  case "$VERB" in
+    release-status)    v_release_status ;;
+    services)          v_services ;;
+    health)            v_health ;;
+    migrations-status) v_migrations_status ;;
+    nginx-sse)         v_nginx_sse ;;
+    disk)              v_disk ;;
+    backend-logs)      v_backend_logs "$LOG_N" ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Execute: verb -> mask -> 64 KiB cap, then the status line. Audit line
+# goes to syslog on every invocation.
+# ---------------------------------------------------------------------------
+
+set +e
+run_verb 2>&1 | mask | head -c "$MAX_OUTPUT_BYTES"
+rc=${PIPESTATUS[0]}
+set -e
+
+logger -t sargas-claude-gw -- "verb=$VERB rc=$rc" 2>/dev/null || true
+
+if (( rc == 0 )); then
+  printf -- '-- ok\n'
+  exit 0
+elif (( rc == 3 )); then
+  fail unreadable
+else
+  fail failed
+fi
