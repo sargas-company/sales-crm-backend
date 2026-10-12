@@ -1,6 +1,6 @@
 #!/bin/bash
 # sargas-claude-deploy-gw — controlled production DEPLOY gateway for
-# Claude Code (Wave 3, Card 1: FOUNDATION ONLY).
+# Claude Code (Wave 3; Card 1 foundation + Card 2 detached runner).
 # Interpreter is pinned (not /usr/bin/env): a root-owned forced-command
 # security boundary must not resolve bash through the ambient PATH.
 #
@@ -13,18 +13,27 @@
 # Status: PREPARED — NOT INSTALLED. Nothing here has run on the
 # production host.
 #
-# Card 1 scope: grammar + non-release-mutating preflight
-# (`deploy-plan`), observation (`deploy-status`), lock release
-# (`deploy-unlock`), and the pure helpers (classifier, seed guard,
-# state/lock/PID identity). `deploy-run` is NOT implemented and NOT
-# accepted by the parser. No npm ci/build, no backup, no Prisma
-# mutation, no PM2 restart, no frontend publish, no detached runner.
+# Card 1 laid the foundation (grammar, non-release-mutating preflight,
+# fail-closed migration classifier, seed guard, state/lock/PID
+# identity). Card 2 adds the real `deploy-run`: a fully detached
+# runner executing the approved state machine — backend ff/deps/build,
+# VERIFIED PRE_MIGRATION backup + --current-run-id gate before ANY DB
+# write (migrations OR seed), auto-safe `prisma migrate deploy` only,
+# canonical `npm run seed:system` only on seed_delta, pinned-PM2
+# restart of sales-crm-back-end only, bounded health polling, then
+# frontend build into fe-releases/<deploy-id> and an atomic dist
+# symlink swap (previous release retained). Deltas are computed
+# against state.deployed/published SHAs (not repo HEAD), so a retry
+# after a partial failure finishes the same deploy without repeating
+# applied DB work. Still forbidden here: arbitrary shell, sudo,
+# db push/reset/dev, force/reset/rebase, automatic restore or DB
+# rollback, reading .env* contents.
 #
 # Contract (mirrors the read-only gateway):
 #   - exactly one verb per connection, parsed from
 #     SSH_ORIGINAL_COMMAND under a strict whole-string grammar;
-#   - fail closed: unknown verb (incl. deploy-run), bad SHA, bad N,
-#     control chars, overlong input, trailers -> usage/badarg, exit 2;
+#   - fail closed: unknown verb, bad SHA, bad N, control chars,
+#     overlong input, trailers -> usage/badarg, exit 2;
 #   - user input never reaches a shell — fixed argv only;
 #   - all verb output (stdout+stderr) -> secret mask -> byte cap ->
 #     trailing "-- ok" / "-- error <code>";
@@ -49,10 +58,24 @@ export LC_ALL=C
 export PATH='/home/spawn/.nvm/versions/node/v24.4.1/bin:/usr/bin:/bin'
 export GIT_OPTIONAL_LOCKS=0
 
-# --- test hook (argv unreachable via SSH; see header) ----------------
+# --- argv parsing: test hook + runner self-invocation ----------------
+# Both are unreachable via SSH: the forced command receives NO argv
+# (sshd discards the client command line; it only lands in
+# SSH_ORIGINAL_COMMAND, which the grammar below fully validates).
 TEST_ROOT=''
 if [[ "${1:-}" == '--test-root' && -n "${2:-}" ]]; then
   TEST_ROOT="$2"
+  shift 2
+fi
+RUNNER_MODE=0
+RUNNER_ID=''
+RUNNER_BE=''
+RUNNER_FE=''
+if [[ "${1:-}" == '--runner' && -n "${2:-}" && -n "${3:-}" && -n "${4:-}" ]]; then
+  RUNNER_MODE=1
+  RUNNER_ID="$2"
+  RUNNER_BE="$3"
+  RUNNER_FE="$4"
 fi
 
 # --- pinned binaries and paths (OPERATOR-VERIFIED topology) ----------
@@ -60,9 +83,33 @@ NODE_BIN='/home/spawn/.nvm/versions/node/v24.4.1/bin/node'
 NPM_BIN='/home/spawn/.nvm/versions/node/v24.4.1/bin/npm'
 GIT_BIN='/usr/bin/git'
 PM2_BIN='/home/spawn/.nvm/versions/node/v18.20.8/bin/pm2'   # daemon-compatible 6.0.13
+CURL_BIN='/usr/bin/curl'
 CRM_ROOT='/var/www/sales-crm'
+
+if [[ -n "$TEST_ROOT" ]]; then
+  # Hermetic offline world for the sibling test file: fixture repos,
+  # fake binaries (npm/pm2/curl/prisma/ts-node/tsc/vite log their argv
+  # and act per flag files), real node/git via symlinks. Unreachable
+  # via SSH (argv-only), and even if forced it only narrows every
+  # root under TEST_ROOT — never widens access.
+  CRM_ROOT="$TEST_ROOT/crm"
+  NODE_BIN="$TEST_ROOT/bin/node"
+  NPM_BIN="$TEST_ROOT/bin/npm"
+  GIT_BIN="$TEST_ROOT/bin/git"
+  PM2_BIN="$TEST_ROOT/bin/pm2"
+  CURL_BIN="$TEST_ROOT/bin/curl"
+  export PATH="$TEST_ROOT/bin:/usr/bin:/bin"
+fi
+
 BACKEND_DIR="$CRM_ROOT/sales-crm-backend"
 FRONTEND_DIR="$CRM_ROOT/sales-crm-frontend"
+FE_RELEASES="$CRM_ROOT/fe-releases"
+PRISMA_BIN="$BACKEND_DIR/node_modules/.bin/prisma"
+TSNODE_BIN="$BACKEND_DIR/node_modules/.bin/ts-node"
+FE_TSC_BIN="$FRONTEND_DIR/node_modules/.bin/tsc"
+FE_VITE_BIN="$FRONTEND_DIR/node_modules/.bin/vite"
+BACKEND_HEALTH_URL='http://127.0.0.1:3006/health'
+FRONTEND_PROBE_URL='https://admin.sargas.io/'
 
 HOME_ROOT="${TEST_ROOT:-/home/spawn}"
 STATE_DIR="$HOME_ROOT/.sargas-deploy"
@@ -74,7 +121,12 @@ JOURNAL_DIR="$STATE_DIR/logs"
 MAX_CMD_LEN=128
 MAX_OUTPUT_BYTES=65536
 VERB_TIMEOUT=30                       # fetch/status calls inside plan
+BUILD_TIMEOUT=900                     # npm ci / builds
+DB_TIMEOUT=600                        # backup / gate / migrate / seed
+HEALTH_TIMEOUT=60                     # backend health polling window
+HEALTH_SLEEP=2
 DISK_MAX_USE_PCT=90
+if [[ -n "$TEST_ROOT" ]]; then HEALTH_TIMEOUT=4; HEALTH_SLEEP=1; fi
 
 SEED_WATCH_PATHS=(
   'prisma/seed-system.ts'
@@ -87,9 +139,9 @@ SEED_IMPORT_ALLOWLIST='../src/auth/system-role-presets'
 usage() {
   printf 'usage: one of\n'
   printf '  deploy-plan <backend-sha40> <frontend-sha40>   (lowercase hex)\n'
+  printf '  deploy-run  <backend-sha40> <frontend-sha40>   (detached; returns deploy-id)\n'
   printf '  deploy-status [N]                              (N = 1..200)\n'
   printf '  deploy-unlock <deploy-id>\n'
-  printf 'note: deploy-run is not part of this foundation build\n'
 }
 
 fail() { # fail <usage|badarg|unreadable|failed|migration-class>
@@ -172,7 +224,7 @@ lock_get() { # lock_get <KEY> — value validated by shape before use
 }
 
 # state.json: strict schema; any parse/shape problem is a hard error.
-STATE_KEYS='schema deployed_backend_sha previous_backend_sha published_frontend_sha previous_frontend_sha fe_release_dir'
+STATE_KEYS='schema deployed_backend_sha previous_backend_sha published_frontend_sha previous_frontend_sha fe_release_dir previous_fe_release_dir'
 
 state_get() { # state_get <key>; exit codes: 3 unreadable/invalid
   [[ -r "$STATE_FILE" ]] || return 3
@@ -183,7 +235,8 @@ const file = process.argv[1], key = process.argv[2];
 let o;
 try { o = JSON.parse(fs.readFileSync(file, "utf8")); } catch { process.exit(3); }
 const req = ["schema","deployed_backend_sha","previous_backend_sha",
-             "published_frontend_sha","previous_frontend_sha","fe_release_dir"];
+             "published_frontend_sha","previous_frontend_sha",
+             "fe_release_dir","previous_fe_release_dir"];
 for (const k of req) if (!(k in o)) process.exit(3);
 const v = o[key];
 if (v === undefined || v === null) process.exit(3);
@@ -193,6 +246,23 @@ process.stdout.write(String(v));
 }
 
 state_valid() { state_get schema >/dev/null 2>&1; }
+
+# Atomic full-state rewrite: values via argv (never interpolated into
+# code), tmp file + rename. Caller passes all six payload fields.
+state_write() { # <deployed_be> <prev_be> <published_fe> <prev_fe> <fe_rel> <prev_fe_rel>
+  [[ -x "$NODE_BIN" ]] || return 3
+  local tmp="$STATE_FILE.tmp.$$"
+  "$NODE_BIN" -e '
+const fs = require("fs");
+const [file, dbe, pbe, pfe, prfe, rel, prel] = process.argv.slice(1);
+const o = { schema: 1,
+  deployed_backend_sha: dbe,  previous_backend_sha: pbe,
+  published_frontend_sha: pfe, previous_frontend_sha: prfe,
+  fe_release_dir: rel,         previous_fe_release_dir: prel };
+fs.writeFileSync(file, JSON.stringify(o, null, 1) + "\n");
+' "$tmp" "$1" "$2" "$3" "$4" "$5" "$6" 2>/dev/null || { rm -f -- "$tmp"; return 1; }
+  mv -f -- "$tmp" "$STATE_FILE"
+}
 
 # ---------------------------------------------------------------------
 # Migration classifier — FAIL-CLOSED ALLOWLIST heuristic.
@@ -362,8 +432,13 @@ classify_sql_file() { # <path>; rc 0=auto 1=manual 3=unreadable
 # Deltas (computed against fetched objects; read-only on the repo)
 # ---------------------------------------------------------------------
 
-migration_delta() { # <repo> <sha> -> prints new migration dir names
-  timeout "$VERB_TIMEOUT" "$GIT_BIN" -C "$1" diff --name-only "HEAD..$2" -- prisma/migrations 2>/dev/null \
+# Deltas are computed FROM the recorded deployed/published base, not
+# from repo HEAD: after a partial failure (e.g. backend healthy,
+# frontend build failed) HEAD already equals the target, but DB work
+# that never ran must still be detected on retry — and work that DID
+# run (deployed advanced) must not repeat.
+migration_delta() { # <repo> <base> <sha> -> prints new migration dir names
+  timeout "$VERB_TIMEOUT" "$GIT_BIN" -C "$1" diff --name-only "$2..$3" -- prisma/migrations 2>/dev/null \
     | sed -n 's#^prisma/migrations/\([^/]*\)/.*#\1#p' | sort -u
 }
 
@@ -372,9 +447,9 @@ extract_rel_imports() { # stdin: TS source -> relative import specifiers
     | sed -E "s/.*['\"](\.\.?\/[^'\"]+)['\"].*/\1/" | sort -u
 }
 
-seed_delta() { # <repo> <sha>; rc 0 delta present, 1 none; prints reasons
-  local repo="$1" sha="$2" changed imp bad=0
-  changed="$(timeout "$VERB_TIMEOUT" "$GIT_BIN" -C "$repo" diff --name-only "HEAD..$sha" -- "${SEED_WATCH_PATHS[@]}" 2>/dev/null)"
+seed_delta() { # <repo> <base> <sha>; rc 0 delta present, 1 none; prints reasons
+  local repo="$1" base="$2" sha="$3" changed imp bad=0
+  changed="$(timeout "$VERB_TIMEOUT" "$GIT_BIN" -C "$repo" diff --name-only "$base..$sha" -- "${SEED_WATCH_PATHS[@]}" 2>/dev/null)"
   if [[ -n "$changed" ]]; then
     printf '%s\n' "$changed" | sed 's/^/  changed: /'
     bad=1
@@ -422,8 +497,17 @@ v_deploy_plan() { # <be-sha> <fe-sha>  (non-release-mutating preflight)
   state_valid || { plan_fail "state file missing/invalid: $STATE_FILE (initialized at install — Card 3)" 3; return 3; }
   printf 'state: valid (schema %s)\n' "$(state_get schema)"
 
-  lock_present && { plan_fail 'another deploy holds the lock (see deploy-status)'; return 1; }
-  printf 'lock: absent\n'
+  if [[ -n "${UNDER_LOCK_ID:-}" ]]; then
+    # Re-validation performed by the runner that already owns the lock.
+    local own
+    own="$(lock_get DEPLOY_ID)" || { plan_fail 'under-lock preflight: lock meta unreadable'; return 1; }
+    [[ "$own" == "$UNDER_LOCK_ID" ]] \
+      || { plan_fail "under-lock preflight: lock belongs to $own"; return 1; }
+    printf 'lock: held by this runner (%s)\n' "$own"
+  else
+    lock_present && { plan_fail 'another deploy holds the lock (see deploy-status)'; return 1; }
+    printf 'lock: absent\n'
+  fi
 
   for repo in "$BACKEND_DIR" "$FRONTEND_DIR"; do
     case "$repo" in
@@ -454,15 +538,53 @@ v_deploy_plan() { # <be-sha> <fe-sha>  (non-release-mutating preflight)
       "${repo##*/}" "$head" "$dep"
   done
 
-  # DB baseline relative to the CURRENTLY deployed backend, pre-move.
-  local mig_out
-  mig_out="$(cd "$BACKEND_DIR" && timeout "$VERB_TIMEOUT" ./node_modules/.bin/prisma migrate status --config=./prisma.config.ts 2>&1)" \
-    || { printf '%s\n' "$mig_out" | tail -n 5; plan_fail 'current DB is not clean against deployed HEAD'; return 1; }
-  printf 'db-baseline: up to date against current HEAD\n'
+  # Frontend publish invariant (prepared by the operator in Card 3):
+  # dist must already be a symlink resolving INSIDE fe-releases/ —
+  # otherwise an atomic swap is impossible and we fail closed before
+  # any mutation.
+  local dist_real releases_real
+  if [[ ! -L "$FRONTEND_DIR/dist" ]]; then
+    plan_fail "frontend dist is not a symlink (one-time operator migration pending)"; return 1
+  fi
+  dist_real="$(realpath -- "$FRONTEND_DIR/dist" 2>/dev/null)" \
+    || { plan_fail 'frontend dist symlink does not resolve'; return 1; }
+  # Canonicalize BOTH sides of the prefix check (/var vs /private/var
+  # style aliasing must not break containment).
+  releases_real="$(realpath -- "$FE_RELEASES" 2>/dev/null)" \
+    || { plan_fail "fe-releases root missing: $FE_RELEASES"; return 1; }
+  case "$dist_real" in
+    "$releases_real"/*) printf 'fe-dist: symlink inside fe-releases (%s)\n' "${dist_real##*/}" ;;
+    *) plan_fail "frontend dist resolves outside fe-releases: $dist_real"; return 1 ;;
+  esac
 
-  # Deltas + classifier
-  local mnames m rc_class=0 any_manual=0 migd=0 seedd=0
-  mnames="$(migration_delta "$BACKEND_DIR" "$be")"
+  # DB baseline. Real prisma (>=4.3) exits 1 on MERELY-PENDING
+  # migrations too — and after a transient post-ff failure HEAD already
+  # equals the target, so pending == exactly the deployed..target delta
+  # and the retry must be allowed. Fail closed on anything that smells
+  # like a FAILED migration (canon path C is manual), on unparseable
+  # output, and on pending in a non-retry position.
+  local mig_out mig_rc=0 head_be
+  mig_out="$(cd "$BACKEND_DIR" && timeout "$VERB_TIMEOUT" "$PRISMA_BIN" migrate status --config=./prisma.config.ts 2>&1)" || mig_rc=$?
+  head_be="$(timeout "$VERB_TIMEOUT" "$GIT_BIN" -C "$BACKEND_DIR" rev-parse HEAD 2>/dev/null)"
+  if (( mig_rc == 0 )); then
+    printf 'db-baseline: up to date against current HEAD\n'
+  elif printf '%s' "$mig_out" | grep -qi 'failed'; then
+    printf '%s\n' "$mig_out" | tail -n 5
+    plan_fail 'failed migration recorded in the database — manual path C required'
+    return 1
+  elif [[ "$head_be" == "$be" ]] \
+    && printf '%s' "$mig_out" | grep -qi 'have not yet been applied'; then
+    printf 'db-baseline: pending migrations consistent with a retry (HEAD already at target)\n'
+  else
+    printf '%s\n' "$mig_out" | tail -n 5
+    plan_fail 'current DB is not clean against deployed HEAD'
+    return 1
+  fi
+
+  # Deltas + classifier — computed from the recorded deployed base.
+  local base_be mnames m rc_class=0 any_manual=0 migd=0 seedd=0
+  base_be="$(state_get deployed_backend_sha)"
+  mnames="$(migration_delta "$BACKEND_DIR" "$base_be" "$be")"
   if [[ -n "$mnames" ]]; then
     migd=1
     printf 'migration_delta:\n'
@@ -487,7 +609,7 @@ v_deploy_plan() { # <be-sha> <fe-sha>  (non-release-mutating preflight)
   fi
 
   printf 'seed_delta:\n'
-  if seed_delta "$BACKEND_DIR" "$be"; then
+  if seed_delta "$BACKEND_DIR" "$base_be" "$be"; then
     seedd=1
   else
     printf '  none\n'
@@ -504,8 +626,340 @@ v_deploy_plan() { # <be-sha> <fe-sha>  (non-release-mutating preflight)
     plan_fail 'migration-class manual-required — route this release through the operator path'
     return 4
   fi
-  printf 'plan: OK for %.12s / %.12s (deploy-run is not available in this foundation build)\n' "$be" "$fe"
+  printf 'plan: OK for %.12s / %.12s\n' "$be" "$fe"
   return 0
+}
+
+# ---------------------------------------------------------------------
+# Detached runner (Card 2). Spawned once per deploy-run as its own
+# session (setsid): survives the SSH disconnect, journals every step,
+# holds the lock on failure, and only ever runs the fixed argv below.
+# ---------------------------------------------------------------------
+
+RUN_JOURNAL=''
+
+jraw() { printf '%s\n' "$*" >> "$RUN_JOURNAL"; }
+
+lock_set_step() { # <step-label> — atomic meta rewrite
+  local tmp="$LOCK_META.tmp.$$"
+  { grep -v '^STEP=' "$LOCK_META" 2>/dev/null; printf 'STEP=%s\n' "$1"; } > "$tmp" \
+    && mv -f -- "$tmp" "$LOCK_META"
+}
+
+step_run() { # step_run <label> <timeout> <cmd...> ; output masked into journal
+  local label="$1" t="$2"; shift 2
+  jraw "== step $label =="
+  lock_set_step "$label"
+  set +e
+  timeout "$t" "$@" 2>&1 | mask >> "$RUN_JOURNAL"
+  local rc=${PIPESTATUS[0]}
+  set -e
+  if (( rc != 0 )); then
+    jraw "== step $label FAILED (rc=$rc) =="
+    jraw "FAILED@$label"
+  fi
+  return "$rc"
+}
+
+step_run_in() { # step_run_in <dir> <label> <timeout> <cmd...>
+  local dir="$1"; shift
+  local label="$1" t="$2"; shift 2
+  jraw "== step $label =="
+  lock_set_step "$label"
+  set +e
+  ( cd "$dir" && timeout "$t" "$@" ) 2>&1 | mask >> "$RUN_JOURNAL"
+  local rc=${PIPESTATUS[0]}
+  set -e
+  if (( rc != 0 )); then
+    jraw "== step $label FAILED (rc=$rc) =="
+    jraw "FAILED@$label"
+  fi
+  return "$rc"
+}
+
+backend_health_poll() { # rc 0 iff /health returns 200 within the window
+  local waited=0 code
+  while (( waited < HEALTH_TIMEOUT )); do
+    code="$("$CURL_BIN" -fsS -o /dev/null -w '%{http_code}' --max-time 5 "$BACKEND_HEALTH_URL" 2>/dev/null)" || code='000'
+    jraw "health poll: $code"
+    [[ "$code" == 200 ]] && return 0
+    sleep "$HEALTH_SLEEP"
+    waited=$(( waited + HEALTH_SLEEP ))
+  done
+  return 1
+}
+
+runner_main() { # <deploy-id> <be-sha> <fe-sha>
+  local id="$1" be="$2" fe="$3"
+  RUN_JOURNAL="$JOURNAL_DIR/$id.log"
+  mkdir -p "$JOURNAL_DIR"
+  umask 077
+
+  # Step 1: lock meta — our own pid + /proc start identity.
+  local st prev_be prev_fe
+  st="$(proc_starttime $$)" || st='0'
+  prev_be="$(state_get deployed_backend_sha)" || prev_be='?'
+  prev_fe="$(state_get published_frontend_sha)" || prev_fe='?'
+  {
+    printf 'DEPLOY_ID=%s\n'  "$id"
+    printf 'BE_SHA=%s\n'     "$be"
+    printf 'FE_SHA=%s\n'     "$fe"
+    printf 'PREV_BE=%s\n'    "$prev_be"
+    printf 'PREV_FE=%s\n'    "$prev_fe"
+    printf 'PID=%s\n'        "$$"
+    printf 'STARTTIME=%s\n'  "$st"
+    printf 'STEP=%s\n'       '1-lock'
+    printf 'CREATED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$LOCK_META"
+  jraw "deploy $id: backend $be frontend $fe (runner pid $$, starttime $st)"
+
+  # Step 2: full preflight again, under the held lock — no TOCTOU.
+  jraw '== step 2-preflight =='
+  lock_set_step '2-preflight'
+  set +e
+  UNDER_LOCK_ID="$id" v_deploy_plan "$be" "$fe" 2>&1 | mask >> "$RUN_JOURNAL"
+  local rc=${PIPESTATUS[0]}
+  set -e
+  if (( rc != 0 )); then jraw "FAILED@2-preflight"; exit 1; fi
+
+  # Recompute the DB decision from the recorded deployed base.
+  local base_be mnames migd=0 seedd=0
+  base_be="$(state_get deployed_backend_sha)"
+  mnames="$(migration_delta "$BACKEND_DIR" "$base_be" "$be")"
+  [[ -n "$mnames" ]] && migd=1
+  if seed_delta "$BACKEND_DIR" "$base_be" "$be" >> "$RUN_JOURNAL"; then seedd=1; fi
+  jraw "needs_db_write: migration_delta=$migd seed_delta=$seedd (base $base_be)"
+
+  # Step 3: backend fast-forward + deps + build.
+  step_run '3-be-fetch' "$VERB_TIMEOUT" "$GIT_BIN" -C "$BACKEND_DIR" fetch origin main || exit 1
+  step_run '3-be-ff'    "$VERB_TIMEOUT" "$GIT_BIN" -C "$BACKEND_DIR" merge --ff-only "$be" || exit 1
+  step_run_in "$BACKEND_DIR" '3-be-npm-ci'   "$BUILD_TIMEOUT" "$NPM_BIN" ci || exit 1
+  step_run_in "$BACKEND_DIR" '3-be-generate' "$BUILD_TIMEOUT" "$PRISMA_BIN" generate --config=./prisma.config.ts || exit 1
+  step_run_in "$BACKEND_DIR" '3-be-build'    "$BUILD_TIMEOUT" "$NPM_BIN" run build || exit 1
+
+  # Steps 4–7: DB writes happen ONLY behind a fresh VERIFIED backup.
+  if (( migd == 1 || seedd == 1 )); then
+    jraw '== step 4-backup =='
+    lock_set_step '4-backup'
+    local bjson bid bstatus bkey bsum
+    set +e
+    bjson="$( cd "$BACKEND_DIR" && BACKUP_TYPE=PRE_MIGRATION BACKUP_TRIGGER=sargas-claude-deploy-gw \
+              timeout "$DB_TIMEOUT" "$TSNODE_BIN" scripts/backup.ts 2>&1 )"
+    rc=$?
+    set -e
+    printf '%s\n' "$bjson" | mask >> "$RUN_JOURNAL"
+    if (( rc != 0 )); then jraw 'FAILED@4-backup'; exit 1; fi
+    # Parse the canonical JSON report (scripts/backup.ts): id, status,
+    # artifactKey, checksum — values extracted by node, never by shell.
+    read -r bid bstatus bkey bsum < <(printf '%s' "$bjson" | "$NODE_BIN" -e '
+let d = "";
+process.stdin.on("data", (c) => (d += c));
+process.stdin.on("end", () => {
+  const m = d.match(/\{[\s\S]*\}/);
+  if (!m) process.exit(1);
+  let o; try { o = JSON.parse(m[0]); } catch { process.exit(1); }
+  if (o.ok !== true) process.exit(1);
+  const f = [o.id, o.status, o.artifactKey, o.checksum];
+  if (f.some((x) => typeof x !== "string" || !x.length)) process.exit(1);
+  process.stdout.write(f.join(" ") + "\n");
+});') || { jraw 'backup report unparseable'; jraw 'FAILED@4-backup'; exit 1; }
+    if [[ "$bstatus" != 'VERIFIED' ]]; then
+      jraw "backup status is '$bstatus', not VERIFIED"; jraw 'FAILED@4-backup'; exit 1
+    fi
+    jraw "backup VERIFIED: id=$bid artifact=$bkey checksum=${bsum:0:12}…"
+    step_run_in "$BACKEND_DIR" '5-backup-gate' "$DB_TIMEOUT" \
+      "$TSNODE_BIN" scripts/require-fresh-backup.ts --pre-migration "--current-run-id=$bid" || exit 1
+    if (( migd == 1 )); then
+      step_run_in "$BACKEND_DIR" '6-migrate-deploy' "$DB_TIMEOUT" \
+        "$PRISMA_BIN" migrate deploy --config=./prisma.config.ts || exit 1
+    else
+      jraw 'step 6-migrate-deploy skipped (no migration delta)'
+    fi
+    if (( seedd == 1 )); then
+      step_run_in "$BACKEND_DIR" '7-seed-system' "$DB_TIMEOUT" "$NPM_BIN" run seed:system || exit 1
+    else
+      jraw 'step 7-seed-system skipped (no seed delta)'
+    fi
+  else
+    jraw 'steps 4-7 skipped (no DB-writing delta)'
+  fi
+
+  # Step 8: restart ONLY the backend process, pinned daemon-compatible PM2.
+  step_run '8-restart' "$VERB_TIMEOUT" env PATH="${PM2_BIN%/*}:/usr/bin:/bin" "$PM2_BIN" restart sales-crm-back-end || exit 1
+
+  # Step 9: bounded health; frontend is NOT touched until green.
+  jraw '== step 9-health =='
+  lock_set_step '9-health'
+  if ! backend_health_poll; then jraw 'FAILED@9-health'; exit 1; fi
+  if (( migd == 1 )); then
+    step_run_in "$BACKEND_DIR" '9-migrate-status' "$DB_TIMEOUT" \
+      "$PRISMA_BIN" migrate status --config=./prisma.config.ts || exit 1
+  fi
+  # On a retry prev_be already equals the target; keep the real
+  # previous instead of recording previous==deployed.
+  local keep_prev_be="$prev_be"
+  [[ "$keep_prev_be" == "$be" ]] && keep_prev_be="$(state_get previous_backend_sha)"
+  state_write "$be" "$keep_prev_be" "$(state_get published_frontend_sha)" \
+    "$(state_get previous_frontend_sha)" "$(state_get fe_release_dir)" \
+    "$(state_get previous_fe_release_dir)" \
+    || { jraw 'FAILED@9-state-write'; exit 1; }
+  jraw "deployed_backend_sha -> $be"
+
+  # Step 10–12: frontend into an isolated release dir; live dist untouched.
+  local rel="$FE_RELEASES/$id"
+  step_run '10-fe-fetch' "$VERB_TIMEOUT" "$GIT_BIN" -C "$FRONTEND_DIR" fetch origin main || exit 1
+  step_run '10-fe-ff'    "$VERB_TIMEOUT" "$GIT_BIN" -C "$FRONTEND_DIR" merge --ff-only "$fe" || exit 1
+  step_run_in "$FRONTEND_DIR" '11-fe-npm-ci' "$BUILD_TIMEOUT" "$NPM_BIN" ci --legacy-peer-deps || exit 1
+  step_run_in "$FRONTEND_DIR" '11-fe-tsc'    "$BUILD_TIMEOUT" "$FE_TSC_BIN" --noEmit || exit 1
+  mkdir -p -- "$rel"
+  step_run_in "$FRONTEND_DIR" '11-fe-vite'   "$BUILD_TIMEOUT" "$FE_VITE_BIN" build --outDir "$rel" || exit 1
+  jraw '== step 12-fe-artifacts =='
+  lock_set_step '12-fe-artifacts'
+  if [[ ! -f "$rel/index.html" ]] || [[ -z "$(ls -A -- "$rel/assets" 2>/dev/null)" ]]; then
+    jraw 'release artifacts missing (index.html / assets)'; jraw 'FAILED@12-fe-artifacts'; exit 1
+  fi
+
+  # Step 13: atomic symlink cutover (rename over the old link).
+  jraw '== step 13-fe-swap =='
+  lock_set_step '13-fe-swap'
+  local old_rel tmp_link
+  old_rel="$(realpath -- "$FRONTEND_DIR/dist" 2>/dev/null)" || old_rel=''
+  tmp_link="$FRONTEND_DIR/dist.tmp.$id"
+  ln -s -- "$rel" "$tmp_link"
+  if ! mv -T -- "$tmp_link" "$FRONTEND_DIR/dist" 2>/dev/null; then
+    # BSD mv (tests on macOS) has -h instead of GNU -T.
+    mv -h -- "$tmp_link" "$FRONTEND_DIR/dist" 2>/dev/null \
+      || { rm -f -- "$tmp_link"; jraw 'atomic swap failed'; jraw 'FAILED@13-fe-swap'; exit 1; }
+  fi
+  if [[ "$(realpath -- "$FRONTEND_DIR/dist")" != "$(realpath -- "$rel")" ]]; then
+    jraw 'post-swap verification failed'; jraw 'FAILED@13-fe-swap'; exit 1
+  fi
+  jraw "dist -> $rel (previous: ${old_rel:-?})"
+
+  # Step 14: frontend health. A failed probe must NOT leave the
+  # potentially broken new release live: atomically roll the dist
+  # symlink back to the previous release, re-probe, and never run
+  # retention — both release dirs are retained either way.
+  jraw '== step 14-fe-health =='
+  lock_set_step '14-fe-health'
+  local fcode
+  fcode="$("$CURL_BIN" -sS -o /dev/null -w '%{http_code}' --max-time 5 "$FRONTEND_PROBE_URL" 2>/dev/null)" || fcode='000'
+  jraw "frontend probe: $fcode"
+  if [[ "$fcode" != 200 ]]; then
+    jraw "frontend probe failed ($fcode) — attempting atomic rollback to previous release"
+    lock_set_step '14-fe-rollback'
+    local rb_ok=0 rb_tmp="$FRONTEND_DIR/dist.rb.$id" rcode
+    if [[ -n "$old_rel" && -d "$old_rel" ]]; then
+      ln -s -- "$old_rel" "$rb_tmp"
+      if mv -T -- "$rb_tmp" "$FRONTEND_DIR/dist" 2>/dev/null \
+         || mv -h -- "$rb_tmp" "$FRONTEND_DIR/dist" 2>/dev/null; then
+        [[ "$(realpath -- "$FRONTEND_DIR/dist" 2>/dev/null)" == "$(realpath -- "$old_rel" 2>/dev/null)" ]] \
+          && rb_ok=1
+      else
+        rm -f -- "$rb_tmp"
+      fi
+    else
+      jraw "previous release missing or unknown (${old_rel:-?}) — cannot roll back"
+    fi
+    if (( rb_ok == 1 )); then
+      rcode="$("$CURL_BIN" -sS -o /dev/null -w '%{http_code}' --max-time 5 "$FRONTEND_PROBE_URL" 2>/dev/null)" || rcode='000'
+      jraw "post-rollback probe: $rcode"
+      if [[ "$rcode" == 200 ]]; then
+        jraw 'rollback: dist restored to previous release; old frontend serving again'
+        jraw 'FAILED@14-fe-health (rolled back; both releases retained; retention skipped; published unchanged)'
+        exit 1
+      fi
+      jraw 'rollback swap succeeded but the probe still fails'
+    fi
+    lock_set_step '14-fe-health-MANUAL-INTERVENTION'
+    jraw 'MANUAL-INTERVENTION-REQUIRED: frontend unhealthy and rollback failed or unverified; both release dirs retained; lock held'
+    jraw 'FAILED@14-fe-health'
+    exit 1
+  fi
+  state_write "$(state_get deployed_backend_sha)" "$(state_get previous_backend_sha)" \
+    "$fe" "$prev_fe" "$rel" "${old_rel:-?}" \
+    || { jraw 'FAILED@14-state-write'; exit 1; }
+  jraw "published_frontend_sha -> $fe"
+
+  # Step 15: retention — keep current + previous + the 3 newest
+  # id-patterned releases; 'initial' and anything non-id-shaped is
+  # never touched; deletions only as validated basenames under the
+  # fixed FE_RELEASES root.
+  jraw '== step 15-prune =='
+  lock_set_step '15-prune'
+  local keep_cur keep_prev name kept=0
+  keep_cur="${rel##*/}"
+  keep_prev="${old_rel##*/}"
+  while IFS= read -r name; do
+    [[ "$name" =~ ^d[0-9]{9,12}-[0-9a-f]{4}$ ]] || continue
+    [[ "$name" == "$keep_cur" || "$name" == "$keep_prev" ]] && continue
+    kept=$(( kept + 1 ))
+    if (( kept > 3 )); then
+      jraw "prune: removing fe-releases/$name"
+      rm -rf -- "$FE_RELEASES/$name"
+    fi
+  done < <(ls -1t -- "$FE_RELEASES" 2>/dev/null)
+
+  jraw 'DEPLOYED'
+  jraw "final: backend $be frontend $fe release $rel"
+  rm -rf -- "$LOCK_DIR"
+  logger -t sargas-claude-deploy-gw -- "runner deploy_id=$id result=DEPLOYED" 2>/dev/null || true
+  exit 0
+}
+
+v_deploy_run() { # <be-sha> <fe-sha> — validate, lock, spawn, return id
+  local be="$1" fe="$2" rc=0
+  # Pre-lock preflight: the client sees the full plan output; any
+  # failure (incl. migration-class manual-required) aborts before any
+  # lock or spawn.
+  set +e
+  v_deploy_plan "$be" "$fe"
+  rc=$?
+  set -e
+  (( rc == 0 )) || return "$rc"
+
+  mkdir "$LOCK_DIR" 2>/dev/null \
+    || { printf 'deploy-run: another deploy holds the lock (deploy-status for details)\n'; return 1; }
+
+  local id self
+  id="$(new_deploy_id)"
+  self="${BASH_SOURCE[0]}"
+  mkdir -p "$JOURNAL_DIR"
+  # Full detach: own session via setsid (prod, util-linux). macOS test
+  # machines lack setsid — a double-fork subshell reparents the runner
+  # to init, which equally survives the dispatcher's exit.
+  local -a spawn_cmd
+  spawn_cmd=( bash "$self" )
+  [[ -n "$TEST_ROOT" ]] && spawn_cmd+=( --test-root "$TEST_ROOT" )
+  spawn_cmd+=( --runner "$id" "$be" "$fe" )
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "${spawn_cmd[@]}" < /dev/null >> "$STATE_DIR/runner-spawn.err" 2>&1 &
+    disown 2>/dev/null || true
+  else
+    ( "${spawn_cmd[@]}" < /dev/null >> "$STATE_DIR/runner-spawn.err" 2>&1 & ) &
+    wait $! 2>/dev/null || true
+  fi
+
+  # Wait for the runner to write its own meta (pid+starttime). If it
+  # never does, release OUR meta-less lock before reporting: the
+  # runner writes meta as its very first act, so removing the dir
+  # makes any late-starting runner die on its first write — before
+  # any mutation — and the gateway is never left with an
+  # ununlockable lock.
+  local waited=0
+  while (( waited < 50 )); do
+    [[ -s "$LOCK_META" ]] && break
+    sleep 0.1 2>/dev/null || sleep 1
+    waited=$(( waited + 1 ))
+  done
+  if [[ ! -s "$LOCK_META" ]]; then
+    rm -rf -- "$LOCK_DIR"
+    printf 'deploy-run: runner did not start in time; lock released (spawn log kept server-side)\n'
+    return 1
+  fi
+
+  printf 'deploy-id: %s\n' "$id"
+  printf 'runner: detached (observe with deploy-status)\n'
 }
 
 v_deploy_status() { # <N>
@@ -575,11 +1029,35 @@ v_deploy_unlock() { # <deploy-id>
     printf 'unlock: REFUSED — runner pid %s is alive with matching start identity\n' "$pid"
     return 1
   fi
+  # Fail closed where start-identity is unavailable (no /proc): a
+  # merely-alive pid must still refuse — "proven dead" or nothing.
+  # Uses the same lib-gated proc root as proc_starttime so unit tests
+  # with a fake /proc exercise the identity path, not this one.
+  local _procroot='/proc'
+  if [[ "${SARGAS_DEPLOY_GW_LIB_ONLY:-0}" == '1' && -n "${PROC_ROOT:-}" ]]; then
+    _procroot="$PROC_ROOT"
+  fi
+  if [[ "$pid" =~ ^[0-9]+$ && ! -d "$_procroot/self" ]] && kill -0 "$pid" 2>/dev/null; then
+    printf 'unlock: REFUSED — process %s is alive and start identity cannot be verified on this platform\n' "$pid"
+    return 1
+  fi
   # Only the fixed constant path is ever removed; user input is compared,
   # never used to build a path.
   rm -rf -- "$LOCK_DIR"
   printf 'unlock: removed lock %s (runner proven dead)\n' "$want"
 }
+
+# ---------------------------------------------------------------------
+# Runner self-invocation (argv-only; unreachable via sshd). Grammar
+# -validate the internal arguments too — fail closed, silently.
+# ---------------------------------------------------------------------
+if (( RUNNER_MODE == 1 )); then
+  is_deploy_id "$RUNNER_ID" || exit 2
+  is_sha40 "$RUNNER_BE"     || exit 2
+  is_sha40 "$RUNNER_FE"     || exit 2
+  runner_main "$RUNNER_ID" "$RUNNER_BE" "$RUNNER_FE"
+  exit 1   # unreachable: runner_main always exits
+fi
 
 # ---------------------------------------------------------------------
 # Lib-only gate for the sibling test file (env unreachable via sshd;
@@ -590,8 +1068,7 @@ if [[ "${SARGAS_DEPLOY_GW_LIB_ONLY:-0}" == '1' ]]; then
 fi
 
 # ---------------------------------------------------------------------
-# Parser — whole-string grammar over SSH_ORIGINAL_COMMAND. deploy-run
-# is deliberately NOT in the grammar in this foundation build.
+# Parser — whole-string grammar over SSH_ORIGINAL_COMMAND.
 # ---------------------------------------------------------------------
 
 RAW="${SSH_ORIGINAL_COMMAND:-}"
@@ -616,9 +1093,11 @@ case "$RAW" in
     [[ "$ARG1" =~ ^([1-9][0-9]?|1[0-9][0-9]|200)$ ]] || { usage; fail badarg; }
     STATUS_N="$ARG1"
     ;;
-  'deploy-plan '*)
-    VERB=deploy-plan
-    rest="${RAW#deploy-plan }"
+  'deploy-plan '*|'deploy-run '*)
+    case "$RAW" in
+      deploy-plan*) VERB=deploy-plan; rest="${RAW#deploy-plan }" ;;
+      *)            VERB=deploy-run;  rest="${RAW#deploy-run }"  ;;
+    esac
     [[ "$rest" == *' '* ]] || { usage; fail badarg; }
     ARG1="${rest%% *}"
     ARG2="${rest#* }"
@@ -631,7 +1110,7 @@ case "$RAW" in
     ARG1="${RAW#deploy-unlock }"
     is_deploy_id "$ARG1" || { usage; fail badarg; }
     ;;
-  deploy-plan|deploy-unlock)
+  deploy-plan|deploy-run|deploy-unlock)
     usage; fail badarg
     ;;
   *)
@@ -643,6 +1122,7 @@ readonly VERB ARG1 ARG2 STATUS_N
 run_verb() {
   case "$VERB" in
     deploy-plan)   v_deploy_plan "$ARG1" "$ARG2" ;;
+    deploy-run)    v_deploy_run "$ARG1" "$ARG2" ;;
     deploy-status) v_deploy_status "$STATUS_N" ;;
     deploy-unlock) v_deploy_unlock "$ARG1" ;;
   esac
