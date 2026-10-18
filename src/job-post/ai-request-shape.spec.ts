@@ -53,6 +53,7 @@ function build(configOverride: Record<string, unknown> = {}) {
     { getGatekeeperPrompt: async () => 'x', getEvaluationPrompt: async () => 'x' } as never,
     { client: {} } as never,
     config,
+    { record: async () => undefined } as never,
   );
 }
 

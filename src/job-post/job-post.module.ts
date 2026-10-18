@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { AiUsageLedgerModule } from '../ai-usage-ledger/ai-usage-ledger.module';
 import { NotificationModule } from '../notification/notification.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { PromptModule } from '../prompt/prompt.module';
@@ -11,7 +12,13 @@ import { JobPostQueueService } from './job-post-queue.service';
 import { JobPostService } from './job-post.service';
 
 @Module({
-  imports: [PrismaModule, PromptModule, NotificationModule, SettingsModule],
+  imports: [
+    PrismaModule,
+    PromptModule,
+    NotificationModule,
+    SettingsModule,
+    AiUsageLedgerModule,
+  ],
   controllers: [JobPostController],
   providers: [
     JobPostQueueService,

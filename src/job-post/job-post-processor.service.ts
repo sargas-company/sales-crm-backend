@@ -199,12 +199,21 @@ export class JobPostProcessorService implements OnModuleInit, OnModuleDestroy {
               usage: gate.usage,
             },
             evaluation: {
-              reasoning: result.reasoning,
-              strengths: result.strengths,
-              risks: result.risks,
-              scopeClarity: result.scopeClarity,
-              quickWin: result.quickWin,
-              effortEstimate: result.effortEstimate,
+              // v2 envelope — primary fields read by current/new UI.
+              shortSummary: result.shortSummary,
+              reasons: result.reasons,
+              redFlags: result.redFlags,
+              hardStop: result.hardStop,
+              hardStopReason: result.hardStopReason,
+              subscores: result.subscores,
+              // Legacy fields — written as nullable so historical
+              // readers that still look for them don't blow up.
+              reasoning: result.reasoning ?? null,
+              strengths: result.strengths ?? [],
+              risks: result.risks ?? [],
+              scopeClarity: result.scopeClarity ?? null,
+              quickWin: result.quickWin ?? null,
+              effortEstimate: result.effortEstimate ?? null,
               raw: result.raw as Prisma.InputJsonValue,
               usage: result.usage,
             },

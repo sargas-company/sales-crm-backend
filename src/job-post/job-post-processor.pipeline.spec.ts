@@ -75,18 +75,18 @@ function evalResult(opts: {
   decision: 'approve' | 'maybe' | 'decline';
   matchScore: number;
   priority: 'high' | 'medium' | 'low';
-  reasoning?: string;
+  shortSummary?: string;
 }): EvalResult {
   return {
     decision: opts.decision,
     matchScore: opts.matchScore,
     priority: opts.priority,
-    reasoning: opts.reasoning ?? 'ok',
-    strengths: [],
-    risks: [],
-    scopeClarity: null,
-    quickWin: null,
-    effortEstimate: null,
+    shortSummary: opts.shortSummary ?? 'ok',
+    reasons: [],
+    redFlags: [],
+    hardStop: false,
+    hardStopReason: null,
+    subscores: null,
     raw: {},
     usage: FAKE_USAGE,
   };
@@ -218,10 +218,10 @@ describe('JobPostProcessorService — gatekeeper high-confidence reject', () => 
     expect(jp.matchScore).toBe(85);
     const ai = jp.aiResponse as {
       gatekeeper?: { fit?: boolean };
-      evaluation?: { reasoning?: string };
+      evaluation?: { shortSummary?: string };
     };
     expect(ai.gatekeeper?.fit).toBe(true);
-    expect(ai.evaluation?.reasoning).toBe('ok');
+    expect(ai.evaluation?.shortSummary).toBe('ok');
     expect(evaluator.evaluate).toHaveBeenCalledTimes(1);
     expect(notifier.createEvent).toHaveBeenCalledTimes(1);
   });

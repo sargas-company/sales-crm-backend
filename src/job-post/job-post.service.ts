@@ -318,17 +318,20 @@ export class JobPostService {
           _max: { matchScore: true },
         }),
         Promise.all([
+          // v2 decision thresholds: approve high ≥ 90; approve
+          // medium 71-89; maybe medium 50-70; maybe low 40-49;
+          // decline 0-39.
           this.prisma.jobPost.count({
-            where: { ...processedWhere, matchScore: { gte: 85 } },
+            where: { ...processedWhere, matchScore: { gte: 90 } },
           }),
           this.prisma.jobPost.count({
-            where: { ...processedWhere, matchScore: { gte: 70, lt: 85 } },
+            where: { ...processedWhere, matchScore: { gte: 71, lt: 90 } },
           }),
           this.prisma.jobPost.count({
-            where: { ...processedWhere, matchScore: { gte: 55, lt: 70 } },
+            where: { ...processedWhere, matchScore: { gte: 50, lt: 71 } },
           }),
           this.prisma.jobPost.count({
-            where: { ...processedWhere, matchScore: { gte: 40, lt: 55 } },
+            where: { ...processedWhere, matchScore: { gte: 40, lt: 50 } },
           }),
           this.prisma.jobPost.count({
             where: { ...processedWhere, matchScore: { gte: 0, lt: 40 } },

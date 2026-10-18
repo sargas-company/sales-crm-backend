@@ -383,6 +383,39 @@ model JobPostIngestEvent {
   @@index([jobPostId])
 }
 
+// ─── AI usage ledger ─────────────────────────────────────────────────────────
+
+// One row per Anthropic Messages API call we initiate. The ledger
+// is intentionally decoupled from the business entity that caused
+// the call (there is no FK): a JobPost may be deleted later but
+// the spend record must survive. If the caller has a related
+// JobPost it goes into `relatedJobPostId` as a soft pointer.
+//
+// All four token classes from the Anthropic `usage` block are
+// stored verbatim; `estimatedCostUsd` is the dollar cost evaluated
+// at write time against the price table pinned by
+// `pricingVersion` — so a later price change does not retroactively
+// mutate historical totals.
+model AiUsageLedger {
+  id                       String   @id @default(uuid())
+  createdAt                DateTime @default(now())
+  model                    String
+  operation                String
+  inputTokens              Int      @default(0)
+  outputTokens             Int      @default(0)
+  cacheReadInputTokens     Int      @default(0)
+  cacheCreationInputTokens Int      @default(0)
+  latencyMs                Int?
+  requestId                String?
+  relatedJobPostId         String?
+  estimatedCostUsd         Decimal  @db.Decimal(12, 6)
+  pricingVersion           String
+
+  @@index([createdAt])
+  @@index([operation, createdAt])
+  @@index([model, createdAt])
+}
+
 // ─── Lead ────────────────────────────────────────────────────────────────────
 
 model Lead {

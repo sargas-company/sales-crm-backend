@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 
 import Anthropic from '@anthropic-ai/sdk';
 
+import { AiUsageLedgerService } from '../ai-usage-ledger/ai-usage-ledger.service';
 import { AnthropicService } from '../anthropic/anthropic.service';
 import { PromptService } from '../prompt/prompt.service';
 
@@ -104,16 +105,46 @@ export interface GateResult {
   usage: AiUsage;
 }
 
+/**
+ * v2 subscores — pure sum (no penalty), max 100.
+ *   core_fit          0-45
+ *   project_quality   0-15
+ *   client_signals    0-15
+ *   budget_rate       0-15
+ *   strategic_upside  0-10
+ * All keys optional on the TS type so historical responses (which
+ * carried `project_type_complexity`, `rate_budget_signal`, etc.)
+ * don't fail type assertions when read back; the parser rejects
+ * mis-named NEW responses at ingest.
+ */
+export interface EvalSubscores {
+  core_fit?: number;
+  project_quality?: number;
+  client_signals?: number;
+  budget_rate?: number;
+  strategic_upside?: number;
+}
+
 export interface EvalResult {
   decision: Decision;
   matchScore: number;
   priority: Priority;
-  reasoning: string;
-  strengths: string[];
-  risks: string[];
-  scopeClarity: string | null;
-  quickWin: string | null;
-  effortEstimate: string | null;
+  // v2 envelope.
+  shortSummary: string;
+  reasons: string[];
+  redFlags: string[];
+  hardStop: boolean;
+  hardStopReason: string | null;
+  subscores: EvalSubscores | null;
+  // Legacy (v1) — optional, populated only when the model
+  // happens to return the old shape. New prompt will not emit
+  // these; keeping them typed lets historical rows round-trip.
+  reasoning?: string | null;
+  strengths?: string[];
+  risks?: string[];
+  scopeClarity?: string | null;
+  quickWin?: string | null;
+  effortEstimate?: string | null;
   usage: AiUsage;
   raw: Record<string, unknown>;
 }
@@ -126,6 +157,7 @@ export class AiJobEvaluatorService {
     private readonly promptService: PromptService,
     private readonly anthropicService: AnthropicService,
     private readonly config: ConfigService,
+    private readonly usageLedger: AiUsageLedgerService,
   ) {}
 
   gateModel(): string {
@@ -259,7 +291,15 @@ export class AiJobEvaluatorService {
     const system = await this.promptService.getGatekeeperPrompt();
     const model = this.gateModel();
     const req = this.buildGateRequest(system, text, model);
+    const t0 = Date.now();
     const response = await this.anthropicService.client.messages.create(req);
+    void this.usageLedger.record({
+      model,
+      operation: 'job-eval:gate',
+      usage: extractUsage(response.usage, model),
+      latencyMs: Date.now() - t0,
+      requestId: response.id ?? null,
+    });
     if (response.stop_reason === 'max_tokens') {
       throw new GatekeeperResponseError(
         'response truncated (max_tokens)',
@@ -285,7 +325,15 @@ export class AiJobEvaluatorService {
     const system = await this.promptService.getEvaluationPrompt();
     const model = this.evalModel();
     const req = this.buildEvalRequest(system, text, model);
+    const t0 = Date.now();
     const response = await this.anthropicService.client.messages.create(req);
+    void this.usageLedger.record({
+      model,
+      operation: 'job-eval:evaluate',
+      usage: extractUsage(response.usage, model),
+      latencyMs: Date.now() - t0,
+      requestId: response.id ?? null,
+    });
     if (response.stop_reason === 'max_tokens') {
       throw new EvaluatorResponseError(
         'response truncated (max_tokens)',
@@ -347,7 +395,7 @@ export const GATEKEEPER_TOOL: Anthropic.Tool = {
 export const EVALUATOR_TOOL: Anthropic.Tool = {
   name: 'record_job_evaluation',
   description:
-    'Record the final evaluation for the current job post. Must be called exactly once with all required fields.',
+    'Record the final evaluation for the current job post using the v2 envelope. Must be called exactly once with all required fields.',
   input_schema: {
     type: 'object',
     properties: {
@@ -364,46 +412,62 @@ export const EVALUATOR_TOOL: Anthropic.Tool = {
         type: 'string',
         enum: ['high', 'medium', 'low'],
       },
-      reasoning: {
+      hard_stop: {
+        type: 'boolean',
+      },
+      hard_stop_reason: {
+        type: 'string',
+        maxLength: 240,
+        description:
+          'Short freeform explanation when hard_stop=true; empty string otherwise.',
+      },
+      reasons: {
+        type: 'array',
+        maxItems: 6,
+        items: { type: 'string', minLength: 1, maxLength: 240 },
+        description: 'Bulleted reasons supporting the decision.',
+      },
+      red_flags: {
+        type: 'array',
+        maxItems: 6,
+        items: { type: 'string', minLength: 1, maxLength: 240 },
+        description: 'Specific risk/red-flag notes.',
+      },
+      short_summary: {
         type: 'string',
         minLength: 1,
-        maxLength: 800,
+        maxLength: 1200,
+        description: '1-2 sentences capturing the essence of the decision.',
       },
-      strengths: {
-        type: 'array',
-        maxItems: 3,
-        items: { type: 'string', minLength: 1, maxLength: 160 },
-      },
-      risks: {
-        type: 'array',
-        maxItems: 3,
-        items: { type: 'string', minLength: 1, maxLength: 160 },
-      },
-      scope_clarity: {
-        type: 'string',
-        maxLength: 240,
-        description: 'How well-defined the scope is. Short freeform.',
-      },
-      quick_win: {
-        type: 'string',
-        maxLength: 240,
-        description:
-          'Whether this looks like a quick-win opportunity and why. Short freeform.',
-      },
-      effort_estimate: {
-        type: 'string',
-        maxLength: 120,
-        description:
-          'Rough effort estimate as a short phrase (e.g. "1–2 days", "small", "medium").',
+      subscores: {
+        type: 'object',
+        properties: {
+          core_fit: { type: 'integer', minimum: 0, maximum: 45 },
+          project_quality: { type: 'integer', minimum: 0, maximum: 15 },
+          client_signals: { type: 'integer', minimum: 0, maximum: 15 },
+          budget_rate: { type: 'integer', minimum: 0, maximum: 15 },
+          strategic_upside: { type: 'integer', minimum: 0, maximum: 10 },
+        },
+        required: [
+          'core_fit',
+          'project_quality',
+          'client_signals',
+          'budget_rate',
+          'strategic_upside',
+        ],
+        additionalProperties: false,
       },
     },
     required: [
       'decision',
       'match_score',
       'priority',
-      'reasoning',
-      'strengths',
-      'risks',
+      'hard_stop',
+      'hard_stop_reason',
+      'reasons',
+      'red_flags',
+      'short_summary',
+      'subscores',
     ],
     additionalProperties: false,
   },
@@ -469,6 +533,16 @@ export function parseGatekeeperInput(
   };
 }
 
+const SUBSCORE_KEYS = [
+  'core_fit',
+  'project_quality',
+  'client_signals',
+  'budget_rate',
+  'strategic_upside',
+] as const;
+const SUBSCORE_SUM_SLOP = 2;
+const parseLogger = new Logger('parseEvaluatorInput');
+
 export function parseEvaluatorInput(
   raw: unknown,
 ): Omit<EvalResult, 'usage'> {
@@ -496,16 +570,48 @@ export function parseEvaluatorInput(
     );
   }
   const matchScore = Math.max(0, Math.min(100, Math.round(scoreRaw)));
-  const reasoning =
-    typeof obj.reasoning === 'string' ? obj.reasoning.trim() : '';
-  if (!reasoning) {
-    throw new EvaluatorResponseError('reasoning missing or empty', sample);
+
+  const shortSummary =
+    typeof obj.short_summary === 'string' ? obj.short_summary.trim() : '';
+  if (!shortSummary) {
+    throw new EvaluatorResponseError('short_summary missing or empty', sample);
   }
+
+  const subscores = parseSubscores(obj.subscores);
+  if (subscores) {
+    const sum =
+      (subscores.core_fit ?? 0) +
+      (subscores.project_quality ?? 0) +
+      (subscores.client_signals ?? 0) +
+      (subscores.budget_rate ?? 0) +
+      (subscores.strategic_upside ?? 0);
+    if (Math.abs(sum - matchScore) > SUBSCORE_SUM_SLOP) {
+      // Model is authoritative on `match_score`; the subscore sum
+      // mismatch is an audit signal, not a correctness failure.
+      parseLogger.warn(
+        `Subscore sum ${sum} drifted from match_score ${matchScore} ` +
+          `(> ${SUBSCORE_SUM_SLOP}); keeping match_score as reported.`,
+      );
+    }
+  }
+
+  const legacyReasoning =
+    typeof obj.reasoning === 'string' ? obj.reasoning.trim() : '';
+
   return {
     decision: decisionRaw as Decision,
     matchScore,
     priority: priorityRaw as Priority,
-    reasoning: reasoning.slice(0, 800),
+    // v2 envelope.
+    shortSummary: shortSummary.slice(0, 1200),
+    reasons: stringArrayCap(obj.reasons, 6, 240),
+    redFlags: stringArrayCap(obj.red_flags, 6, 240),
+    hardStop: obj.hard_stop === true,
+    hardStopReason: optTrimmedCapped(obj.hard_stop_reason, 240),
+    subscores,
+    // Legacy (v1) fields — populated only when historical shape leaks
+    // through; new prompt will not emit them.
+    reasoning: legacyReasoning ? legacyReasoning.slice(0, 800) : null,
     strengths: stringArrayCap(obj.strengths, 3, 160),
     risks: stringArrayCap(obj.risks, 3, 160),
     scopeClarity: optTrimmedCapped(obj.scope_clarity, 240),
@@ -513,6 +619,21 @@ export function parseEvaluatorInput(
     effortEstimate: optTrimmedCapped(obj.effort_estimate, 120),
     raw: obj,
   };
+}
+
+function parseSubscores(raw: unknown): EvalSubscores | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+  const out: EvalSubscores = {};
+  let anyPresent = false;
+  for (const key of SUBSCORE_KEYS) {
+    const v = Number(obj[key]);
+    if (Number.isFinite(v)) {
+      out[key] = Math.max(0, Math.round(v));
+      anyPresent = true;
+    }
+  }
+  return anyPresent ? out : null;
 }
 
 function stringArrayCap(
