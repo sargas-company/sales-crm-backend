@@ -2,10 +2,13 @@ import {
   BadRequestException,
   Injectable,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
+import archiver from 'archiver';
+import { PassThrough, Readable } from 'stream';
 
 import {
   AuditResult,
@@ -31,6 +34,8 @@ import { UpdateInvoiceDto } from './dto/update-invoice.dto';
 
 @Injectable()
 export class InvoiceService {
+  private readonly logger = new Logger(InvoiceService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -165,7 +170,10 @@ export class InvoiceService {
         orderBy,
         skip: offset,
         take: limit,
-        include: { counterparty: true },
+        include: {
+          counterparty: true,
+          lineItems: { orderBy: { sortOrder: 'asc' } },
+        },
       }),
       this.prisma.invoice.count({ where }),
     ]);
@@ -309,6 +317,109 @@ export class InvoiceService {
       changes: changes ?? null,
     });
     return updated;
+  }
+
+  /**
+   * Bulk delete — reuses `remove()` per id so scope-check, storage
+   * cleanup of pdfUrl and audit event all happen the same way as the
+   * single-row path. Rows that raise (NotFound, Forbidden, storage
+   * error) are reported as skipped; the rest are deleted. The cap on
+   * array length is enforced by the DTO (max 50).
+   */
+  async bulkRemove(
+    ids: string[],
+    user: AuthUser,
+  ): Promise<{ deleted: number; skipped: string[] }> {
+    let deleted = 0;
+    const skipped: string[] = [];
+    for (const id of ids) {
+      try {
+        await this.remove(id, user);
+        deleted += 1;
+      } catch (err) {
+        skipped.push(id);
+        this.logger.warn(
+          `bulkRemove: skipping ${id} — ${(err as Error).message}`,
+        );
+      }
+    }
+    return { deleted, skipped };
+  }
+
+  /**
+   * Bulk download — streams a ZIP of the selected invoices' PDFs.
+   *
+   * Rows filtered OUT and reported via `skipped[]`:
+   *   • status NOT in {open, paid} (drafts have no PDF yet);
+   *   • pdfUrl null (defensive: open/paid rows should always have one
+   *     but we never want to send a half-broken archive);
+   *   • not scope-visible to the caller;
+   *   • storage fetch failed (B2 miss, auth retry exhausted, etc.).
+   *
+   * Cap on array length is enforced by the DTO (max 50). Each PDF is
+   * loaded into memory as a Buffer and fed to archiver one by one;
+   * at 50 × ~500KB that's ≤25MB per request, well within the Nest
+   * default body limits.
+   */
+  async bulkDownload(
+    ids: string[],
+    user: AuthUser,
+  ): Promise<{ stream: Readable; skipped: string[] }> {
+    const visibleTypes = scopePolicy.visibleTypes(user);
+    const invoices = await this.prisma.invoice.findMany({
+      where: {
+        id: { in: ids },
+        status: { in: [InvoiceStatus.open, InvoiceStatus.paid] },
+        pdfUrl: { not: null },
+        counterparty: { type: { in: visibleTypes } },
+      },
+      include: { counterparty: true },
+    });
+
+    const foundIds = new Set(invoices.map((i) => i.id));
+    const skipped: string[] = ids.filter((id) => !foundIds.has(id));
+
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    const pass = new PassThrough();
+    archive.pipe(pass);
+    archive.on('warning', (err: Error) => {
+      this.logger.warn(`bulkDownload archiver warning: ${err.message}`);
+    });
+    archive.on('error', (err: Error) => {
+      this.logger.error(`bulkDownload archiver error: ${err.message}`);
+      pass.destroy(err);
+    });
+
+    void (async () => {
+      try {
+        for (const invoice of invoices) {
+          const pdfUrl = invoice.pdfUrl!;
+          const fileName = pdfUrl.startsWith('http')
+            ? this.storage.extractKeyFromLegacyUrl(pdfUrl) ?? pdfUrl
+            : pdfUrl;
+          try {
+            const buf = await this.storage.downloadBuffer(
+              StorageBucket.INVOICES,
+              fileName,
+            );
+            archive.append(buf, { name: fileName });
+          } catch (err) {
+            skipped.push(invoice.id);
+            this.logger.warn(
+              `bulkDownload: storage fetch failed for ${invoice.id} (${fileName}) — ${(err as Error).message}`,
+            );
+          }
+        }
+        await archive.finalize();
+      } catch (err) {
+        this.logger.error(
+          `bulkDownload finalize failed: ${(err as Error).message}`,
+        );
+        pass.destroy(err as Error);
+      }
+    })();
+
+    return { stream: pass, skipped };
   }
 
   async remove(id: string, user: AuthUser) {

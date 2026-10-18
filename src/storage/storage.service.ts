@@ -164,6 +164,45 @@ export class StorageService implements OnModuleInit {
   }
 
   /**
+   * Fetches the file bytes from B2 directly into a Buffer. Useful
+   * when the server itself needs the content (e.g. assembling a ZIP
+   * from several PDFs) and a signed download URL would be a layer
+   * too many. Keeps the one-shot `authorize()` retry on 401, same
+   * as upload.
+   */
+  async downloadBuffer(
+    bucket: StorageBucket,
+    fileName: string,
+  ): Promise<Buffer> {
+    const { name: bucketName } = this.getBucketConfig(bucket);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const { data } = await this.b2.downloadFileByName({
+          bucketName,
+          fileName,
+          responseType: 'arraybuffer',
+        });
+        return Buffer.from(data as ArrayBuffer);
+      } catch (err: unknown) {
+        const status =
+          (err as { response?: { status?: number } }).response?.status ??
+          (err as { status?: number }).status;
+        if (attempt === 0 && status === 401) {
+          await this.authorize();
+          continue;
+        }
+        const msg = (err as { message?: string })?.message ?? String(err);
+        throw new InternalServerErrorException(
+          `B2 download failed for "${fileName}": ${msg}`,
+        );
+      }
+    }
+    throw new InternalServerErrorException(
+      `B2 download failed for "${fileName}": retries exhausted`,
+    );
+  }
+
+  /**
    * Returns a short-lived download URL for the given key. Defaults to
    * the bucket's configured TTL; callers may override.
    */
