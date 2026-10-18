@@ -7,7 +7,15 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
-import archiver from 'archiver';
+// CommonJS require form — the project's tsconfig has
+// `esModuleInterop: false`, so `import archiver from 'archiver'`
+// compiles to `archiver_1.default(...)` on a module that exports
+// its function directly (no `.default`), which blows up at runtime
+// with "archiver_1.default is not a function". The namespace-import
+// `=` syntax lowers to a plain `require()` and binds the function
+// itself, matching how archiver's own CJS entrypoint is shaped.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import archiver = require('archiver');
 import { PassThrough, Readable } from 'stream';
 
 import {
