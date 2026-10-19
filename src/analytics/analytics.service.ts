@@ -357,8 +357,8 @@ export class AnalyticsService {
     >(
       Prisma.sql`
         SELECT
-          EXTRACT(DOW FROM ("createdAt" AT TIME ZONE ${timezone}))::int AS weekday_pg,
-          EXTRACT(HOUR FROM ("createdAt" AT TIME ZONE ${timezone}))::int AS hour,
+          EXTRACT(DOW FROM ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${timezone}))::int AS weekday_pg,
+          EXTRACT(HOUR FROM ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${timezone}))::int AS hour,
           COUNT(*)::bigint AS total,
           SUM(CASE WHEN "matchScore" >= ${QUALIFIED_THRESHOLD} THEN 1 ELSE 0 END)::bigint AS qualified,
           SUM(CASE WHEN "matchScore" >= ${HOT_THRESHOLD} THEN 1 ELSE 0 END)::bigint AS hot,
@@ -425,9 +425,9 @@ export class AnalyticsService {
       >(
         Prisma.sql`
           SELECT
-            DATE_TRUNC('day', "createdAt" AT TIME ZONE ${timezone}) AS day,
-            EXTRACT(DOW FROM ("createdAt" AT TIME ZONE ${timezone}))::int AS weekday_pg,
-            EXTRACT(HOUR FROM ("createdAt" AT TIME ZONE ${timezone}))::int AS hour,
+            DATE_TRUNC('day', "createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${timezone}) AS day,
+            EXTRACT(DOW FROM ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${timezone}))::int AS weekday_pg,
+            EXTRACT(HOUR FROM ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${timezone}))::int AS hour,
             COUNT(*)::bigint AS total,
             SUM(CASE WHEN "matchScore" >= ${QUALIFIED_THRESHOLD} THEN 1 ELSE 0 END)::bigint AS qualified,
             SUM(CASE WHEN "matchScore" >= ${HOT_THRESHOLD} THEN 1 ELSE 0 END)::bigint AS hot,
