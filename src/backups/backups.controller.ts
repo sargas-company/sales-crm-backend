@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Param,
+  Post,
   Query,
   Request,
   UseGuards,
@@ -14,13 +15,16 @@ import { RequirePermission } from '../auth/permission.decorator';
 import { BackupsService } from './backups.service';
 
 /**
- * Backups surface is read-only.
+ * Backups surface. List/details/summary remain read-only.
  *
- * Manual backups are triggered from the CLI (`scripts/backup.ts`),
- * never from the browser, so the backend runtime does not need to
- * hold the backup B2 credentials just to serve a UI button. The
- * list/details/summary endpoints below are gated by `backups:view`
- * which is Owner-only in the system role matrix.
+ * As of 2026-10-19 the backend also exposes a `POST /backups/trigger`
+ * endpoint — a human-triggered backup from the Backups UI, firing the
+ * same shared `runBackup` path that `scripts/backup.ts` uses under
+ * cron. The Nest process must have the backup B2 credentials in its
+ * env for this to work (same `.env` as the cron script, read by
+ * `dotenv.config()` in `main.ts`). Trigger is Owner-only
+ * (`backups:create`); view/list/download are gated by `backups:view`
+ * (admin_manager + Owner) or `backups:download` (Owner-only).
  */
 @ApiTags('Backups')
 @ApiBearerAuth('jwt')
@@ -48,6 +52,41 @@ export class BackupsController {
   @RequirePermission('backups:view')
   get(@Param('id') id: string) {
     return this.svc.get(id);
+  }
+
+  /**
+   * Human-triggered backup from the Backups UI. Fires `runBackup`
+   * through the same shared runner cron uses, with
+   * `type=MANUAL triggeredBy='manual-ui'`. Returns immediately —
+   * the caller polls `GET /backups` to watch the new row.
+   *
+   * Concurrency: a RUNNING row younger than 10 min returns 409 so
+   * double-clicks don't translate into back-to-back Discord
+   * `pg advisory lock held` failure pings.
+   */
+  @Post('trigger')
+  @RequirePermission('backups:create')
+  @ApiOperation({ summary: 'Trigger a manual backup from the UI.' })
+  @ApiResponse({
+    status: 201,
+    description: 'Returns { started: true, triggeredAt }',
+  })
+  @ApiResponse({ status: 409, description: 'Another backup is already running' })
+  trigger(@Request() req) {
+    const u = req.user ?? {};
+    return this.svc.trigger(
+      {
+        userId: u.id,
+        email: u.email ?? null,
+        name:
+          [u.firstName, u.lastName].filter(Boolean).join(' ').trim() || null,
+      },
+      {
+        ip: req.ip ?? null,
+        userAgent: req.get?.('user-agent') ?? null,
+        requestId: req.get?.('x-request-id') ?? null,
+      },
+    );
   }
 
   /**

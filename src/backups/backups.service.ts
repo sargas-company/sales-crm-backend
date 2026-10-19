@@ -1,14 +1,24 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { AuditResult, AuditSeverity, BackupStatus } from '@prisma/client';
+import { AuditResult, AuditSeverity, BackupStatus, BackupType } from '@prisma/client';
 
 import { AuditEventService } from '../audit-event/audit-event.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { runBackup } from './backup-runner';
 import { BackupDownloadService } from './backup-download.service';
+
+/** How long a RUNNING row is still considered live before a fresh
+ *  trigger is allowed to kick off a new attempt. The watchdog cron
+ *  (`scripts/mark-stuck-running.ts`) handles the long tail at 2 h —
+ *  this just stops two humans double-clicking inside the same backup
+ *  window. 10 min comfortably covers the usual 1–2 min pg_dump +
+ *  B2 round-trip. */
+const TRIGGER_IN_FLIGHT_WINDOW_MS = 10 * 60 * 1000;
 
 /** TTL for the signed download URL of a backup artifact. Short enough
  *  that a leaked link expires before it can be meaningfully re-used,
@@ -85,6 +95,92 @@ export class BackupsService {
     const run = await this.prisma.backupRun.findUnique({ where: { id } });
     if (!run) throw new NotFoundException('BackupRun not found');
     return this.serialize(run);
+  }
+
+  /**
+   * Human-triggered backup from the Backups UI. Fires `runBackup` in
+   * the background through the same shared runner that `scripts/
+   * backup.ts` uses under cron, so the Discord + audit + advisory-lock
+   * paths are identical. The HTTP response returns before the dump
+   * finishes — the caller polls `GET /backups` and watches for the
+   * freshly-created `MANUAL` row (triggeredBy='manual-ui') to flip
+   * out of RUNNING.
+   *
+   * Concurrency: we refuse a new trigger when a RUNNING row younger
+   * than TRIGGER_IN_FLIGHT_WINDOW_MS exists. The B2 advisory lock
+   * would catch a true concurrent run anyway, but surfacing a 409
+   * early keeps the Discord stream from receiving an immediate
+   * `pg advisory lock held` failure on every double-click.
+   */
+  async trigger(
+    actor: { userId: string; email?: string | null; name?: string | null },
+    ctx?: { ip?: string | null; userAgent?: string | null; requestId?: string | null },
+  ) {
+    const inFlight = await this.prisma.backupRun.findFirst({
+      where: { status: BackupStatus.RUNNING },
+      orderBy: { startedAt: 'desc' },
+    });
+    if (inFlight) {
+      const ageMs = Date.now() - inFlight.startedAt.getTime();
+      if (ageMs < TRIGGER_IN_FLIGHT_WINDOW_MS) {
+        await this.audit.recordSafe({
+          actorUserId: actor.userId,
+          actorEmail: actor.email ?? null,
+          actorName: actor.name ?? null,
+          domain: 'backups',
+          action: 'backups.trigger',
+          targetType: 'BackupRun',
+          targetId: inFlight.id,
+          result: AuditResult.FAILED,
+          severity: AuditSeverity.WARNING,
+          metadata: { reason: 'already_running', inFlightId: inFlight.id },
+          ...ctx,
+        });
+        throw new ConflictException('Another backup is already running');
+      }
+    }
+
+    const triggeredAt = new Date();
+    const environment = process.env.APP_ENV ?? 'unknown';
+
+    /* Fire and forget. Any failure is already surfaced by the shared
+     * runner through Discord + a FAILED BackupRun row — we log here
+     * only for the Nest log stream. Awaiting the whole run would
+     * block the HTTP response for ~1–2 minutes. */
+    void runBackup({
+      type: BackupType.MANUAL,
+      triggeredBy: 'manual-ui',
+      prisma: this.prisma,
+    }).catch((err) => {
+      this.logger.error(
+        `[backups.trigger] runBackup rejected: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    });
+
+    await this.audit.recordSafe({
+      actorUserId: actor.userId,
+      actorEmail: actor.email ?? null,
+      actorName: actor.name ?? null,
+      domain: 'backups',
+      action: 'backups.trigger',
+      targetType: 'BackupRun',
+      targetId: 'pending',
+      result: AuditResult.SUCCESS,
+      severity: AuditSeverity.INFO,
+      metadata: {
+        type: BackupType.MANUAL,
+        triggeredBy: 'manual-ui',
+        environment,
+      },
+      ...ctx,
+    });
+
+    return {
+      started: true,
+      triggeredAt: triggeredAt.toISOString(),
+    };
   }
 
   /**

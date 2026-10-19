@@ -16,12 +16,16 @@ export function resolveOpsWebhook(env: NodeJS.ProcessEnv = process.env): string 
 }
 
 /**
- * Backups success notifications are deliberately quiet for `DAILY`
- * runs to avoid daily webhook noise. Every failure, and every
- * success for human-triggered or deploy-coupled runs, is sent.
+ * Every backup outcome — success or failure, cron or manual — is
+ * announced on the OPS webhook. The DAILY-success-silent carve-out
+ * was removed on 2026-10-19 together with the manual-trigger button:
+ * the operator wants a positive "backup landed" ping on every run,
+ * including the nightly cron, so a missing message means the cron
+ * never fired rather than "nothing to say". Kept as a function (not
+ * inlined `true`) so a future per-type carve-out stays a one-liner.
  */
-export function shouldNotifySuccess(type: BackupType): boolean {
-  return type !== BackupType.DAILY;
+export function shouldNotifySuccess(_type: BackupType): boolean {
+  return true;
 }
 
 export interface NotifyArgs {
