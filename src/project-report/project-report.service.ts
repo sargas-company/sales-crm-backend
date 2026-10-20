@@ -334,23 +334,60 @@ export class ProjectReportService {
     }
 
     const lateKeys = reports.map((r) => `LATE_REPORT:${r.id}`);
-    const uniqueDateKeys = Array.from(
-      new Set(
-        reports.map(
-          (r) =>
-            `DAILY_DIGEST_19:${profile.id}:${r.reportDate.toISOString().slice(0, 10)}`,
-        ),
-      ),
+    const uniqueDates = Array.from(
+      new Set(reports.map((r) => r.reportDate.toISOString().slice(0, 10))),
     );
-    const deliveries = await this.prisma.discordDelivery.findMany({
-      where: { deliveryKey: { in: [...lateKeys, ...uniqueDateKeys] } },
-      select: { deliveryKey: true, status: true, sentAt: true },
-    });
-    const byKey = new Map(deliveries.map((d) => [d.deliveryKey, d]));
+    /* Digest keys follow the scheduler's chunked format:
+     *   `DAILY_DIGEST_19:<YYYY-MM-DD>:chunk:<N>`  (NO profileId;
+     * `periodKey` is just the ISO date). One digest run may produce
+     * multiple chunks for a busy day — the status reads SENT as soon
+     * as any chunk is SENT. We query all chunks for all dates in one
+     * `startsWith`-based OR so paging doesn't blow up the WHERE size. */
+    type DeliveryRow = { deliveryKey: string; status: DiscordDeliveryStatus };
+    const lateRows: DeliveryRow[] =
+      lateKeys.length > 0
+        ? await this.prisma.discordDelivery.findMany({
+            where: { deliveryKey: { in: lateKeys } },
+            select: { deliveryKey: true, status: true },
+          })
+        : [];
+    const digestChunks: DeliveryRow[] =
+      uniqueDates.length > 0
+        ? await this.prisma.discordDelivery.findMany({
+            where: {
+              OR: uniqueDates.map((d) => ({
+                deliveryKey: { startsWith: `DAILY_DIGEST_19:${d}:chunk:` },
+              })),
+            },
+            select: { deliveryKey: true, status: true },
+          })
+        : [];
+    const lateByKey = new Map(lateRows.map((d) => [d.deliveryKey, d]));
+    /* Aggregate per-date digest status across chunks: SENT wins over
+     * everything (digest fired at least partially); otherwise pick
+     * FAILED over PENDING over nothing. */
+    const digestByDate = new Map<string, DiscordDeliveryStatus>();
+    for (const chunk of digestChunks) {
+      const m = /^DAILY_DIGEST_19:(\d{4}-\d{2}-\d{2}):chunk:\d+$/.exec(
+        chunk.deliveryKey,
+      );
+      if (!m) continue;
+      const date = m[1];
+      const prev = digestByDate.get(date);
+      if (prev === DiscordDeliveryStatus.SENT) continue;
+      if (
+        chunk.status === DiscordDeliveryStatus.SENT ||
+        prev === undefined ||
+        (prev === DiscordDeliveryStatus.PENDING &&
+          chunk.status === DiscordDeliveryStatus.FAILED)
+      ) {
+        digestByDate.set(date, chunk.status);
+      }
+    }
 
     const nowUtc = new Date();
     return reports.map((r) => {
-      const lateRow = byKey.get(`LATE_REPORT:${r.id}`);
+      const lateRow = lateByKey.get(`LATE_REPORT:${r.id}`);
       if (lateRow) {
         return {
           ...r,
@@ -358,33 +395,31 @@ export class ProjectReportService {
           deliveryStatus: this.mapDiscordStatus(lateRow.status),
         };
       }
-      const dateKey = `DAILY_DIGEST_19:${profile.id}:${r.reportDate
-        .toISOString()
-        .slice(0, 10)}`;
-      const digestRow = byKey.get(dateKey);
+      const dateKey = r.reportDate.toISOString().slice(0, 10);
+      const digestStatus = digestByDate.get(dateKey);
       const deadlineUtc = this.deadlineUtcFor(
         r.reportDate,
         profile.dailyDigestAt,
         profile.timezone,
       );
       const wasInDigestWindow = r.createdAt.getTime() < deadlineUtc.getTime();
-      if (digestRow && digestRow.status === DiscordDeliveryStatus.SENT) {
+      if (digestStatus === DiscordDeliveryStatus.SENT) {
         return {
           ...r,
           deliveryVia: 'digest' as const,
           deliveryStatus: wasInDigestWindow ? ('sent' as const) : ('none' as const),
         };
       }
-      if (digestRow) {
+      if (digestStatus) {
         return {
           ...r,
           deliveryVia: 'digest' as const,
-          deliveryStatus: this.mapDiscordStatus(digestRow.status),
+          deliveryStatus: this.mapDiscordStatus(digestStatus),
         };
       }
-      /* Digest row absent — either digest hasn't fired yet (future
-       * 19:00 on reportDate) or reportDate was in the past and the
-       * digest never ran (profile disabled, downtime, etc.). */
+      /* No digest chunk for this date yet — either the 19:00 cron
+       * hasn't fired (future reportDate / today pre-19:00) or it
+       * never ran for a past date (profile disabled, downtime, etc.). */
       if (wasInDigestWindow && deadlineUtc.getTime() > nowUtc.getTime()) {
         return {
           ...r,
