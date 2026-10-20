@@ -7,11 +7,19 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { Prisma, ProjectReportSource } from '@prisma/client';
+import {
+  DiscordDeliveryStatus,
+  Prisma,
+  ProjectReportSource,
+} from '@prisma/client';
 
 import { AuthUser, scopePolicy } from '../auth/auth-user';
 import { DiscordLateReportService } from '../discord-integration/discord-late-report.service';
-import { isLateReport } from '../discord-integration/logical-date';
+import {
+  isLateReport,
+  localCalendarDate,
+  parseHHMM,
+} from '../discord-integration/logical-date';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProjectReportDto } from './dto/create-project-report.dto';
 import {
@@ -143,7 +151,8 @@ export class ProjectReportService {
       }),
       this.prisma.projectReport.count({ where }),
     ]);
-    return { data, total };
+    const enriched = await this.enrichDeliveryStatus(data);
+    return { data: enriched, total };
   }
 
   async findOne(id: string, user: AuthUser) {
@@ -243,7 +252,20 @@ export class ProjectReportService {
     });
     if (!profile) return;
     const submittedAt = row.createdAt;
-    if (!isLateReport(submittedAt, profile.timezone, profile.dailyDigestAt)) {
+    /* Backdated MANUAL reports (reportDate strictly before today's
+     * local calendar day) are ALWAYS late — the digest for their
+     * reportDate already fired. `isLateReport()` alone misses this
+     * case because it only sees `submittedAt`, not the business
+     * reportDate the user picked in the CRM form. Without this
+     * guard, a backdated row filed between 10:00 and 19:00 Kyiv
+     * silently falls through — no late ping, and today's digest
+     * does not pick it up (digest filters `reportDate = today`). */
+    const todayLocal = localCalendarDate(submittedAt, profile.timezone);
+    const isBackdated = row.reportDate.getTime() < todayLocal.getTime();
+    if (
+      !isBackdated &&
+      !isLateReport(submittedAt, profile.timezone, profile.dailyDigestAt)
+    ) {
       return;
     }
     const headAuthor = row.contributors[0];
@@ -270,6 +292,152 @@ export class ProjectReportService {
         `late-report enqueue failed for MANUAL report ${row.id}: ${message}`,
       );
     }
+  }
+
+  /**
+   * Attach a `deliveryVia` + `deliveryStatus` pair to each report row
+   * for the list page. Two delivery paths are tracked:
+   *
+   *   LATE  — per-report ping via `DiscordLateReportService`, keyed
+   *           `LATE_REPORT:<reportId>`. Covers backdated and
+   *           after-19:00 submissions.
+   *   DIGEST — the bulk 19:00 daily digest, keyed
+   *           `DAILY_DIGEST_19:<profileId>:<reportDate_YYYY-MM-DD>`.
+   *           Covers on-time same-day submissions.
+   *
+   * Resolution precedence: if a LATE_REPORT row exists it wins
+   * (that was the only path for this report). Otherwise we look up
+   * the digest row for the report's `reportDate`, but only credit
+   * the digest with it when the digest actually fired AFTER this
+   * report's `createdAt` (so a backdated row created today for a
+   * past day whose digest already fired is correctly reported as
+   * `none`, not falsely `digest_sent`).
+   */
+  private async enrichDeliveryStatus<
+    R extends { id: string; reportDate: Date; createdAt: Date },
+  >(reports: R[]): Promise<Array<R & {
+    deliveryVia: 'late' | 'digest' | null;
+    deliveryStatus: 'sent' | 'pending' | 'failed' | 'none';
+  }>> {
+    if (reports.length === 0) return [];
+
+    const profile = await this.prisma.discordProfile.findFirst({
+      where: { active: true },
+      select: { id: true, timezone: true, dailyDigestAt: true },
+    });
+    if (!profile) {
+      return reports.map((r) => ({
+        ...r,
+        deliveryVia: null,
+        deliveryStatus: 'none' as const,
+      }));
+    }
+
+    const lateKeys = reports.map((r) => `LATE_REPORT:${r.id}`);
+    const uniqueDateKeys = Array.from(
+      new Set(
+        reports.map(
+          (r) =>
+            `DAILY_DIGEST_19:${profile.id}:${r.reportDate.toISOString().slice(0, 10)}`,
+        ),
+      ),
+    );
+    const deliveries = await this.prisma.discordDelivery.findMany({
+      where: { deliveryKey: { in: [...lateKeys, ...uniqueDateKeys] } },
+      select: { deliveryKey: true, status: true, sentAt: true },
+    });
+    const byKey = new Map(deliveries.map((d) => [d.deliveryKey, d]));
+
+    const nowUtc = new Date();
+    return reports.map((r) => {
+      const lateRow = byKey.get(`LATE_REPORT:${r.id}`);
+      if (lateRow) {
+        return {
+          ...r,
+          deliveryVia: 'late' as const,
+          deliveryStatus: this.mapDiscordStatus(lateRow.status),
+        };
+      }
+      const dateKey = `DAILY_DIGEST_19:${profile.id}:${r.reportDate
+        .toISOString()
+        .slice(0, 10)}`;
+      const digestRow = byKey.get(dateKey);
+      const deadlineUtc = this.deadlineUtcFor(
+        r.reportDate,
+        profile.dailyDigestAt,
+        profile.timezone,
+      );
+      const wasInDigestWindow = r.createdAt.getTime() < deadlineUtc.getTime();
+      if (digestRow && digestRow.status === DiscordDeliveryStatus.SENT) {
+        return {
+          ...r,
+          deliveryVia: 'digest' as const,
+          deliveryStatus: wasInDigestWindow ? ('sent' as const) : ('none' as const),
+        };
+      }
+      if (digestRow) {
+        return {
+          ...r,
+          deliveryVia: 'digest' as const,
+          deliveryStatus: this.mapDiscordStatus(digestRow.status),
+        };
+      }
+      /* Digest row absent — either digest hasn't fired yet (future
+       * 19:00 on reportDate) or reportDate was in the past and the
+       * digest never ran (profile disabled, downtime, etc.). */
+      if (wasInDigestWindow && deadlineUtc.getTime() > nowUtc.getTime()) {
+        return {
+          ...r,
+          deliveryVia: 'digest' as const,
+          deliveryStatus: 'pending' as const,
+        };
+      }
+      return {
+        ...r,
+        deliveryVia: null,
+        deliveryStatus: 'none' as const,
+      };
+    });
+  }
+
+  private mapDiscordStatus(
+    s: DiscordDeliveryStatus,
+  ): 'sent' | 'pending' | 'failed' {
+    switch (s) {
+      case DiscordDeliveryStatus.SENT:
+        return 'sent';
+      case DiscordDeliveryStatus.FAILED:
+        return 'failed';
+      case DiscordDeliveryStatus.PENDING:
+      default:
+        return 'pending';
+    }
+  }
+
+  /** UTC moment of `hhmm` on `day` in `timezone`. Mirrors the private
+   *  helper the scheduler uses — kept inline here to avoid widening
+   *  that module's public surface for a single read-only consumer. */
+  private deadlineUtcFor(day: Date, hhmm: string, timezone: string): Date {
+    const minutes = parseHHMM(hhmm);
+    const anchor = new Date(day.getTime() + 12 * 60 * 60 * 1000);
+    const fmt = new Intl.DateTimeFormat('en-GB', {
+      timeZone: timezone,
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const parts = fmt.formatToParts(anchor);
+    const h = Number.parseInt(
+      parts.find((p) => p.type === 'hour')?.value ?? '0',
+      10,
+    );
+    const m = Number.parseInt(
+      parts.find((p) => p.type === 'minute')?.value ?? '0',
+      10,
+    );
+    const anchorMinutes = h * 60 + m;
+    const delta = minutes - anchorMinutes;
+    return new Date(anchor.getTime() + delta * 60 * 1000);
   }
 
   private scrubError(err: unknown): string {

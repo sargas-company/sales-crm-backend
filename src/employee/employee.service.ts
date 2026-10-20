@@ -202,6 +202,19 @@ export class EmployeeService {
       user: {
         select: { id: true, email: true, firstName: true, lastName: true },
       },
+      /* Current compensation rate = most recent EmployeeCompensationRate
+       * whose effectiveDate has already arrived. One row max — the
+       * list renders either its {rate, rateType} or 0 if the array is
+       * empty. Writes to this table come from the salary-review flow
+       * (SalaryReviewResult.INCREASED → auto-inserts a row) as well
+       * as any direct compensation CRUD, so this is the single source
+       * of truth for "current salary". */
+      compensationRates: {
+        where: { effectiveDate: { lte: new Date() } },
+        orderBy: { effectiveDate: Prisma.SortOrder.desc },
+        take: 1,
+        select: { rate: true, rateType: true, effectiveDate: true },
+      },
     };
   }
 
