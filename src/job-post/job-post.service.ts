@@ -20,15 +20,17 @@ import {
 } from './dto/enable-analysis.dto';
 import { PreviewEnableAnalysisDto } from './dto/preview-enable-analysis.dto';
 import { JobPostStatsDto } from './dto/job-post-stats.dto';
+import { HAIKU_5_5_LE_100K, SONNET_5_5 } from '../anthropic/pricing';
 
 /* ─── AI cost model constants ─────────────────────────────────────
  *
- * Rates (per 1M tokens) from Anthropic's public Claude 5.5 tariff —
- * https://platform.claude.com/docs/en/about-claude/pricing — at
- * ≤100 k-token inputs. Cache-write-1h is 2× regular input; cache-read
- * is 0.1× regular input. Both cache rates are shown as separate
- * fields in the preview so the UI can say what it is NOT promising
- * (cache savings require real hits).
+ * Rates for the preview card are DERIVED from `../anthropic/pricing`
+ * — the single source of truth that the ledger also stamps against.
+ * Preview uses the Haiku ≤100K-token tier because job posts live
+ * well below the 100K boundary; swap to GT_100K here if that ever
+ * stops being true. Both cache rates are shown as separate fields
+ * so the UI can say what it is NOT promising (cache savings require
+ * real hits).
  *
  * Avg-token fallbacks are a conservative upper bound. When
  * PROCESSED usage history for the CURRENT configured model is
@@ -37,16 +39,16 @@ import { JobPostStatsDto } from './dto/job-post-stats.dto';
  * ignored for this purpose. */
 const PRICING = {
   haiku: {
-    inputPerMTok: 0.1,
-    outputPerMTok: 0.5,
-    cacheWrite1hPerMTok: 0.2,
-    cacheReadPerMTok: 0.01,
+    inputPerMTok: HAIKU_5_5_LE_100K.input,
+    outputPerMTok: HAIKU_5_5_LE_100K.output,
+    cacheWrite1hPerMTok: HAIKU_5_5_LE_100K.cacheCreationInputExtended,
+    cacheReadPerMTok: HAIKU_5_5_LE_100K.cacheReadInput,
   },
   sonnet: {
-    inputPerMTok: 2,
-    outputPerMTok: 10,
-    cacheWrite1hPerMTok: 4,
-    cacheReadPerMTok: 0.1,
+    inputPerMTok: SONNET_5_5.input,
+    outputPerMTok: SONNET_5_5.output,
+    cacheWrite1hPerMTok: SONNET_5_5.cacheCreationInputExtended,
+    cacheReadPerMTok: SONNET_5_5.cacheReadInput,
   },
 } as const;
 
