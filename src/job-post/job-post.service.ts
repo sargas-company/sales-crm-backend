@@ -110,6 +110,12 @@ const JOB_POST_SELECT = {
   clientPaymentVerified: true,
   clientRating: true,
   clientHires: true,
+  // Gatekeeper + evaluation blob — surfaced on the list so the UI
+  // can render per-row `Verdict GK` (fit + confidence) and the
+  // `Score · Verdict EV` column can show `—` when the row never
+  // reached Sonnet. The blob is ~1-2 KB per row; cheap enough on
+  // the list vs. computing a slim derived shape.
+  aiResponse: true,
   proposal: { select: { id: true } },
 } satisfies Prisma.JobPostSelect;
 
