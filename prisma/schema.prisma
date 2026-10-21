@@ -918,6 +918,10 @@ model Employee {
   // cleared when the employee is reactivated (ACTIVE / BENCH). Used
   // for "archive" filters derived from age.
   terminatedAt DateTime?
+  // DiceBear preset URL assigned at create-time (random from the same
+  // catalogue that the User avatar picker uses). Nullable so legacy
+  // rows survive — the UI falls back to coloured initials when null.
+  avatarUrl String?
   // Day/Month only matter for the birthday notification; the year is
   // kept for display convenience. Nullable so legacy rows survive.
   dateOfBirth DateTime?    @db.Date

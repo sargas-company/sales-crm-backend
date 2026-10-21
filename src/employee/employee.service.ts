@@ -11,6 +11,7 @@ import { AuditResult, AuditSeverity } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditEventService } from '../audit-event/audit-event.service';
 import { safeDiff } from '../audit-event/audit-sanitizer';
+import { AVATAR_PRESETS, avatarUrlFor } from '../auth/avatar-presets';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import {
   EmployeeSortBy,
@@ -48,6 +49,11 @@ export class EmployeeService {
             : undefined,
           status: dto.status ?? 'ACTIVE',
           terminatedAt: dto.status === 'TERMINATED' ? new Date() : null,
+          // Random DiceBear preset from the same catalogue the User
+          // picker uses — stamped once at create and never auto-rotated.
+          avatarUrl: avatarUrlFor(
+            AVATAR_PRESETS[Math.floor(Math.random() * AVATAR_PRESETS.length)],
+          ),
           hiredAt: dto.hiredAt ? new Date(dto.hiredAt) : null,
           userId: dto.userId ?? null,
           dateOfBirth: dto.dateOfBirth ? new Date(dto.dateOfBirth) : null,
