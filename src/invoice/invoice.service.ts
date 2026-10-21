@@ -36,6 +36,7 @@ import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import {
   InvoiceSortBy,
   InvoiceSortDirection,
+  InvoiceFiltersDto,
   ListInvoicesDto,
 } from './dto/list-invoices.dto';
 import { UpdateInvoiceDto } from './dto/update-invoice.dto';
@@ -161,15 +162,8 @@ export class InvoiceService {
     const offset = (page - 1) * limit;
     const dir: Prisma.SortOrder =
       dto.sortDirection ?? InvoiceSortDirection.desc;
-    const visibleTypes = scopePolicy.visibleTypes(user);
 
-    const where: Prisma.InvoiceWhereInput = {
-      counterparty: { type: { in: visibleTypes } },
-      ...(dto.search
-        ? { number: { contains: dto.search, mode: 'insensitive' } }
-        : {}),
-    };
-
+    const where = this.buildFilterWhere(dto, user);
     const orderBy = this.buildOrderBy(dto.sortBy, dir);
 
     const [data, total] = await Promise.all([
@@ -187,6 +181,117 @@ export class InvoiceService {
     ]);
 
     return { data, total };
+  }
+
+  /** Counts + money sum for the KPI cards above the list. Applies the
+   *  same filter set so the cards always reflect what the user is
+   *  currently looking at. Scope policy (visibleTypes) still clamps
+   *  the result for the caller — a Regular Manager will never see
+   *  contractor-invoice counts.
+   *
+   *  `totalAmount` mirrors the frontend `getInvoiceTotal` helper:
+   *  subtotal(line items) + tax% (when showTax) + shipping (when
+   *  showShipping) − discounts (when showDiscounts). Currencies are
+   *  summed flat; nearly all invoices are USD today. Multi-currency
+   *  owners can read the per-currency breakdown from `amountByCurrency`
+   *  if the plain `totalAmount` turns out to lie. */
+  async stats(dto: InvoiceFiltersDto, user: AuthUser) {
+    const where = this.buildFilterWhere(dto, user);
+    const grouped = await this.prisma.invoice.groupBy({
+      by: ['status'],
+      where,
+      _count: { _all: true },
+    });
+    const byStatus: Record<InvoiceStatus, number> = {
+      [InvoiceStatus.draft]: 0,
+      [InvoiceStatus.open]: 0,
+      [InvoiceStatus.paid]: 0,
+    };
+    for (const row of grouped) {
+      byStatus[row.status] = row._count._all;
+    }
+    const total = byStatus.draft + byStatus.open + byStatus.paid;
+
+    // Pull full rows + line items to compute each invoice's effective
+    // total. For a directory of <1k invoices this one-shot fetch stays
+    // cheap; if the owner ever runs 10k+, we rework to a SQL aggregate.
+    const invoices = await this.prisma.invoice.findMany({
+      where,
+      select: {
+        currency: true,
+        tax: true,
+        discounts: true,
+        shipping: true,
+        showTax: true,
+        showDiscounts: true,
+        showShipping: true,
+        lineItems: { select: { quantity: true, unitCost: true } },
+      },
+    });
+    let totalAmount = 0;
+    const amountByCurrency: Record<string, number> = {};
+    for (const inv of invoices) {
+      let subtotal = 0;
+      for (const li of inv.lineItems) {
+        subtotal += Number(li.quantity) * Number(li.unitCost);
+      }
+      const taxPct = Number(inv.tax ?? 0);
+      const tax = inv.showTax ? subtotal * (taxPct / 100) : 0;
+      const discounts = inv.showDiscounts ? Number(inv.discounts ?? 0) : 0;
+      const shipping = inv.showShipping ? Number(inv.shipping ?? 0) : 0;
+      const invTotal = subtotal + tax + shipping - discounts;
+      totalAmount += invTotal;
+      const ccy = inv.currency || 'USD';
+      amountByCurrency[ccy] = (amountByCurrency[ccy] ?? 0) + invTotal;
+    }
+
+    return {
+      total,
+      draft: byStatus.draft,
+      open: byStatus.open,
+      paid: byStatus.paid,
+      totalAmount: Math.round(totalAmount * 100) / 100,
+      amountByCurrency,
+    };
+  }
+
+  /** Composes the Prisma where clause from the shared InvoiceFiltersDto
+   *  — used by both findAll (paged list) and stats (KPI cards) so the
+   *  two always stay in lockstep. */
+  private buildFilterWhere(
+    dto: InvoiceFiltersDto,
+    user: AuthUser,
+  ): Prisma.InvoiceWhereInput {
+    const visibleTypes = scopePolicy.visibleTypes(user);
+    // `type` filter further narrows visibleTypes; invalid combinations
+    // (e.g. caller asks `contractor` but can't see them) resolve to an
+    // empty set, giving a 0-row result — never a 403.
+    const typeIn = dto.type
+      ? visibleTypes.filter((t) => t === dto.type)
+      : visibleTypes;
+
+    const dateFilter: Prisma.DateTimeNullableFilter = {};
+    if (dto.dateFrom) dateFilter.gte = new Date(dto.dateFrom);
+    if (dto.dateTo) {
+      // Inclusive upper bound — bump by 24h so "to=2025-01-31" catches
+      // issues stamped at 2025-01-31 23:59:59 under any TZ.
+      const to = new Date(dto.dateTo);
+      to.setUTCDate(to.getUTCDate() + 1);
+      dateFilter.lt = to;
+    }
+
+    return {
+      counterparty: {
+        type: { in: typeIn },
+        ...(dto.counterpartyId ? { id: dto.counterpartyId } : {}),
+      },
+      ...(dto.status ? { status: dto.status } : {}),
+      ...(dto.counterpartyId ? { counterpartyId: dto.counterpartyId } : {}),
+      ...(dto.search
+        ? { number: { contains: dto.search, mode: 'insensitive' } }
+        : {}),
+      ...(dto.dateFrom || dto.dateTo ? { date: dateFilter } : {}),
+    };
   }
 
   private buildOrderBy(

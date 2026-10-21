@@ -27,7 +27,7 @@ import { PermissionGuard } from '../auth/permission.guard';
 import { RequirePermission } from '../auth/permission.decorator';
 import { BulkInvoicesDto } from './dto/bulk-invoices.dto';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
-import { ListInvoicesDto } from './dto/list-invoices.dto';
+import { InvoiceFiltersDto, ListInvoicesDto } from './dto/list-invoices.dto';
 import { UpdateInvoiceDto } from './dto/update-invoice.dto';
 import { InvoiceService } from './invoice.service';
 
@@ -52,6 +52,16 @@ export class InvoiceController {
   })
   findAll(@Query() dto: ListInvoicesDto, @Request() req) {
     return this.invoiceService.findAll(dto, req.user);
+  }
+
+  @Get('stats')
+  @RequirePermission('invoices:view')
+  @ApiOperation({
+    summary:
+      'KPI counts (total / draft / open / paid) under the same filter set as the list',
+  })
+  stats(@Query() dto: InvoiceFiltersDto, @Request() req) {
+    return this.invoiceService.stats(dto, req.user);
   }
 
   @Get(':id')
