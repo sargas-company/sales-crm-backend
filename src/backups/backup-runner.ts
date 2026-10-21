@@ -22,6 +22,104 @@ import { notifyDiscord, resolveOpsWebhook } from './discord-notify';
  */
 const BACKUP_LOCK_KEY = 7749102301;
 
+/**
+ * Transient B2 (and generic network) failures that are safe to retry.
+ * 429 and 5xx are B2's own documented "retry with backoff" signal
+ * (their maintenance windows return 503 by design). 408 covers client
+ * timeouts that didn't reach the server. The TCP/DNS codes catch
+ * flaky connectivity on our side.
+ */
+const RETRYABLE_HTTP_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const RETRYABLE_NETWORK_CODES = new Set([
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EPIPE',
+]);
+
+interface RetryOpts {
+  tries?: number;
+  baseMs?: number;
+  maxMs?: number;
+  label?: string;
+  log?: (msg: string) => void;
+}
+
+function isRetryable(err: unknown): boolean {
+  const e = err as { response?: { status?: number }; code?: string } | null;
+  if (!e) return false;
+  if (e.response?.status && RETRYABLE_HTTP_STATUS.has(e.response.status)) {
+    return true;
+  }
+  if (e.code && RETRYABLE_NETWORK_CODES.has(e.code)) return true;
+  return false;
+}
+
+function retryAfterMs(err: unknown): number | null {
+  const headers = (err as { response?: { headers?: Record<string, string | string[]> } })
+    ?.response?.headers;
+  if (!headers) return null;
+  const raw = headers['retry-after'] ?? headers['Retry-After'];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (!value) return null;
+  const asInt = Number.parseInt(value, 10);
+  if (Number.isFinite(asInt) && asInt >= 0) return asInt * 1000;
+  const asDate = Date.parse(value);
+  if (Number.isFinite(asDate)) return Math.max(0, asDate - Date.now());
+  return null;
+}
+
+function describeErr(err: unknown): string {
+  const e = err as { response?: { status?: number }; code?: string; message?: string } | null;
+  const bits: string[] = [];
+  if (e?.response?.status) bits.push(`http=${e.response.status}`);
+  if (e?.code) bits.push(`code=${e.code}`);
+  if (e?.message) bits.push(e.message.slice(0, 160));
+  return bits.join(' ') || 'unknown';
+}
+
+/**
+ * Retry wrapper for B2 operations. Honors `Retry-After` when B2 sends
+ * one; otherwise exponential backoff with ±20% jitter capped at
+ * `maxMs`. Non-retryable errors (4xx other than 408/429, programmer
+ * errors) throw on the first failure so we fail fast instead of
+ * burning the whole retry budget on something a retry can't fix.
+ *
+ * Upload-pair callers must do `getUploadUrl` AND `uploadFile` inside
+ * the SAME `fn` passed here, because B2 kills the uploadUrl on any
+ * 5xx and demands a fresh one for the next attempt.
+ */
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  opts: RetryOpts = {},
+): Promise<T> {
+  const tries = opts.tries ?? 7;
+  const baseMs = opts.baseMs ?? 2000;
+  const maxMs = opts.maxMs ?? 10 * 60_000;
+  const label = opts.label ?? 'op';
+  const log = opts.log ?? (() => {});
+
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt === tries || !isRetryable(err)) throw err;
+      const serverHinted = retryAfterMs(err);
+      const expo = Math.min(maxMs, baseMs * 2 ** (attempt - 1));
+      const jittered = expo * (0.8 + Math.random() * 0.4);
+      const sleepMs = Math.min(maxMs, serverHinted ?? jittered);
+      log(
+        `[backup] ${label} attempt ${attempt}/${tries} failed (${describeErr(err)}); sleeping ${Math.round(sleepMs)}ms`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, sleepMs));
+    }
+  }
+  throw lastErr;
+}
+
 export interface BackupRunnerOptions {
   type: BackupType;
   /** Freeform trigger label — e.g. "cron" / "pre-migration" / "cli:<user>". */
@@ -195,45 +293,66 @@ export async function runBackup(
     };
 
     const b2 = deps.b2Factory(creds.keyId, creds.appKey);
-    await b2.authorize();
-    // Artifact upload.
+    const retryLog = (msg: string) => log.log(msg);
+    await retryWithBackoff(() => b2.authorize(), {
+      label: 'authorize',
+      log: retryLog,
+    });
+    // Artifact upload. The uploadUrl+uploadFile pair MUST retry together —
+    // B2 invalidates the uploadUrl on any 5xx and expects a fresh one.
     const artifactBuf = await fs.promises.readFile(dumpPath);
-    const { data: upA } = await b2.getUploadUrl({ bucketId });
-    await b2.uploadFile({
-      uploadUrl: upA.uploadUrl,
-      uploadAuthToken: upA.authorizationToken,
-      fileName: artifactKey,
-      data: artifactBuf,
-      mime: 'application/octet-stream',
-      contentLength: artifactBuf.length,
-    });
-    // Manifest upload.
+    await retryWithBackoff(
+      async () => {
+        const { data: upA } = await b2.getUploadUrl({ bucketId });
+        await b2.uploadFile({
+          uploadUrl: upA.uploadUrl,
+          uploadAuthToken: upA.authorizationToken,
+          fileName: artifactKey,
+          data: artifactBuf,
+          mime: 'application/octet-stream',
+          contentLength: artifactBuf.length,
+        });
+      },
+      { label: 'uploadArtifact', log: retryLog },
+    );
+    // Manifest upload — same atomic uploadUrl+uploadFile contract.
     const manifestBuf = Buffer.from(JSON.stringify(manifest, null, 2), 'utf8');
-    const { data: upM } = await b2.getUploadUrl({ bucketId });
-    await b2.uploadFile({
-      uploadUrl: upM.uploadUrl,
-      uploadAuthToken: upM.authorizationToken,
-      fileName: manifestKey,
-      data: manifestBuf,
-      mime: 'application/json',
-      contentLength: manifestBuf.length,
-    });
+    await retryWithBackoff(
+      async () => {
+        const { data: upM } = await b2.getUploadUrl({ bucketId });
+        await b2.uploadFile({
+          uploadUrl: upM.uploadUrl,
+          uploadAuthToken: upM.authorizationToken,
+          fileName: manifestKey,
+          data: manifestBuf,
+          mime: 'application/json',
+          contentLength: manifestBuf.length,
+        });
+      },
+      { label: 'uploadManifest', log: retryLog },
+    );
 
     // Verification round-trip: download the artifact we just uploaded,
     // re-hash, and run pg_restore --list on the downloaded copy. ONLY
     // after both checks pass do we mark VERIFIED.
     log.log(`[backup] verifying round-trip from ${artifactKey}...`);
-    const dlResp = await (b2 as unknown as {
-      downloadFileByName: (args: {
-        bucketName: string;
-        fileName: string;
-        responseType?: string;
-      }) => Promise<{ data: ArrayBuffer }>;
-    }).downloadFileByName({
-      bucketName,
-      fileName: artifactKey,
-      responseType: 'arraybuffer',
-    });
+    const dlResp = await retryWithBackoff(
+      () =>
+        (
+          b2 as unknown as {
+            downloadFileByName: (args: {
+              bucketName: string;
+              fileName: string;
+              responseType?: string;
+            }) => Promise<{ data: ArrayBuffer }>;
+          }
+        ).downloadFileByName({
+          bucketName,
+          fileName: artifactKey,
+          responseType: 'arraybuffer',
+        }),
+      { label: 'downloadArtifact', log: retryLog },
+    );
     await fs.promises.writeFile(verifyPath, Buffer.from(dlResp.data));
     const roundTripChecksum = await sha256File(verifyPath);
     if (roundTripChecksum !== checksum) {
