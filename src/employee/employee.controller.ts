@@ -45,16 +45,20 @@ export class EmployeeController {
   @Get()
   @RequirePermission('employees:view')
   @ApiOperation({ summary: 'List employees (paged, sorted, searched)' })
-  findAll(@Query() dto: ListEmployeesDto) {
-    return this.employees.findAll(dto);
+  findAll(@Query() dto: ListEmployeesDto, @Request() req) {
+    const canViewSalary: boolean =
+      req.user?.permissions?.has?.('employees:view_salary') ?? false;
+    return this.employees.findAll(dto, { canViewSalary });
   }
 
   @Get(':id')
   @RequirePermission('employees:view')
   @ApiOperation({ summary: 'Get employee by ID' })
   @ApiResponse({ status: 404, description: 'Employee not found' })
-  findOne(@Param('id') id: string) {
-    return this.employees.findOne(id);
+  findOne(@Param('id') id: string, @Request() req) {
+    const canViewSalary: boolean =
+      req.user?.permissions?.has?.('employees:view_salary') ?? false;
+    return this.employees.findOne(id, { canViewSalary });
   }
 
   @Patch(':id')

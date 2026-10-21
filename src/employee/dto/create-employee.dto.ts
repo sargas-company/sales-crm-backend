@@ -40,13 +40,16 @@ export class CreateEmployeeDto {
   @Transform(({ value }) => trim(value))
   lastName: string;
 
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsEmail()
   @MaxLength(160)
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.trim().toLowerCase() : value,
-  )
-  email: string;
+  @Transform(({ value }) => {
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim().toLowerCase();
+    return trimmed.length === 0 ? undefined : trimmed;
+  })
+  email?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -64,7 +67,7 @@ export class CreateEmployeeDto {
   @Transform(({ value }) => trimStrings(value))
   positions?: string[];
 
-  @ApiPropertyOptional({ enum: EmployeeStatus, default: EmployeeStatus.active })
+  @ApiPropertyOptional({ enum: EmployeeStatus, default: EmployeeStatus.ACTIVE })
   @IsOptional()
   @IsEnum(EmployeeStatus)
   status?: EmployeeStatus;

@@ -28,6 +28,12 @@ export const ADMIN_MANAGER_PRESET_KEYS: ReadonlySet<string> = new Set<string>([
   'platforms:update',
   'platforms:delete',
 
+  // Positions catalogue — full CRUD (sibling of Platforms).
+  'positions:view',
+  'positions:create',
+  'positions:update',
+  'positions:delete',
+
   // Accounts — full CRUD.
   'accounts:view',
   'accounts:create',

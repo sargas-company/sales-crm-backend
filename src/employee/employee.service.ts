@@ -19,6 +19,15 @@ import {
 } from './dto/list-employees.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
 
+/** Removes `compensationRates` from an employee row so callers
+ *  without `employees:view_salary` never see the rate. Preserves
+ *  everything else. */
+const stripSalary = <T extends { compensationRates?: unknown }>(row: T): T => {
+  const copy = { ...row };
+  delete (copy as { compensationRates?: unknown }).compensationRates;
+  return copy;
+};
+
 @Injectable()
 export class EmployeeService {
   constructor(
@@ -34,8 +43,11 @@ export class EmployeeService {
           lastName: dto.lastName,
           email: dto.email,
           phone: dto.phone,
-          positions: dto.positions ?? [],
-          status: dto.status ?? 'active',
+          positions: dto.positions && dto.positions.length > 0
+            ? { connect: dto.positions.map((id) => ({ id })) }
+            : undefined,
+          status: dto.status ?? 'ACTIVE',
+          terminatedAt: dto.status === 'TERMINATED' ? new Date() : null,
           hiredAt: dto.hiredAt ? new Date(dto.hiredAt) : null,
           userId: dto.userId ?? null,
           dateOfBirth: dto.dateOfBirth ? new Date(dto.dateOfBirth) : null,
@@ -62,15 +74,43 @@ export class EmployeeService {
     }
   }
 
-  async findAll(dto: ListEmployeesDto) {
+  async findAll(
+    dto: ListEmployeesDto,
+    options: { canViewSalary: boolean } = { canViewSalary: false },
+  ) {
     const page = dto.page ?? 1;
     const limit = dto.limit ?? 20;
     const offset = (page - 1) * limit;
     const dir: Prisma.SortOrder =
       dto.sortDirection ?? EmployeeSortDirection.desc;
 
+    // Birthday-month filter: Prisma has no EXTRACT MONTH operator for
+    // native queries, so pre-resolve matching ids with raw SQL and
+    // intersect via `where.id IN (...)`. Cost is one extra round-trip
+    // only when the filter is applied, which is fine for a directory
+    // table of this size.
+    let birthdayMonthIds: string[] | null = null;
+    if (dto.birthdayMonth !== undefined) {
+      const rows = await this.prisma.$queryRaw<Array<{ id: string }>>(
+        Prisma.sql`
+          SELECT id FROM "Employee"
+          WHERE "dateOfBirth" IS NOT NULL
+            AND EXTRACT(MONTH FROM "dateOfBirth") = ${dto.birthdayMonth}
+        `,
+      );
+      birthdayMonthIds = rows.map((r) => r.id);
+      // Short-circuit: no match → empty result; skip the normal query.
+      if (birthdayMonthIds.length === 0) {
+        return { data: [], total: 0 };
+      }
+    }
+
     const where: Prisma.EmployeeWhereInput = {
       ...(dto.status ? { status: dto.status } : {}),
+      ...(dto.position
+        ? { positions: { some: { id: dto.position } } }
+        : {}),
+      ...(birthdayMonthIds !== null ? { id: { in: birthdayMonthIds } } : {}),
       ...(dto.search
         ? {
             OR: [
@@ -82,26 +122,68 @@ export class EmployeeService {
         : {}),
     };
 
+    // Salary sort can't be expressed through Prisma orderBy because
+    // it reads from a nested EmployeeCompensationRate row filtered by
+    // effectiveDate. For a directory table (<1k rows) the simplest
+    // correct path is to fetch all matching rows, normalise HOURLY→
+    // monthly in Node, sort, then slice.
+    //
+    // If the caller lacks `employees:view_salary`, we silently fall
+    // through to the default date-based sort instead of 403-ing — the
+    // UI shouldn't send `sortBy=salary` for them anyway, this is a
+    // defence-in-depth clamp.
+    if (dto.sortBy === EmployeeSortBy.salary && options.canViewSalary) {
+      const all = await this.prisma.employee.findMany({
+        where,
+        include: this.include(),
+      });
+      const normalized = (e: (typeof all)[number]): number => {
+        const rate = (e as { compensationRates?: Array<{ rate: unknown; rateType: 'HOURLY' | 'MONTHLY' }> }).compensationRates?.[0];
+        if (!rate) return 0;
+        const v = Number(rate.rate);
+        if (!Number.isFinite(v)) return 0;
+        return rate.rateType === 'HOURLY' ? v * 160 : v;
+      };
+      all.sort((a, b) => {
+        const diff = normalized(a) - normalized(b);
+        return dir === 'asc' ? diff : -diff;
+      });
+      return {
+        data: all.slice(offset, offset + limit),
+        total: all.length,
+      };
+    }
+
+    const sortBy =
+      dto.sortBy === EmployeeSortBy.salary && !options.canViewSalary
+        ? undefined
+        : dto.sortBy;
     const [data, total] = await Promise.all([
       this.prisma.employee.findMany({
         where,
-        orderBy: this.buildOrderBy(dto.sortBy, dir),
+        orderBy: this.buildOrderBy(sortBy, dir),
         skip: offset,
         take: limit,
         include: this.include(),
       }),
       this.prisma.employee.count({ where }),
     ]);
-    return { data, total };
+    return {
+      data: options.canViewSalary ? data : data.map(stripSalary),
+      total,
+    };
   }
 
-  async findOne(id: string) {
+  async findOne(
+    id: string,
+    options: { canViewSalary: boolean } = { canViewSalary: false },
+  ) {
     const employee = await this.prisma.employee.findUnique({
       where: { id },
       include: this.include(),
     });
     if (!employee) throw new NotFoundException('Employee not found');
-    return employee;
+    return options.canViewSalary ? employee : stripSalary(employee);
   }
 
   async update(id: string, dto: UpdateEmployeeDto, actorId: string) {
@@ -127,9 +209,28 @@ export class EmployeeService {
           ...(dto.email !== undefined ? { email: dto.email } : {}),
           ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
           ...(dto.positions !== undefined
-            ? { positions: dto.positions ?? [] }
+            ? {
+                positions: {
+                  set: (dto.positions ?? []).map((id) => ({ id })),
+                },
+              }
             : {}),
-          ...(dto.status !== undefined ? { status: dto.status } : {}),
+          ...(dto.status !== undefined
+            ? {
+                status: dto.status,
+                // Keep `terminatedAt` in sync with lifecycle: stamp on
+                // the ACTIVE/BENCH → TERMINATED edge, clear on the way
+                // back. Omit the field entirely when status itself
+                // isn't moving to avoid overwriting a prior timestamp
+                // on a no-op PATCH.
+                terminatedAt:
+                  dto.status === 'TERMINATED'
+                    ? existing.status === 'TERMINATED'
+                      ? undefined
+                      : new Date()
+                    : null,
+              }
+            : {}),
           ...(dto.hiredAt !== undefined
             ? { hiredAt: dto.hiredAt ? new Date(dto.hiredAt) : null }
             : {}),
@@ -201,6 +302,10 @@ export class EmployeeService {
     return {
       user: {
         select: { id: true, email: true, firstName: true, lastName: true },
+      },
+      positions: {
+        select: { id: true, title: true, slug: true },
+        orderBy: { title: 'asc' },
       },
       /* Current compensation rate = most recent EmployeeCompensationRate
        * whose effectiveDate has already arrived. One row max — the

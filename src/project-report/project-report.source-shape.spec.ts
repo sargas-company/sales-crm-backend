@@ -42,7 +42,7 @@ beforeAll(async () => {
       lastName: TAG,
       email: `${TAG}@test.local`,
       positions: [],
-      status: 'active',
+      status: 'ACTIVE',
     },
     select: { id: true },
   });

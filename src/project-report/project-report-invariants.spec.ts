@@ -40,7 +40,7 @@ beforeAll(async () => {
       lastName: `${TAG}-A`,
       email: `${TAG}-a@test.local`,
       positions: [],
-      status: 'active',
+      status: 'ACTIVE',
     },
     select: { id: true },
   });
@@ -50,7 +50,7 @@ beforeAll(async () => {
       lastName: `${TAG}-B`,
       email: `${TAG}-b@test.local`,
       positions: [],
-      status: 'active',
+      status: 'ACTIVE',
     },
     select: { id: true },
   });

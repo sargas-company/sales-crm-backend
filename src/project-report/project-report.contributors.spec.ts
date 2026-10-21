@@ -67,7 +67,7 @@ async function makeFixture(opts: {
           lastName: `${TAG}-${randomUUID().slice(0, 4)}`,
           email: `${TAG}-${randomUUID().slice(0, 6)}@test.local`,
           positions: [],
-          status: 'active',
+          status: 'ACTIVE',
         },
         select: { id: true },
       }),
@@ -206,7 +206,7 @@ describe('snapshot is immutable after create', () => {
         lastName: `${TAG}-newcomer`,
         email: `${TAG}-newcomer-${randomUUID().slice(0, 4)}@test.local`,
         positions: [],
-        status: 'active',
+        status: 'ACTIVE',
       },
       select: { id: true },
     });

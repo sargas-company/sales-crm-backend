@@ -177,6 +177,24 @@ model Platform {
   clients   Client[]
 }
 
+// ─── Position ────────────────────────────────────────────────────────────────
+//
+// Managed catalogue of employee role titles. `Employee.positions` is
+// still a free `String[]` and is matched to this catalogue by title at
+// the UI layer, so legacy employee rows that reference positions NOT
+// in the catalogue still render. Converting the Employee.positions
+// column to a proper join table is a separate task.
+
+model Position {
+  id        String   @id @default(uuid())
+  title     String   @unique
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employees Employee[]
+}
+
 // ─── Account ─────────────────────────────────────────────────────────────────
 
 model Account {
@@ -878,19 +896,28 @@ model SettingValue {
 // ─── Employees ───────────────────────────────────────────────────────────────
 
 enum EmployeeStatus {
-  active
-  inactive
+  ACTIVE
+  BENCH
+  TERMINATED
 }
 
 model Employee {
   id        String         @id @default(uuid())
   firstName String
   lastName  String
-  email     String         @unique
+  // Email is optional for the directory record (Employee ≠ User —
+  // the auth account carries its own required email). Keeps @unique
+  // so duplicates still blocked when provided; Postgres allows
+  // multiple NULLs in a unique index.
+  email     String?        @unique
   phone     String?
-  positions String[]
-  status    EmployeeStatus @default(active)
+  positions Position[]
+  status    EmployeeStatus @default(ACTIVE)
   hiredAt   DateTime?
+  // Stamped automatically when `status` transitions to TERMINATED;
+  // cleared when the employee is reactivated (ACTIVE / BENCH). Used
+  // for "archive" filters derived from age.
+  terminatedAt DateTime?
   // Day/Month only matter for the birthday notification; the year is
   // kept for display convenience. Nullable so legacy rows survive.
   dateOfBirth DateTime?    @db.Date

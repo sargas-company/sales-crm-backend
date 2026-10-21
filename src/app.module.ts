@@ -16,6 +16,7 @@ import { CounterpartyModule } from './counterparty/counterparty.module';
 import { InvoiceModule } from './invoice/invoice.module';
 import { SettingsModule } from './settings/settings.module';
 import { PlatformModule } from './platform/platform.module';
+import { PositionModule } from './position/position.module';
 import { AnthropicModule } from './anthropic/anthropic.module';
 import { JobPostModule } from './job-post/job-post.module';
 import { LeadModule } from './lead/lead.module';
@@ -69,6 +70,7 @@ import { LiveEventsModule } from './live-events/live-events.module';
     AuthModule,
     RolesModule,
     PlatformModule,
+    PositionModule,
     AccountModule,
     ProposalModule,
     PromptModule,

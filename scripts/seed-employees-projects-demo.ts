@@ -132,20 +132,20 @@ const EMPLOYEES: Array<{
   hiredMonthsAgo: number;
   phone?: string;
 }> = [
-  { firstName: 'Alice',   lastName: 'Whitaker', positions: ['Manager'], status: 'active', hiredMonthsAgo: 40, phone: '+380 44 200 10 01' },
-  { firstName: 'Bohdan',  lastName: 'Melnyk',   positions: ['Lead Developer', 'Developer'], status: 'active', hiredMonthsAgo: 34, phone: '+380 44 200 10 02' },
-  { firstName: 'Catalina', lastName: 'Rojas',   positions: ['Developer'], status: 'active', hiredMonthsAgo: 22 },
-  { firstName: 'Devin',   lastName: 'Okafor',   positions: ['Developer', 'DevOps'], status: 'active', hiredMonthsAgo: 28, phone: '+1 415 555 0134' },
-  { firstName: 'Elena',   lastName: 'Kravets',  positions: ['QA'], status: 'active', hiredMonthsAgo: 18 },
-  { firstName: 'Farrukh', lastName: 'Nazarov',  positions: ['Developer'], status: 'active', hiredMonthsAgo: 12 },
-  { firstName: 'Gwen',    lastName: 'Iversen',  positions: ['Designer'], status: 'active', hiredMonthsAgo: 26, phone: '+45 30 12 34 56' },
-  { firstName: 'Hikari',  lastName: 'Tanaka',   positions: ['Designer', 'QA'], status: 'active', hiredMonthsAgo: 14 },
-  { firstName: 'Ivo',     lastName: 'Pereira',  positions: ['DevOps'], status: 'active', hiredMonthsAgo: 30, phone: '+351 21 000 0000' },
-  { firstName: 'Julia',   lastName: 'Reinhardt', positions: ['Manager', 'Lead Developer'], status: 'active', hiredMonthsAgo: 46 },
-  { firstName: 'Kaan',    lastName: 'Yavuz',    positions: ['Developer'], status: 'active', hiredMonthsAgo: 8 },
-  { firstName: 'Liam',    lastName: 'Fitzpatrick', positions: ['QA', 'Developer'], status: 'inactive', hiredMonthsAgo: 55 },
-  { firstName: 'Maya',    lastName: 'Bergström', positions: ['Designer'], status: 'inactive', hiredMonthsAgo: 20 },
-  { firstName: 'Nikolai', lastName: 'Voronov',  positions: ['Lead Developer'], status: 'active', hiredMonthsAgo: 38, phone: '+7 495 000 00 00' },
+  { firstName: 'Alice',   lastName: 'Whitaker', positions: ['Manager'], status: 'ACTIVE', hiredMonthsAgo: 40, phone: '+380 44 200 10 01' },
+  { firstName: 'Bohdan',  lastName: 'Melnyk',   positions: ['Lead Developer', 'Developer'], status: 'ACTIVE', hiredMonthsAgo: 34, phone: '+380 44 200 10 02' },
+  { firstName: 'Catalina', lastName: 'Rojas',   positions: ['Developer'], status: 'ACTIVE', hiredMonthsAgo: 22 },
+  { firstName: 'Devin',   lastName: 'Okafor',   positions: ['Developer', 'DevOps'], status: 'ACTIVE', hiredMonthsAgo: 28, phone: '+1 415 555 0134' },
+  { firstName: 'Elena',   lastName: 'Kravets',  positions: ['QA'], status: 'ACTIVE', hiredMonthsAgo: 18 },
+  { firstName: 'Farrukh', lastName: 'Nazarov',  positions: ['Developer'], status: 'ACTIVE', hiredMonthsAgo: 12 },
+  { firstName: 'Gwen',    lastName: 'Iversen',  positions: ['Designer'], status: 'ACTIVE', hiredMonthsAgo: 26, phone: '+45 30 12 34 56' },
+  { firstName: 'Hikari',  lastName: 'Tanaka',   positions: ['Designer', 'QA'], status: 'ACTIVE', hiredMonthsAgo: 14 },
+  { firstName: 'Ivo',     lastName: 'Pereira',  positions: ['DevOps'], status: 'ACTIVE', hiredMonthsAgo: 30, phone: '+351 21 000 0000' },
+  { firstName: 'Julia',   lastName: 'Reinhardt', positions: ['Manager', 'Lead Developer'], status: 'ACTIVE', hiredMonthsAgo: 46 },
+  { firstName: 'Kaan',    lastName: 'Yavuz',    positions: ['Developer'], status: 'ACTIVE', hiredMonthsAgo: 8 },
+  { firstName: 'Liam',    lastName: 'Fitzpatrick', positions: ['QA', 'Developer'], status: 'TERMINATED', hiredMonthsAgo: 55 },
+  { firstName: 'Maya',    lastName: 'Bergström', positions: ['Designer'], status: 'TERMINATED', hiredMonthsAgo: 20 },
+  { firstName: 'Nikolai', lastName: 'Voronov',  positions: ['Lead Developer'], status: 'ACTIVE', hiredMonthsAgo: 38, phone: '+7 495 000 00 00' },
 ];
 
 // Extra demo clients — used only when the workspace has fewer than 4
@@ -328,7 +328,15 @@ async function main() {
           lastName: e.lastName,
           email,
           phone: e.phone ?? null,
-          positions: e.positions.slice(),
+          positions: {
+            connectOrCreate: e.positions.map((title) => ({
+              where: { title },
+              create: {
+                title,
+                slug: title.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''),
+              },
+            })),
+          },
           status: e.status,
           hiredAt,
         },

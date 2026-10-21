@@ -238,7 +238,7 @@ export class DiscordSchedulersService {
       where: {
         startDate: { lte: today },
         endDate: { gte: today },
-        employee: { status: 'active' },
+        employee: { status: 'ACTIVE' },
       },
       include: {
         employee: { select: { id: true, firstName: true, lastName: true } },

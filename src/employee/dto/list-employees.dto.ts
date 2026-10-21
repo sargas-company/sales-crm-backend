@@ -6,6 +6,8 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  IsUUID,
+  Max,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -18,6 +20,12 @@ export enum EmployeeSortBy {
   hiredAt = 'hiredAt',
   createdAt = 'createdAt',
   updatedAt = 'updatedAt',
+  // Sorts by the employee's CURRENT compensation rate — most recent
+  // EmployeeCompensationRate whose effectiveDate has already arrived,
+  // normalised to a monthly figure (hourly * 160). Rows with no
+  // compensation history are treated as 0 and sorted last. Handled
+  // in-memory because Prisma can't orderBy a nested row's field.
+  salary = 'salary',
 }
 
 export enum EmployeeSortDirection {
@@ -69,4 +77,24 @@ export class ListEmployeesDto {
   @IsOptional()
   @IsEnum(EmployeeStatus)
   status?: EmployeeStatus;
+
+  @ApiPropertyOptional({
+    description: 'Position catalogue UUID — matches employees whose positions include this id.',
+  })
+  @IsOptional()
+  @IsUUID()
+  position?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Calendar month (1 = Jan, 12 = Dec). Filters employees whose dateOfBirth falls in this month, regardless of year.',
+    minimum: 1,
+    maximum: 12,
+  })
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(1)
+  @Max(12)
+  birthdayMonth?: number;
 }
