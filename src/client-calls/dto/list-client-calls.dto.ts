@@ -8,6 +8,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+import { ClientCallClientType, ClientCallStatus } from '@prisma/client';
 
 export enum ClientCallSortBy {
   callTitle = 'callTitle',
@@ -61,4 +62,14 @@ export class ListClientCallsDto {
     typeof value === 'string' ? value.trim() || undefined : value,
   )
   search?: string;
+
+  @ApiPropertyOptional({ enum: ClientCallStatus })
+  @IsOptional()
+  @IsEnum(ClientCallStatus)
+  status?: ClientCallStatus;
+
+  @ApiPropertyOptional({ enum: ClientCallClientType })
+  @IsOptional()
+  @IsEnum(ClientCallClientType)
+  clientType?: ClientCallClientType;
 }

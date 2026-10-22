@@ -285,9 +285,15 @@ export class ClientCallsService {
     const dir: Prisma.SortOrder =
       dto.sortDirection ?? ClientCallSortDirection.desc;
 
-    const where: Prisma.ClientCallWhereInput = dto.search
-      ? { callTitle: { contains: dto.search, mode: 'insensitive' } }
-      : {};
+    const where: Prisma.ClientCallWhereInput = {
+      AND: [
+        dto.search
+          ? { callTitle: { contains: dto.search, mode: 'insensitive' } }
+          : {},
+        dto.status ? { status: dto.status } : {},
+        dto.clientType ? { clientType: dto.clientType } : {},
+      ],
+    };
 
     const orderBy = this.buildOrderBy(dto.sortBy, dir);
 
