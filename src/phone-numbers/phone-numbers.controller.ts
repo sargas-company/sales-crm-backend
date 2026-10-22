@@ -25,6 +25,7 @@ import { CreatePhoneNumberDto } from './dto/create-phone-number.dto';
 import { UpdatePhoneNumberDto } from './dto/update-phone-number.dto';
 import { CreatePhoneBindingDto } from './dto/create-phone-binding.dto';
 import { UpdatePhoneBindingDto } from './dto/update-phone-binding.dto';
+import { MoveBoardSlotDto } from './dto/move-board-slot.dto';
 import {
   CompleteMaintenanceDto,
   SkipMaintenanceDto,
@@ -101,6 +102,20 @@ export class PhoneNumbersController {
   @ApiOperation({ summary: 'Disable (archive) the phone number.' })
   disable(@Param('id') id: string, @Request() req) {
     return this.svc.disable(id, req.user.id);
+  }
+
+  @Post(':id/board-slot')
+  @RequirePermission('phone_numbers:update')
+  @ApiOperation({
+    summary:
+      'Move a phone number to a slot on the physical board. If the target slot is already occupied, the two cards are swapped in one transaction. `slot: null` unassigns.',
+  })
+  moveBoardSlot(
+    @Param('id') id: string,
+    @Body() dto: MoveBoardSlotDto,
+    @Request() req,
+  ) {
+    return this.svc.moveBoardSlot(id, dto.slot, req.user.id);
   }
 
   // ─── Bindings ──────────────────────────────────────────────────

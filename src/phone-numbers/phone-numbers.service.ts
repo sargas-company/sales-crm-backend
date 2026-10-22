@@ -292,6 +292,72 @@ export class PhoneNumbersService {
     });
   }
 
+  /**
+   * Move a phone card to a slot on the physical board. If the target
+   * slot holds another card, the two swap positions in a single
+   * transaction — never a bare "one card gets kicked off, the other
+   * takes over" race. `slot: null` unassigns without touching anyone
+   * else.
+   */
+  async moveBoardSlot(
+    id: string,
+    slot: number | null,
+    actorId: string,
+  ): Promise<void> {
+    const existing = await this.prisma.phoneNumber.findUnique({
+      where: { id },
+      select: { id: true, number: true, boardSlot: true },
+    });
+    if (!existing) throw new NotFoundException('Phone number not found');
+    if (slot !== null && !Number.isInteger(slot)) {
+      throw new BadRequestException('slot must be an integer or null');
+    }
+    if (slot !== null && slot < 0) {
+      throw new BadRequestException('slot must be >= 0');
+    }
+    const before = existing.boardSlot;
+    if (before === slot) return; // no-op
+
+    await this.prisma.$transaction(async (tx) => {
+      if (slot !== null) {
+        const occupant = await tx.phoneNumber.findFirst({
+          where: { boardSlot: slot, NOT: { id } },
+          select: { id: true, number: true },
+        });
+        if (occupant) {
+          // Two-phase: null the occupant first to avoid the unique
+          // partial index tripping during the swap, then write both
+          // final positions.
+          await tx.phoneNumber.update({
+            where: { id: occupant.id },
+            data: { boardSlot: null },
+          });
+          await tx.phoneNumber.update({
+            where: { id },
+            data: { boardSlot: slot },
+          });
+          await tx.phoneNumber.update({
+            where: { id: occupant.id },
+            data: { boardSlot: before },
+          });
+          return;
+        }
+      }
+      await tx.phoneNumber.update({ where: { id }, data: { boardSlot: slot } });
+    });
+
+    await this.audit.recordSafe({
+      actorUserId: actorId,
+      domain: 'SETTINGS',
+      action: 'phone.board_slot.move',
+      targetType: 'PhoneNumber',
+      targetId: id,
+      targetLabel: maskPhone(existing.number),
+      result: AuditResult.SUCCESS,
+      changes: { boardSlot: { before, after: slot } },
+    });
+  }
+
   // ─── Bindings ─────────────────────────────────────────────────────
 
   async listBindings(query: {

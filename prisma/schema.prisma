@@ -1743,6 +1743,12 @@ model PhoneNumber {
   lastNetworkRegistrationAt DateTime?
   nextMaintenanceAt         DateTime?
   notes                     String?
+  /// Position on the physical SIM-card board (0-indexed slot). NULL
+  /// means "not placed on the board yet" (visible in the Unassigned
+  /// list on the Board page). PostgreSQL treats NULLs as distinct in
+  /// unique indexes, so @unique already enforces one-card-per-slot
+  /// while allowing many unassigned rows.
+  boardSlot                 Int?           @unique
   createdAt                 DateTime       @default(now())
   updatedAt                 DateTime       @updatedAt
 
