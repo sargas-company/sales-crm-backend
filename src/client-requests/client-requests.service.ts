@@ -159,6 +159,10 @@ export class ClientRequestsService {
             `Client request file "${f.originalName}" has no resolvable key`,
           );
         }
+        // Force browser-side "save as" instead of inline preview — HTML,
+        // SVG, text, images and PDFs all open inline otherwise, which
+        // the preview UI's download button is not supposed to do.
+        const disposition = `attachment; filename*=UTF-8''${encodeURIComponent(f.originalName)}`;
         return {
           originalName: f.originalName,
           mimetype: f.mimetype,
@@ -166,6 +170,8 @@ export class ClientRequestsService {
           url: await this.storage.getDownloadUrl(
             StorageBucket.CLIENT_REQUESTS,
             key,
+            undefined,
+            disposition,
           ),
         };
       }),
