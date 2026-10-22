@@ -215,7 +215,7 @@ export class DiscordSchedulersService {
     const employees = await this.prisma.$queryRaw<Array<{ name: string }>>`
       SELECT ("firstName" || ' ' || "lastName") AS "name"
         FROM "Employee"
-       WHERE status = 'active'
+       WHERE status = 'ACTIVE'
          AND "dateOfBirth" IS NOT NULL
          AND EXTRACT(MONTH FROM "dateOfBirth") = ${month}
          AND EXTRACT(DAY FROM "dateOfBirth") = ${day}
