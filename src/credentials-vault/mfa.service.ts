@@ -140,6 +140,11 @@ export class MfaService {
         id: `totp:${userId}`,
         userId,
         type: MfaFactorType.TOTP,
+        // `transports` is NOT NULL on the table and its DB default was
+        // dropped in 20261012000000_audit_event_extended — Prisma does
+        // not auto-fill scalar arrays on create, so we must send `[]`
+        // explicitly or Postgres rejects with P2011.
+        transports: [],
         encTotpSeed: enc.ciphertext,
         totpIv: enc.iv,
         totpAuthTag: enc.authTag,
@@ -361,6 +366,8 @@ export class MfaService {
         data: {
           userId,
           type: MfaFactorType.RECOVERY,
+          // Same NOT-NULL-no-default caveat as the TOTP upsert above.
+          transports: [],
           codeHash: hashed,
           codeIndex: i + 1,
         },

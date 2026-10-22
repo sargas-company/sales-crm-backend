@@ -48,21 +48,24 @@ export class CredentialsProfileController {
 
   @Get()
   @RequirePermission('credentials:view')
-  @ApiOperation({ summary: 'List credential profiles (safe metadata only)' })
+  @UseGuards(VaultSessionGuard)
+  @ApiOperation({ summary: 'List credential profiles (metadata only, requires active vault session)' })
   list(@Query() query: ListCredentialProfilesDto) {
     return this.service.list(query);
   }
 
   @Get(':id')
   @RequirePermission('credentials:view')
-  @ApiOperation({ summary: 'Get one profile (safe metadata only)' })
+  @UseGuards(VaultSessionGuard)
+  @ApiOperation({ summary: 'Get one profile (metadata only, requires active vault session)' })
   getOne(@Param('id') id: string) {
     return this.service.getOne(id);
   }
 
   @Post()
   @RequirePermission('credentials:create')
-  @ApiOperation({ summary: 'Create a profile' })
+  @UseGuards(VaultSessionGuard)
+  @ApiOperation({ summary: 'Create a profile (requires active vault session)' })
   create(
     @Body() dto: CreateCredentialProfileDto,
     @Req() req: Request & { user: AuthUser },
@@ -72,7 +75,8 @@ export class CredentialsProfileController {
 
   @Patch(':id')
   @RequirePermission('credentials:update')
-  @ApiOperation({ summary: 'Update a profile' })
+  @UseGuards(VaultSessionGuard)
+  @ApiOperation({ summary: 'Update a profile (requires active vault session)' })
   update(
     @Param('id') id: string,
     @Body() dto: UpdateCredentialProfileDto,
@@ -81,32 +85,16 @@ export class CredentialsProfileController {
     return this.service.update(id, dto, req.user, requestContext(req));
   }
 
-  @Post(':id/archive')
-  @RequirePermission('credentials:archive')
-  @ApiOperation({ summary: 'Archive a profile' })
-  archive(
-    @Param('id') id: string,
-    @Req() req: Request & { user: AuthUser },
-  ) {
-    return this.service.archive(id, req.user, requestContext(req));
-  }
-
-  @Post(':id/restore')
-  @RequirePermission('credentials:archive')
-  @ApiOperation({ summary: 'Restore an archived profile' })
-  restore(
-    @Param('id') id: string,
-    @Req() req: Request & { user: AuthUser },
-  ) {
-    return this.service.restore(id, req.user, requestContext(req));
-  }
+  // Archive / Restore endpoints stay disabled per owner spec. The
+  // hard-delete route is back (Owner only + typed confirmation + fresh
+  // MFA step-up + Discord notif).
 
   @Delete(':id')
   @RequirePermission('credentials:hard_delete')
   @UseGuards(VaultSessionGuard)
   @ApiOperation({
     summary:
-      'Hard delete (Owner). Requires an active vault session, typed profile-name confirmation AND a fresh MFA step-up (`mfa.code` / `mfa.assertion`).',
+      'Hard delete profile (Owner). Requires active vault session, typed profile-name confirmation AND a fresh MFA step-up. Cascades to accounts, versions, audit refs. Fires Discord notif.',
   })
   async hardDelete(
     @Param('id') id: string,
@@ -117,11 +105,6 @@ export class CredentialsProfileController {
     return this.service.hardDelete(id, dto, req.user, requestContext(req));
   }
 
-  /**
-   * Hard delete on either a Profile or an Account requires a fresh MFA
-   * proof — the active vault session alone is not sufficient. Either a
-   * live TOTP or a live WebAuthn assertion is accepted.
-   */
   private async requireFreshMfa(
     userId: string,
     mfa?: {

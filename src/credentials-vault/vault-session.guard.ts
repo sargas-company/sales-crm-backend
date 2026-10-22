@@ -37,12 +37,37 @@ export class VaultSessionGuard implements CanActivate {
       throw new UnauthorizedException('Not authenticated');
     }
     const token = req.cookies?.[VAULT_SESSION_COOKIE];
-    if (!token) throw new UnauthorizedException('Vault session missing');
-    const session = await this.sessions.verify({
-      token,
-      userId: req.user.id,
-    });
-    req.vaultSession = session;
-    return true;
+    if (!token) throw vaultSessionRequired('Vault session missing');
+    try {
+      const session = await this.sessions.verify({
+        token,
+        userId: req.user.id,
+      });
+      req.vaultSession = session;
+      return true;
+    } catch (err) {
+      // Any failure from .verify (expired, revoked, user mismatch,
+      // tampered token) collapses to the single "step-up required"
+      // signal the frontend understands — the specifics live in the
+      // audit log, not in the HTTP body.
+      throw vaultSessionRequired(
+        err instanceof Error ? err.message : 'Vault session invalid',
+      );
+    }
   }
+}
+
+/**
+ * Distinguishable 401 so the frontend can tell "vault locked / needs
+ * step-up" apart from "app JWT expired / login again". The frontend
+ * baseApi interceptor keys off `code === 'VAULT_SESSION_REQUIRED'`
+ * to pop the unlock drawer in place rather than kicking the user to
+ * the sign-in page.
+ */
+function vaultSessionRequired(message: string): UnauthorizedException {
+  return new UnauthorizedException({
+    statusCode: 401,
+    code: 'VAULT_SESSION_REQUIRED',
+    message,
+  });
 }

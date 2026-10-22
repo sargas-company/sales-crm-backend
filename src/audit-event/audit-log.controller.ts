@@ -355,10 +355,6 @@ export class AuditLogController {
     ];
     if (accountIds.length > 0) {
       ors.push({ targetType: 'CredentialAccount', targetId: { in: accountIds } });
-      // Attachment events carry `accountId` in metadata — grab everything
-      // tagged as an attachment and filter by metadata in-memory. The
-      // dataset is small (one profile).
-      ors.push({ targetType: 'CredentialAttachment' });
     }
 
     const rows = await this.prisma.auditEvent.findMany({
@@ -370,12 +366,6 @@ export class AuditLogController {
       take: 200,
     });
 
-    const accountIdSet = new Set(accountIds);
-    const scoped = rows.filter((e) => {
-      if (e.targetType !== 'CredentialAttachment') return true;
-      const metaAccount = (e.metadata as Record<string, unknown> | null)?.accountId;
-      return typeof metaAccount === 'string' && accountIdSet.has(metaAccount);
-    });
-    return { data: scoped };
+    return { data: rows };
   }
 }

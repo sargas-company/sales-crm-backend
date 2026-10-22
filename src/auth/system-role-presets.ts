@@ -97,6 +97,11 @@ export const ADMIN_MANAGER_PRESET_KEYS: ReadonlySet<string> = new Set<string>([
 
   // Employees — view-only (lifecycle stays Owner-only).
   'employees:view',
+  // Attachments: Admin Manager (HR-adjacent) can view/upload/delete
+  // files on employee records (passport scans, contracts etc).
+  'employees:attachments:view',
+  'employees:attachments:create',
+  'employees:attachments:delete',
 
   // Projects + reports — full CRUD plus view_any elevator.
   'projects:view',
@@ -104,6 +109,10 @@ export const ADMIN_MANAGER_PRESET_KEYS: ReadonlySet<string> = new Set<string>([
   'projects:update',
   'projects:delete',
   'projects:view_any',
+  // Attachments: project files (briefs, assets, contracts).
+  'projects:attachments:view',
+  'projects:attachments:create',
+  'projects:attachments:delete',
   'project_reports:view',
   'project_reports:create',
   'project_reports:update',
@@ -141,7 +150,6 @@ export const ADMIN_MANAGER_PRESET_KEYS: ReadonlySet<string> = new Set<string>([
   'credentials:update',
   'credentials:archive',
   'credentials:reveal',
-  'credentials:attachments',
   'credential_audit:view',
 
   // Phone Numbers — full operational access, including maintenance.

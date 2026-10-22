@@ -10,6 +10,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+import { ProjectReportSource } from '@prisma/client';
 
 export enum ProjectReportSortBy {
   reportDate = 'reportDate',
@@ -78,4 +79,13 @@ export class ListProjectReportsDto {
   @IsOptional()
   @IsDateString()
   to?: string;
+
+  @ApiPropertyOptional({
+    enum: ProjectReportSource,
+    description:
+      'Submission channel: MANUAL (CRM form) or DISCORD (/report).',
+  })
+  @IsOptional()
+  @IsEnum(ProjectReportSource)
+  source?: ProjectReportSource;
 }

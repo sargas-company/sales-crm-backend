@@ -46,8 +46,8 @@ export class ClientService {
       data: {
         firstName: dto.firstName,
         lastName: dto.lastName,
-        company: dto.company,
-        email: dto.email,
+        company: dto.company ?? null,
+        email: dto.email ?? null,
         phone: dto.phone ?? null,
         source: dto.source ?? null,
         profileUrl: dto.profileUrl ?? null,

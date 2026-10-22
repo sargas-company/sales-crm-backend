@@ -1,4 +1,4 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
   IsEmail,
@@ -40,17 +40,19 @@ const normalisePhone = ({ value }: { value: unknown }): unknown => {
 };
 
 export class CreateLeadDto {
-  @ApiPropertyOptional({ example: 'John' })
-  @IsOptional()
+  @ApiProperty({ example: 'John' })
   @IsString()
   @MinLength(1)
-  firstName?: string;
+  @MaxLength(80)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  firstName: string;
 
-  @ApiPropertyOptional({ example: 'Doe' })
-  @IsOptional()
+  @ApiProperty({ example: 'Doe' })
   @IsString()
   @MinLength(1)
-  lastName?: string;
+  @MaxLength(80)
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  lastName: string;
 
   @ApiPropertyOptional({ example: 'Acme Corp' })
   @IsOptional()

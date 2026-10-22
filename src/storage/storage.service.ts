@@ -43,6 +43,10 @@ const DEFAULT_TTL_SECONDS: Record<StorageBucket, number> = {
   [StorageBucket.CLIENT_REQUESTS]: 15 * 60,
   [StorageBucket.INVOICES]: 15 * 60,
   [StorageBucket.DB_DUMPS]: 15 * 60,
+  // Employee docs: short-lived URL — HR opens, downloads, done.
+  [StorageBucket.EMPLOYEE_ATTACHMENTS]: 60,
+  // Project docs mirror the employee shape.
+  [StorageBucket.PROJECT_ATTACHMENTS]: 60,
 };
 
 const TTL_ENV_KEY: Record<StorageBucket, string> = {
@@ -51,6 +55,10 @@ const TTL_ENV_KEY: Record<StorageBucket, string> = {
   [StorageBucket.CLIENT_REQUESTS]: 'B2_SIGNED_TTL_CLIENT_REQUESTS_SECONDS',
   [StorageBucket.INVOICES]: 'B2_SIGNED_TTL_INVOICES_SECONDS',
   [StorageBucket.DB_DUMPS]: 'B2_SIGNED_TTL_DB_DUMPS_SECONDS',
+  [StorageBucket.EMPLOYEE_ATTACHMENTS]:
+    'B2_SIGNED_TTL_EMPLOYEE_ATTACHMENTS_SECONDS',
+  [StorageBucket.PROJECT_ATTACHMENTS]:
+    'B2_SIGNED_TTL_PROJECT_ATTACHMENTS_SECONDS',
 };
 
 @Injectable()
@@ -205,11 +213,17 @@ export class StorageService implements OnModuleInit {
   /**
    * Returns a short-lived download URL for the given key. Defaults to
    * the bucket's configured TTL; callers may override.
+   *
+   * `contentDisposition`, when provided, is signed INTO the auth AND
+   * appended to the URL as the matching `b2ContentDisposition` query
+   * parameter. B2 rejects mismatched/unsigned additions, so the two
+   * must stay in lockstep.
    */
   async getDownloadUrl(
     bucket: StorageBucket,
     fileName: string,
     expiresInSeconds?: number,
+    contentDisposition?: string,
   ): Promise<string> {
     const ttl = Math.max(1, expiresInSeconds ?? this.getBucketTtl(bucket));
     const { id: bucketId, name: bucketName } = this.getBucketConfig(bucket);
@@ -218,11 +232,17 @@ export class StorageService implements OnModuleInit {
       bucketId,
       fileNamePrefix: fileName,
       validDurationInSeconds: ttl,
+      ...(contentDisposition
+        ? { b2ContentDisposition: contentDisposition }
+        : {}),
     });
 
-    return `${this.downloadUrl}/file/${bucketName}/${this.encodePath(
+    const base = `${this.downloadUrl}/file/${bucketName}/${this.encodePath(
       fileName,
     )}?Authorization=${data.authorizationToken}`;
+    return contentDisposition
+      ? `${base}&b2ContentDisposition=${encodeURIComponent(contentDisposition)}`
+      : base;
   }
 
   /**
@@ -320,6 +340,14 @@ export class StorageService implements OnModuleInit {
       [StorageBucket.AVATARS]: {
         id: 'B2_BUCKET_AVATARS_ID',
         name: 'B2_BUCKET_AVATARS_NAME',
+      },
+      [StorageBucket.EMPLOYEE_ATTACHMENTS]: {
+        id: 'B2_BUCKET_EMPLOYEE_ATTACHMENTS_ID',
+        name: 'B2_BUCKET_EMPLOYEE_ATTACHMENTS_NAME',
+      },
+      [StorageBucket.PROJECT_ATTACHMENTS]: {
+        id: 'B2_BUCKET_PROJECT_ATTACHMENTS_ID',
+        name: 'B2_BUCKET_PROJECT_ATTACHMENTS_NAME',
       },
     };
     const keys = envKeys[bucket];

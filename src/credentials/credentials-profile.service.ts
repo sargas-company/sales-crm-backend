@@ -39,11 +39,14 @@ const PROFILE_SAFE_SELECT = {
 
 const HARD_DELETE_KEY = 'credentials:hard_delete';
 
+import { CredentialChangeNotifierService } from './credential-change-notifier.service';
+
 @Injectable()
 export class CredentialsProfileService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditEventService,
+    private readonly notifier: CredentialChangeNotifierService,
   ) {}
 
   async list(query: ListCredentialProfilesDto) {
@@ -269,6 +272,11 @@ export class CredentialsProfileService {
       result: AuditResult.SUCCESS,
       metadata: { accountsRemoved: existing._count.accounts },
       ...context,
+    });
+    void this.notifier.notify({
+      kind: 'profile_hard_deleted',
+      profileName: existing.name,
+      actorUserId: actor.id,
     });
     return { id: existing.id };
   }

@@ -4,6 +4,8 @@ export enum StorageBucket {
   DB_DUMPS = 'DB_DUMPS',
   PORTFOLIO = 'PORTFOLIO',
   AVATARS = 'AVATARS',
+  EMPLOYEE_ATTACHMENTS = 'EMPLOYEE_ATTACHMENTS',
+  PROJECT_ATTACHMENTS = 'PROJECT_ATTACHMENTS',
 }
 
 export interface StorageUploadOptions {

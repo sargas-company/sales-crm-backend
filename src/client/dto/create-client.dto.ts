@@ -35,12 +35,12 @@ const trim = (value: unknown): string | undefined | null => {
 };
 
 /**
- * Create-client DTO (rev-5 2026-10-12 — Client-zone contract parity
- * with Lead-zone):
+ * Create-client DTO (rev-6 2026-10-22 — only identity is required):
  *
- * - firstName / lastName / company / email are REQUIRED. The owner
- *   decided a Client always identifies a real person at a real
- *   company and must be reachable by email.
+ * - firstName / lastName are REQUIRED. Everything else is optional —
+ *   owner's decision to allow lightweight Client entries where
+ *   only the person's name is known (company / email / phone etc.
+ *   added later via edit).
  * - `platformId` and `clientSince` are deliberately absent — the UI
  *   stopped editing them; the backend columns stay to preserve
  *   existing data, but no write-path accepts them any more.
@@ -62,18 +62,19 @@ export class CreateClientDto {
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   lastName: string;
 
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
-  @MinLength(1)
   @MaxLength(160)
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
-  company: string;
+  @Transform(({ value }) => trim(value))
+  company?: string | null;
 
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsEmail()
   @MaxLength(254)
   @Transform(({ value }) => normaliseEmail(value))
-  email: string;
+  email?: string | null;
 
   @ApiPropertyOptional({ description: 'Phone in E.164, e.g. +14155550123' })
   @IsOptional()

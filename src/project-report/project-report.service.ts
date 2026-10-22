@@ -121,25 +121,7 @@ export class ProjectReportService {
     const dir: Prisma.SortOrder =
       dto.sortDirection ?? ProjectReportSortDirection.desc;
 
-    const scopeWhere = await this.buildScopeWhere(user);
-
-    const where: Prisma.ProjectReportWhereInput = {
-      AND: [
-        scopeWhere,
-        dto.projectId ? { projectId: dto.projectId } : {},
-        dto.from || dto.to
-          ? {
-              reportDate: {
-                ...(dto.from ? { gte: this.dayOnly(dto.from) } : {}),
-                ...(dto.to ? { lte: this.dayOnly(dto.to) } : {}),
-              },
-            }
-          : {},
-        dto.search
-          ? { content: { contains: dto.search, mode: 'insensitive' } }
-          : {},
-      ],
-    };
+    const where = await this.buildListWhere(dto, user);
 
     const [data, total] = await Promise.all([
       this.prisma.projectReport.findMany({
@@ -153,6 +135,69 @@ export class ProjectReportService {
     ]);
     const enriched = await this.enrichDeliveryStatus(data);
     return { data: enriched, total };
+  }
+
+  /**
+   * KPI aggregates over the same filter set the list uses. Scope-aware
+   * (identical `buildListWhere`), so a scoped user never sees totals
+   * for rows they could not list. `daysCovered` is `COUNT(DISTINCT
+   * reportDate)` — a 20-hour week spread over 5 days reads very
+   * differently from 20 hours logged in one day, and both are useful
+   * to see at a glance when picking a date range.
+   */
+  async stats(dto: ListProjectReportsDto, user: AuthUser) {
+    const where = await this.buildListWhere(dto, user);
+
+    const [totalReports, hoursAgg, rows] = await Promise.all([
+      this.prisma.projectReport.count({ where }),
+      this.prisma.projectReport.aggregate({
+        where,
+        _sum: { hours: true },
+      }),
+      this.prisma.projectReport.findMany({
+        where,
+        select: { reportDate: true },
+      }),
+    ]);
+
+    const totalHours = Number(hoursAgg._sum.hours ?? 0);
+    const avgHoursPerReport =
+      totalReports > 0 ? totalHours / totalReports : 0;
+    const uniqueDays = new Set(
+      rows.map((r) => r.reportDate.toISOString().slice(0, 10)),
+    );
+    return {
+      totalReports,
+      totalHours,
+      avgHoursPerReport,
+      daysCovered: uniqueDays.size,
+    };
+  }
+
+  /** Shared filter-shape between `findAll` and `stats`. */
+  private async buildListWhere(
+    dto: ListProjectReportsDto,
+    user: AuthUser,
+  ): Promise<Prisma.ProjectReportWhereInput> {
+    const scopeWhere = await this.buildScopeWhere(user);
+    return {
+      AND: [
+        scopeWhere,
+        dto.projectId ? { projectId: dto.projectId } : {},
+        dto.source ? { source: dto.source } : {},
+        dto.from || dto.to
+          ? {
+              reportDate: {
+                ...(dto.from ? { gte: this.dayOnly(dto.from) } : {}),
+                ...(dto.to ? { lte: this.dayOnly(dto.to) } : {}),
+              },
+            }
+          : {},
+        dto.search
+          ? { content: { contains: dto.search, mode: 'insensitive' } }
+          : {},
+      ],
+    };
   }
 
   async findOne(id: string, user: AuthUser) {

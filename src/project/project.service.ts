@@ -29,7 +29,9 @@ export class ProjectService {
 
   async create(dto: CreateProjectDto, user: AuthUser) {
     this.assertDateRangeValid(dto.startDate, dto.endDate);
-    await this.assertCrmClientExists(dto.crmClientId);
+    if (dto.crmClientId) {
+      await this.assertCrmClientExists(dto.crmClientId);
+    }
     if (dto.clientId) {
       await this.assertClientExists(dto.clientId);
     }
@@ -42,12 +44,16 @@ export class ProjectService {
         data: {
           name: dto.name,
           clientId: dto.clientId ?? null,
-          crmClientId: dto.crmClientId,
+          crmClientId: dto.crmClientId ?? null,
           status: dto.status ?? 'planned',
           description: dto.description,
           startDate: dto.startDate ? new Date(dto.startDate) : null,
           endDate: dto.endDate ? new Date(dto.endDate) : null,
           discordChannelId: dto.discordChannelId ?? null,
+          type: dto.type ?? null,
+          rate: dto.rate ?? null,
+          rateCurrency: dto.rateCurrency ?? null,
+          hoursBudget: dto.hoursBudget ?? null,
           ...(dto.memberIds && dto.memberIds.length > 0
             ? {
                 members: {
@@ -83,13 +89,15 @@ export class ProjectService {
         memberCount: dto.memberIds?.length ?? 0,
       },
     });
-    await this.emitClientProjectLinkActivity({
-      actorUserId: user.id,
-      projectId: created.id,
-      projectName: created.name,
-      beforeClientId: null,
-      afterClientId: created.crmClientId,
-    });
+    if (created.crmClientId) {
+      await this.emitClientProjectLinkActivity({
+        actorUserId: user.id,
+        projectId: created.id,
+        projectName: created.name,
+        beforeClientId: null,
+        afterClientId: created.crmClientId,
+      });
+    }
     return created;
   }
 
@@ -107,6 +115,7 @@ export class ProjectService {
         scopeWhere,
         dto.status ? { status: dto.status } : {},
         dto.clientId ? { clientId: dto.clientId } : {},
+        dto.crmClientId ? { crmClientId: dto.crmClientId } : {},
         dto.search
           ? { name: { contains: dto.search, mode: 'insensitive' } }
           : {},
@@ -211,6 +220,14 @@ export class ProjectService {
           ...(dto.discordChannelId !== undefined
             ? { discordChannelId: dto.discordChannelId }
             : {}),
+          ...(dto.type !== undefined ? { type: dto.type } : {}),
+          ...(dto.rate !== undefined ? { rate: dto.rate } : {}),
+          ...(dto.rateCurrency !== undefined
+            ? { rateCurrency: dto.rateCurrency }
+            : {}),
+          ...(dto.hoursBudget !== undefined
+            ? { hoursBudget: dto.hoursBudget }
+            : {}),
         },
       });
       if (dto.status !== undefined && dto.status !== before.status) {
@@ -243,21 +260,36 @@ export class ProjectService {
       throw this.mapWriteError(e);
     }
 
-    // Audit — status changes + membership diff.
+    // Audit — status / members / field diff.
+    //
+    // Every column the owner can edit from the form flows into
+    // `changes` so an `project.update` entry is never "silent". Prisma
+    // Decimal fields are stringified (`.toString()`) so safeDiff's
+    // shallow equality compares like-for-like.
     const changes = safeDiff(
       {
         name: beforeFull.name,
         status: beforeFull.status,
+        description: beforeFull.description,
         clientId: beforeFull.clientId,
-        startDate: beforeFull.startDate?.toISOString() ?? null,
-        endDate: beforeFull.endDate?.toISOString() ?? null,
+        crmClientId: beforeFull.crmClientId,
+        discordChannelId: beforeFull.discordChannelId,
+        type: beforeFull.type,
+        rate: beforeFull.rate?.toString() ?? null,
+        rateCurrency: beforeFull.rateCurrency,
+        hoursBudget: beforeFull.hoursBudget,
       },
       {
         name: updated.name,
         status: updated.status,
+        description: updated.description,
         clientId: updated.clientId,
-        startDate: updated.startDate?.toISOString() ?? null,
-        endDate: updated.endDate?.toISOString() ?? null,
+        crmClientId: updated.crmClientId,
+        discordChannelId: updated.discordChannelId,
+        type: updated.type,
+        rate: updated.rate?.toString() ?? null,
+        rateCurrency: updated.rateCurrency,
+        hoursBudget: updated.hoursBudget,
       },
     );
     const beforeMembers = beforeFull.members.map((m) => m.employeeId);

@@ -1,16 +1,20 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { ProjectStatus } from '@prisma/client';
+import { ProjectStatus, ProjectType } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
   IsDateString,
   IsEnum,
+  IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
   Matches,
+  Max,
   MaxLength,
+  Min,
   MinLength,
   ValidateIf,
 } from 'class-validator';
@@ -34,12 +38,13 @@ export class CreateProjectDto {
   @IsUUID()
   clientId?: string;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
     description:
-      'CRM Client this project is for. Required when creating a project; legacy rows may stay null.',
+      'CRM Client this project is for. Optional — owner may create and later re-assign; legacy rows stay null.',
   })
+  @IsOptional()
   @IsUUID()
-  crmClientId: string;
+  crmClientId?: string;
 
   @ApiPropertyOptional({ enum: ProjectStatus, default: ProjectStatus.planned })
   @IsOptional()
@@ -86,4 +91,46 @@ export class CreateProjectDto {
     message: 'discordChannelId must be a Discord snowflake id',
   })
   discordChannelId?: string | null;
+
+  // ─── Billing shape (all optional) ─────────────────────────────────
+  // Cadence of `rate` is implied by `type`:
+  //   HOURLY   → $/hour, `hoursBudget` is the optional cap.
+  //   RETAINER → $/month, `hoursBudget` ignored.
+  //   FIXED    → flat contract value, `hoursBudget` ignored.
+
+  @ApiPropertyOptional({ enum: ProjectType })
+  @IsOptional()
+  @IsEnum(ProjectType)
+  type?: ProjectType;
+
+  @ApiPropertyOptional({
+    description: 'Numeric rate; interpretation depends on `type`.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(99_999_999.99)
+  rate?: number;
+
+  @ApiPropertyOptional({ description: 'ISO-4217 currency, e.g. USD.' })
+  @IsOptional()
+  @IsString()
+  @MinLength(3)
+  @MaxLength(3)
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toUpperCase() || undefined : value,
+  )
+  rateCurrency?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Optional cap on billable hours — only meaningful when type=HOURLY.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(1_000_000)
+  hoursBudget?: number;
 }

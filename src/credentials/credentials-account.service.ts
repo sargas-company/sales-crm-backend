@@ -15,6 +15,7 @@ import { AuthUser } from '../auth/auth-user';
 import { CredentialEncryptionService } from '../credentials-vault/encryption.service';
 import { VaultRateLimiterService } from '../credentials-vault/rate-limiter.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { CredentialChangeNotifierService } from './credential-change-notifier.service';
 import { CreateCredentialAccountDto } from './dto/create-account.dto';
 import {
   HardDeleteAccountDto,
@@ -41,7 +42,6 @@ const ACCOUNT_SAFE_SELECT = {
   updatedById: true,
   createdAt: true,
   updatedAt: true,
-  _count: { select: { attachments: true } },
 } satisfies Prisma.CredentialAccountSelect;
 
 const HARD_DELETE_KEY = 'credentials:hard_delete';
@@ -55,6 +55,7 @@ export class CredentialsAccountService {
     private readonly enc: CredentialEncryptionService,
     private readonly audit: AuditEventService,
     private readonly rateLimit: VaultRateLimiterService,
+    private readonly notifier: CredentialChangeNotifierService,
   ) {}
 
   async list(query: ListCredentialAccountsDto) {
@@ -146,6 +147,7 @@ export class CredentialsAccountService {
       select: {
         id: true,
         serviceName: true,
+        serviceUrl: true,
         profile: { select: { name: true } },
         encPayload: true,
         encIv: true,
@@ -156,36 +158,77 @@ export class CredentialsAccountService {
     });
     if (!existing) throw new NotFoundException('Account not found');
 
+    // Which secret keys actually changed (null/'' is treated as "unset").
+    // Driven off the decrypted previous payload so we can report a
+    // concrete field list on Discord without ever shipping values.
+    let previous: SecretPayloadDto = {};
+    try {
+      previous = this.enc.decryptJson<SecretPayloadDto>({
+        ciphertext: existing.encPayload,
+        iv: existing.encIv,
+        authTag: existing.encAuthTag,
+        keyVersion: existing.encKeyVersion,
+        algorithm: existing.encAlgorithm,
+      });
+    } catch {
+      previous = {};
+    }
+
     let encFields: Prisma.CredentialAccountUpdateInput = {};
     let secretChanged = false;
+    const changedSecretKeys: string[] = [];
     if (dto.secrets) {
       // Merge — keep the fields the caller did not pass so a partial
       // update never wipes the whole payload.
-      let previous: SecretPayloadDto = {};
-      try {
-        previous = this.enc.decryptJson<SecretPayloadDto>({
-          ciphertext: existing.encPayload,
-          iv: existing.encIv,
-          authTag: existing.encAuthTag,
-          keyVersion: existing.encKeyVersion,
-          algorithm: existing.encAlgorithm,
-        });
-      } catch {
-        // The row is unreadable; treat this as a full-payload replace
-        // rather than surface the tamper-error to the caller here.
-        previous = {};
-      }
       const merged = this.sanitizePayload({ ...previous, ...dto.secrets });
-      const enc = this.enc.encryptJson(merged);
-      encFields = {
-        encPayload: enc.ciphertext,
-        encIv: enc.iv,
-        encAuthTag: enc.authTag,
-        encKeyVersion: enc.keyVersion,
-        encAlgorithm: enc.algorithm,
-        lastRotatedAt: new Date(),
-      };
-      secretChanged = true;
+      changedSecretKeys.push(...diffSecretKeys(previous, merged));
+      secretChanged = changedSecretKeys.length > 0;
+      if (secretChanged) {
+        const enc = this.enc.encryptJson(merged);
+        encFields = {
+          encPayload: enc.ciphertext,
+          encIv: enc.iv,
+          encAuthTag: enc.authTag,
+          encKeyVersion: enc.keyVersion,
+          encAlgorithm: enc.algorithm,
+          lastRotatedAt: new Date(),
+        };
+      }
+    }
+
+    // Snapshot the OLD encrypted payload BEFORE write, but only when
+    // we are actually about to change it — avoids history noise from
+    // metadata-only edits.
+    if (secretChanged) {
+      await this.prisma.credentialSecretVersion.create({
+        data: {
+          accountId: existing.id,
+          changedById: actor.id,
+          changeReason: 'edit',
+          encPayload: existing.encPayload,
+          encIv: existing.encIv,
+          encAuthTag: existing.encAuthTag,
+          encKeyVersion: existing.encKeyVersion,
+          encAlgorithm: existing.encAlgorithm,
+        },
+      });
+    }
+
+    // Metadata-field diff: compare dto value to the live row value.
+    // serviceUrl is nullable, treat null and '' as "unset" for parity
+    // with the UI.
+    const changedMetaKeys: string[] = [];
+    if (
+      dto.serviceName !== undefined &&
+      dto.serviceName !== existing.serviceName
+    ) {
+      changedMetaKeys.push('serviceName');
+    }
+    if (
+      dto.serviceUrl !== undefined &&
+      (dto.serviceUrl ?? null) !== (existing.serviceUrl ?? null)
+    ) {
+      changedMetaKeys.push('serviceUrl');
     }
 
     const updated = await this.prisma.credentialAccount.update({
@@ -218,12 +261,26 @@ export class CredentialsAccountService {
       targetLabel: `${existing.profile.name} · ${updated.serviceName}`,
       result: AuditResult.SUCCESS,
       metadata: {
-        changedFields: Object.keys(dto).filter((k) => k !== 'secrets'),
+        changedFields: [...changedMetaKeys, ...changedSecretKeys],
         secretChanged,
-        secretFields: dto.secrets ? this.describeShape(dto.secrets) : undefined,
       },
       ...context,
     });
+
+    // Discord notification — only when a SECRET field actually changed.
+    // Metadata-only edits (serviceName rename, URL/icon/tags) are
+    // intentionally silent: they also don't create a history version,
+    // so firing a notification for them would be inconsistent and
+    // noisy. Audit log still records every change.
+    if (secretChanged) {
+      void this.notifier.notify({
+        kind: 'account_updated',
+        profileName: existing.profile.name,
+        serviceName: updated.serviceName,
+        changedFields: changedSecretKeys,
+        actorUserId: actor.id,
+      });
+    }
     return updated;
   }
 
@@ -303,7 +360,6 @@ export class CredentialsAccountService {
         id: true,
         serviceName: true,
         profile: { select: { name: true } },
-        _count: { select: { attachments: true } },
       },
     });
     if (!existing) throw new NotFoundException('Account not found');
@@ -330,8 +386,13 @@ export class CredentialsAccountService {
       targetId: existing.id,
       targetLabel: `${existing.profile.name} · ${existing.serviceName}`,
       result: AuditResult.SUCCESS,
-      metadata: { attachmentsRemoved: existing._count.attachments },
       ...context,
+    });
+    void this.notifier.notify({
+      kind: 'account_hard_deleted',
+      profileName: existing.profile.name,
+      serviceName: existing.serviceName,
+      actorUserId: actor.id,
     });
     return { id: existing.id };
   }
@@ -482,4 +543,267 @@ export class CredentialsAccountService {
     // Trim, cap at 40 chars; strip anything unfriendly. Never a value.
     return raw.replace(/[^\w:.\-\[\]]/g, '').slice(0, 40);
   }
+
+  // ─── History ────────────────────────────────────────────────────
+
+  /**
+   * List version metadata for an account newest-first. NEVER returns
+   * decrypted data — only who/when/why. Decrypting a specific version
+   * goes through `revealVersion()`, which is gated by the vault session
+   * + `credentials:reveal` permission (no additional per-call MFA
+   * step-up — see `work/standards/decisions.md` § Credentials vault —
+   * session gating).
+   */
+  async listVersions(accountId: string) {
+    const account = await this.prisma.credentialAccount.findUnique({
+      where: { id: accountId },
+      select: { id: true },
+    });
+    if (!account) throw new NotFoundException('Account not found');
+    const rows = await this.prisma.credentialSecretVersion.findMany({
+      where: { accountId },
+      orderBy: { changedAt: 'desc' },
+      select: {
+        id: true,
+        changedAt: true,
+        changedById: true,
+        changeReason: true,
+      },
+      take: 200,
+    });
+    const actorIds = Array.from(
+      new Set(rows.map((r) => r.changedById).filter((v): v is string => !!v)),
+    );
+    const actors = actorIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: actorIds } },
+          select: { id: true, email: true, firstName: true, lastName: true },
+        })
+      : [];
+    const byId = new Map(actors.map((u) => [u.id, u]));
+    return {
+      data: rows.map((r) => {
+        const actor = r.changedById ? byId.get(r.changedById) : null;
+        return {
+          id: r.id,
+          changedAt: r.changedAt,
+          changeReason: r.changeReason,
+          changedBy: actor
+            ? {
+                id: actor.id,
+                email: actor.email,
+                name: `${actor.firstName ?? ''} ${actor.lastName ?? ''}`.trim(),
+              }
+            : null,
+        };
+      }),
+    };
+  }
+
+  /**
+   * Decrypt + return a historic version's secrets. Rate-limited per
+   * caller (shares the same bucket as regular reveal — fresh TOTP /
+   * passkey already enforced at the controller level). Audit-logged.
+   */
+  async revealVersion(
+    accountId: string,
+    versionId: string,
+    actor: AuthUser,
+    context: RequestContext,
+  ) {
+    this.rateLimit.consume('vault.reveal', actor.id, REVEAL_LIMIT, REVEAL_WINDOW_MS);
+    const row = await this.prisma.credentialSecretVersion.findUnique({
+      where: { id: versionId },
+      select: {
+        id: true,
+        accountId: true,
+        encPayload: true,
+        encIv: true,
+        encAuthTag: true,
+        encKeyVersion: true,
+        encAlgorithm: true,
+        account: {
+          select: {
+            id: true,
+            serviceName: true,
+            profile: { select: { name: true } },
+          },
+        },
+      },
+    });
+    if (!row || row.accountId !== accountId) {
+      throw new NotFoundException('Version not found');
+    }
+    let secrets: SecretPayloadDto;
+    try {
+      secrets = this.enc.decryptJson<SecretPayloadDto>({
+        ciphertext: row.encPayload,
+        iv: row.encIv,
+        authTag: row.encAuthTag,
+        keyVersion: row.encKeyVersion,
+        algorithm: row.encAlgorithm,
+      });
+    } catch (err) {
+      await this.audit.record({
+        actorUserId: actor.id,
+        domain: 'credentials',
+        action: 'account.history.reveal',
+        targetType: 'CredentialSecretVersion',
+        targetId: row.id,
+        targetLabel: `${row.account.profile.name} · ${row.account.serviceName}`,
+        result: AuditResult.FAILED,
+        metadata: { reason: 'decrypt_failed' },
+        ...context,
+      });
+      throw err;
+    }
+    await this.audit.record({
+      actorUserId: actor.id,
+      domain: 'credentials',
+      action: 'account.history.reveal',
+      targetType: 'CredentialSecretVersion',
+      targetId: row.id,
+      targetLabel: `${row.account.profile.name} · ${row.account.serviceName}`,
+      result: AuditResult.SUCCESS,
+      metadata: { fields: this.describeShape(secrets) },
+      ...context,
+    });
+    return { id: row.id, secrets };
+  }
+
+  /**
+   * Replace the live encPayload with a historical snapshot. Before
+   * writing, snapshot the current live value as a NEW version row
+   * tagged `restore` — so restore itself remains reversible. Fires
+   * Discord notif + audit. Does not touch metadata (serviceName etc.).
+   */
+  async restoreVersion(
+    accountId: string,
+    versionId: string,
+    actor: AuthUser,
+    context: RequestContext,
+  ) {
+    const [account, version] = await Promise.all([
+      this.prisma.credentialAccount.findUnique({
+        where: { id: accountId },
+        select: {
+          id: true,
+          serviceName: true,
+          profile: { select: { name: true } },
+          encPayload: true,
+          encIv: true,
+          encAuthTag: true,
+          encKeyVersion: true,
+          encAlgorithm: true,
+        },
+      }),
+      this.prisma.credentialSecretVersion.findUnique({
+        where: { id: versionId },
+        select: {
+          id: true,
+          accountId: true,
+          encPayload: true,
+          encIv: true,
+          encAuthTag: true,
+          encKeyVersion: true,
+          encAlgorithm: true,
+        },
+      }),
+    ]);
+    if (!account) throw new NotFoundException('Account not found');
+    if (!version || version.accountId !== accountId) {
+      throw new NotFoundException('Version not found');
+    }
+
+    // Snapshot CURRENT state first (so restore is itself reversible).
+    await this.prisma.credentialSecretVersion.create({
+      data: {
+        accountId: account.id,
+        changedById: actor.id,
+        changeReason: 'restore',
+        encPayload: account.encPayload,
+        encIv: account.encIv,
+        encAuthTag: account.encAuthTag,
+        encKeyVersion: account.encKeyVersion,
+        encAlgorithm: account.encAlgorithm,
+      },
+    });
+
+    const updated = await this.prisma.credentialAccount.update({
+      where: { id: account.id },
+      data: {
+        encPayload: version.encPayload,
+        encIv: version.encIv,
+        encAuthTag: version.encAuthTag,
+        encKeyVersion: version.encKeyVersion,
+        encAlgorithm: version.encAlgorithm,
+        updatedById: actor.id,
+        lastRotatedAt: new Date(),
+      },
+      select: ACCOUNT_SAFE_SELECT,
+    });
+
+    await this.audit.record({
+      actorUserId: actor.id,
+      domain: 'credentials',
+      action: 'account.history.restore',
+      targetType: 'CredentialAccount',
+      targetId: account.id,
+      targetLabel: `${account.profile.name} · ${account.serviceName}`,
+      result: AuditResult.SUCCESS,
+      metadata: { restoredFromVersionId: version.id },
+      ...context,
+    });
+
+    void this.notifier.notify({
+      kind: 'account_restored',
+      profileName: account.profile.name,
+      serviceName: account.serviceName,
+      actorUserId: actor.id,
+    });
+
+    return updated;
+  }
+}
+
+/**
+ * Diff two decrypted SecretPayload values, returning the list of
+ * KEY names that actually changed (never values). Empty-string and
+ * absent are treated as the same "unset" state for parity with the
+ * UI, which never distinguishes "" from undefined. CustomFields are
+ * compared by (label, value) pair under a `custom:{label}` key so
+ * added/removed/renamed/edited rows all surface distinctly.
+ */
+function diffSecretKeys(
+  before: SecretPayloadDto,
+  after: SecretPayloadDto,
+): string[] {
+  const changed: string[] = [];
+  const scalarKeys = [
+    'username',
+    'email',
+    'password',
+    'totpSeed',
+    'pin',
+    'secureNote',
+  ] as const;
+  for (const k of scalarKeys) {
+    const a = ((before[k] as string | undefined) ?? '').trim();
+    const b = ((after[k] as string | undefined) ?? '').trim();
+    if (a !== b) changed.push(k);
+  }
+  // Recovery codes: compare normalised join.
+  const prevRec = (before.recoveryCodes ?? []).map((s) => s.trim()).join('|');
+  const nextRec = (after.recoveryCodes ?? []).map((s) => s.trim()).join('|');
+  if (prevRec !== nextRec) changed.push('recoveryCodes');
+  // Custom fields: compare as a sorted (label|value) multiset.
+  const asBag = (list: Array<{ label: string; value: string }> | undefined) =>
+    (list ?? [])
+      .map((f) => `${f.label.trim()}=${f.value.trim()}`)
+      .sort()
+      .join('\n');
+  if (asBag(before.customFields) !== asBag(after.customFields)) {
+    changed.push('customFields');
+  }
+  return changed;
 }

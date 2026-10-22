@@ -8,6 +8,8 @@ import { StorageModule } from './storage/storage.module';
 
 import { AccountModule } from './account/account.module';
 import { AttachmentsModule } from './attachments/attachments.module';
+import { EmployeeAttachmentsModule } from './employee-attachments/employee-attachments.module';
+import { ProjectAttachmentsModule } from './project-attachments/project-attachments.module';
 import { ClientCallsModule } from './client-calls/client-calls.module';
 import { AuthModule } from './auth/auth.module';
 import { ClientRequestsModule } from './client-requests/client-requests.module';
@@ -82,6 +84,8 @@ import { LiveEventsModule } from './live-events/live-events.module';
     ClientModule,
     ClientCallsModule,
     AttachmentsModule,
+    EmployeeAttachmentsModule,
+    ProjectAttachmentsModule,
     SettingsModule,
     VibeWorkerWebhookModule,
     AnalyticsModule,

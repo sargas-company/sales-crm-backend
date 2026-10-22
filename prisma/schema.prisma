@@ -30,6 +30,8 @@ model User {
   timeOffsCreated TimeOff[]  @relation("TimeOffCreatedBy")
   jobPostViews    JobPostView[]
   attachments     Attachment[]
+  employeeAttachmentsUploaded EmployeeAttachment[] @relation("EmployeeAttachmentUploadedBy")
+  projectAttachmentsUploaded  ProjectAttachment[]  @relation("ProjectAttachmentUploadedBy")
 }
 
 model Role {
@@ -941,8 +943,31 @@ model Employee {
   linkedInPosts     LinkedInPost[]
   credentialProfiles CredentialProfile[]
   heldPhoneNumbers   PhoneNumber[]      @relation("PhoneHolder")
+  attachments        EmployeeAttachment[]
 
   @@index([status])
+}
+
+/// Files attached to an Employee record (passport scans, contracts,
+/// screenshots etc). Stored in the Backblaze EMPLOYEE_ATTACHMENTS
+/// bucket; this row holds only the key + metadata. HR/Owner can
+/// upload/delete through the EDIT screen; download is served through
+/// short-lived signed URLs issued by `EmployeeAttachmentsService`.
+/// Cascades on Employee hard-delete — row removal here is paired with
+/// an explicit B2 object removal in the service layer.
+model EmployeeAttachment {
+  id            String   @id @default(uuid())
+  employeeId    String
+  employee      Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  originalName  String
+  storageKey    String   @unique
+  mimeType      String
+  size          Int
+  uploadedById  String?
+  uploadedBy    User?    @relation("EmployeeAttachmentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt     DateTime @default(now())
+
+  @@index([employeeId, createdAt(sort: Desc)])
 }
 
 // ─── Projects ────────────────────────────────────────────────────────────────
@@ -953,6 +978,15 @@ enum ProjectStatus {
   paused
   completed
   archived
+}
+
+/// Commercial shape of the engagement. Cadence of `rate` is implied:
+/// HOURLY → per hour; RETAINER → per month; FIXED → flat (full
+/// contract value is stored directly in `rate`).
+enum ProjectType {
+  HOURLY
+  FIXED
+  RETAINER
 }
 
 model Project {
@@ -979,6 +1013,15 @@ model Project {
   // untouched. Unique so one Discord channel maps to at most one
   // Project.
   discordChannelId String?       @unique
+  // Commercial / billing shape. All optional — legacy rows stay NULL,
+  // owner can tag per project in the UI. Interpretation:
+  //   HOURLY   → `rate` is $/hour, `hoursBudget` is the optional cap.
+  //   RETAINER → `rate` is $/month, `hoursBudget` ignored.
+  //   FIXED    → `rate` is the flat contract value, `hoursBudget` ignored.
+  type             ProjectType?
+  rate             Decimal?      @db.Decimal(14, 2)
+  rateCurrency     String?       @db.Char(3)
+  hoursBudget      Int?
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
@@ -987,10 +1030,32 @@ model Project {
   statusHistory ProjectStatusHistory[]
   weeklyEntries WeeklyEntry[]
   paymentRules  ProjectPaymentRule[]
+  attachments   ProjectAttachment[]
 
   @@index([status])
   @@index([clientId])
   @@index([crmClientId])
+}
+
+/// Files attached to a Project record (briefs, assets, contracts etc.).
+/// Stored in the Backblaze PROJECT_ATTACHMENTS bucket; this row holds
+/// only the key + metadata. Download is served through short-lived
+/// signed URLs issued by `ProjectAttachmentsService`. Cascades on
+/// Project hard-delete — row removal here is paired with an explicit
+/// B2 object removal in the service layer.
+model ProjectAttachment {
+  id            String   @id @default(uuid())
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  originalName  String
+  storageKey    String   @unique
+  mimeType      String
+  size          Int
+  uploadedById  String?
+  uploadedBy    User?    @relation("ProjectAttachmentUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt     DateTime @default(now())
+
+  @@index([projectId, createdAt(sort: Desc)])
 }
 
 model ProjectStatusHistory {
@@ -1531,40 +1596,33 @@ model CredentialAccount {
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
-  attachments CredentialAttachment[]
+  versions           CredentialSecretVersion[]
 
   @@index([profileId, status])
   @@index([category])
   @@index([serviceName])
 }
 
-model CredentialAttachment {
-  id            String   @id @default(uuid())
-  accountId     String
-  account       CredentialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+/// Append-only history of CredentialAccount.encPayload values. One
+/// row is inserted BEFORE every write (edit or restore) so the entire
+/// change history is preserved indefinitely. Each row stores the full
+/// AES-GCM blob — same shape and key family as the live
+/// CredentialAccount, so rotation stays cheap. `changeReason` is a
+/// plain-text tag ('edit' | 'restore') to make audit trails readable.
+model CredentialSecretVersion {
+  id             String            @id @default(uuid())
+  accountId      String
+  account        CredentialAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  changedById    String?
+  changedAt      DateTime          @default(now())
+  changeReason   String
+  encPayload     Bytes
+  encIv          Bytes
+  encAuthTag     Bytes
+  encKeyVersion  Int               @default(1)
+  encAlgorithm   String            @default("AES-256-GCM")
 
-  // Two independent encrypted blobs — each with its own IV + auth tag —
-  // because AES-GCM requires a unique IV per encryption. `encMeta` holds
-  // JSON `{filename, mime}` for the listing UI; `encContent` holds the raw
-  // file bytes. Both use the same key version so rotation stays cheap.
-  //
-  // `encStorageRef` is reserved for a future switch to an encrypted
-  // object-store backing (Phase 5); null in Phase 2 (fully inline).
-  encMeta          Bytes
-  encMetaIv        Bytes
-  encMetaAuthTag   Bytes
-  encContent       Bytes
-  encContentIv     Bytes
-  encContentAuthTag Bytes
-  encStorageRef    Bytes?
-  encKeyVersion    Int      @default(1)
-  encAlgorithm     String   @default("AES-256-GCM")
-
-  size          Int
-  uploadedById  String?
-  createdAt     DateTime @default(now())
-
-  @@index([accountId])
+  @@index([accountId, changedAt(sort: Desc)])
 }
 
 // ─── MFA foundation (used by Vault Session step-up in Phase 3) ──────────────

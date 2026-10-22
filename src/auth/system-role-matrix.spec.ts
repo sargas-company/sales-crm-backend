@@ -39,8 +39,10 @@ const ADMIN_EXPECTED = new Set<string>([
 
   'prompts:view', 'prompts:create', 'prompts:update', 'prompts:delete',
   'employees:view',
+  'employees:attachments:view', 'employees:attachments:create', 'employees:attachments:delete',
 
   'projects:view', 'projects:create', 'projects:update', 'projects:delete', 'projects:view_any',
+  'projects:attachments:view', 'projects:attachments:create', 'projects:attachments:delete',
   'project_reports:view', 'project_reports:create', 'project_reports:update', 'project_reports:delete',
 
   'time_off:view', 'time_off:create', 'time_off:update', 'time_off:delete',
@@ -57,7 +59,6 @@ const ADMIN_EXPECTED = new Set<string>([
   'credentials:update',
   'credentials:archive',
   'credentials:reveal',
-  'credentials:attachments',
   'credential_audit:view',
 
   'phone_numbers:view',

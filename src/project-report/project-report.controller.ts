@@ -50,6 +50,16 @@ export class ProjectReportController {
     return this.reports.findAll(dto, req.user);
   }
 
+  @Get('stats')
+  @RequirePermission('project_reports:view')
+  @ApiOperation({
+    summary:
+      'Aggregated KPIs over the current filter set (same filters as list)',
+  })
+  stats(@Query() dto: ListProjectReportsDto, @Request() req) {
+    return this.reports.stats(dto, req.user);
+  }
+
   @Get(':id')
   @RequirePermission('project_reports:view')
   @ApiOperation({ summary: 'Get project report by ID' })

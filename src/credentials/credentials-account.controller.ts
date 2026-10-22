@@ -11,14 +11,10 @@ import {
   Post,
   Query,
   Req,
-  Res,
-  UploadedFile,
   UseGuards,
-  UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import type { Request, Response } from 'express';
+import type { Request } from 'express';
 
 import { AuthUser } from '../auth/auth-user';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -27,7 +23,6 @@ import { PermissionGuard } from '../auth/permission.guard';
 import { MfaService } from '../credentials-vault/mfa.service';
 import { VaultSessionGuard } from '../credentials-vault/vault-session.guard';
 import { CredentialsAccountService } from './credentials-account.service';
-import { CredentialsAttachmentService } from './credentials-attachment.service';
 import { RequestContext } from './credentials-profile.service';
 import { CreateCredentialAccountDto } from './dto/create-account.dto';
 import { ListCredentialAccountsDto } from './dto/list-accounts.dto';
@@ -51,27 +46,29 @@ function requestContext(req: Request): RequestContext {
 export class CredentialsAccountController {
   constructor(
     private readonly accounts: CredentialsAccountService,
-    private readonly attachments: CredentialsAttachmentService,
     private readonly mfa: MfaService,
   ) {}
 
   @Get()
   @RequirePermission('credentials:view')
-  @ApiOperation({ summary: 'List accounts (safe metadata only)' })
+  @UseGuards(VaultSessionGuard)
+  @ApiOperation({ summary: 'List accounts (metadata only, requires active vault session)' })
   list(@Query() query: ListCredentialAccountsDto) {
     return this.accounts.list(query);
   }
 
   @Get(':id')
   @RequirePermission('credentials:view')
-  @ApiOperation({ summary: 'Get one account (safe metadata only)' })
+  @UseGuards(VaultSessionGuard)
+  @ApiOperation({ summary: 'Get one account (metadata only, requires active vault session)' })
   getOne(@Param('id') id: string) {
     return this.accounts.getOne(id);
   }
 
   @Post()
   @RequirePermission('credentials:create')
-  @ApiOperation({ summary: 'Create account with encrypted payload' })
+  @UseGuards(VaultSessionGuard)
+  @ApiOperation({ summary: 'Create account with encrypted payload (requires active vault session)' })
   create(
     @Body() dto: CreateCredentialAccountDto,
     @Req() req: Request & { user: AuthUser },
@@ -81,7 +78,8 @@ export class CredentialsAccountController {
 
   @Patch(':id')
   @RequirePermission('credentials:update')
-  @ApiOperation({ summary: 'Update account (partial secret merge)' })
+  @UseGuards(VaultSessionGuard)
+  @ApiOperation({ summary: 'Update account (partial secret merge, requires active vault session)' })
   update(
     @Param('id') id: string,
     @Body() dto: UpdateCredentialAccountDto,
@@ -90,46 +88,21 @@ export class CredentialsAccountController {
     return this.accounts.update(id, dto, req.user, requestContext(req));
   }
 
-  @Post(':id/archive')
-  @RequirePermission('credentials:archive')
-  @ApiOperation({ summary: 'Archive an account' })
-  archive(
-    @Param('id') id: string,
-    @Req() req: Request & { user: AuthUser },
-  ) {
-    return this.accounts.archive(id, req.user, requestContext(req));
-  }
-
-  @Post(':id/restore')
-  @RequirePermission('credentials:archive')
-  @ApiOperation({ summary: 'Restore an archived account' })
-  restore(
-    @Param('id') id: string,
-    @Req() req: Request & { user: AuthUser },
-  ) {
-    return this.accounts.restore(id, req.user, requestContext(req));
-  }
-
-  @Delete(':id')
-  @RequirePermission('credentials:hard_delete')
-  @UseGuards(VaultSessionGuard)
-  @ApiOperation({
-    summary:
-      'Hard delete (Owner). Requires an active vault session AND a fresh MFA step-up (`mfa.code`/`mfa.assertion` in body).',
-  })
-  async hardDelete(
-    @Param('id') id: string,
-    @Body() dto: HardDeleteAccountDto,
-    @Req() req: Request & { user: AuthUser },
-  ) {
-    await this.requireFreshMfa(req.user.id, dto.mfa);
-    return this.accounts.hardDelete(id, dto, req.user, requestContext(req));
-  }
+  // ─── Archive / Restore / Hard delete endpoints — intentionally removed.
+  //
+  // Owner spec: no in-app way to archive or delete a CredentialAccount.
+  // Once created, the row stays forever. If a DB-level cleanup is ever
+  // needed, an operator does it manually against the database with full
+  // backup discipline — never through this API. Service methods and the
+  // `credentials:archive` / `credentials:hard_delete` permissions still
+  // exist so the migration shape stays stable; they are unreachable
+  // from here.
 
   /**
-   * Hard-delete step-up: even with an active vault session, hard delete
-   * on Account requires a fresh MFA proof — a live TOTP or WebAuthn
-   * assertion supplied in the request body.
+   * Hard-delete step-up kept here for internal reuse by future
+   * admin-tooling endpoints — do NOT re-wire the public hardDelete
+   * route without re-reading the owner spec in
+   * work/tasks/credentials-vault-hard-gate.md.
    */
   private async requireFreshMfa(
     userId: string,
@@ -176,8 +149,9 @@ export class CredentialsAccountController {
 
   @Post(':id/copy')
   @RequirePermission('credentials:reveal')
+  @UseGuards(VaultSessionGuard)
   @ApiOperation({
-    summary: 'Best-effort audit hook. Frontend sends a field name; no value.',
+    summary: 'Best-effort audit hook. Frontend sends a field name; no value. Requires active vault session.',
   })
   async recordCopy(
     @Param('id') id: string,
@@ -191,75 +165,70 @@ export class CredentialsAccountController {
     return { ok: true };
   }
 
-  // ─── Attachments ──────────────────────────────────────────────────
+  // Attachment endpoints removed together with the Credentials-attachments
+  // feature. The CredentialAttachment table + storage service + the
+  // `credentials:attachments` permission went away in the same release.
+  // If files-per-account ever come back, re-wire via a new module —
+  // don't resurrect the old service directly.
 
-  @Get(':id/attachments')
+  // ─── History ──────────────────────────────────────────────────────
+
+  @Get(':id/history')
   @RequirePermission('credentials:view')
-  @ApiOperation({ summary: 'List attachments for account (metadata only)' })
-  listAttachments(@Param('id') id: string) {
-    return this.attachments.listForAccount(id);
-  }
-
-  @Post(':id/attachments')
-  @RequirePermission('credentials:attachments')
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024 } }))
-  @ApiOperation({
-    summary: 'Upload an attachment. Encrypted before persist. Executables refused.',
-  })
-  uploadAttachment(
-    @Param('id') id: string,
-    @UploadedFile() file: Express.Multer.File,
-    @Req() req: Request & { user: AuthUser },
-  ) {
-    if (!file) throw new BadRequestException('file is required');
-    return this.attachments.upload(
-      id,
-      {
-        originalname: file.originalname,
-        mimetype: file.mimetype,
-        size: file.size,
-        buffer: file.buffer,
-      },
-      req.user,
-      requestContext(req),
-    );
-  }
-
-  @Get('attachments/:attachmentId/download')
-  @RequirePermission('credentials:attachments')
   @UseGuards(VaultSessionGuard)
-  @Header('Cache-Control', 'no-store')
+  @ApiOperation({ summary: 'List encrypted-payload history for an account (metadata only).' })
+  listHistory(@Param('id') id: string) {
+    return this.accounts.listVersions(id);
+  }
+
+  @Post(':id/history/:versionId/reveal')
+  @RequirePermission('credentials:reveal')
+  @UseGuards(VaultSessionGuard)
+  @Header('Cache-Control', 'no-store, no-cache, must-revalidate, private, max-age=0')
   @Header('Pragma', 'no-cache')
+  @Header('Expires', '0')
   @ApiOperation({
     summary:
-      'Decrypt + stream one attachment. Requires active vault session. Rate-limited; audit-logged.',
+      'Reveal a historic version. Active vault session is sufficient — same gate as the live reveal; no extra MFA step-up on top of the session.',
   })
-  async downloadAttachment(
-    @Param('attachmentId') attachmentId: string,
+  async revealVersion(
+    @Param('id') id: string,
+    @Param('versionId') versionId: string,
     @Req() req: Request & { user: AuthUser },
-    @Res({ passthrough: true }) res: Response,
   ) {
-    const result = await this.attachments.download(
-      attachmentId,
-      req.user,
-      requestContext(req),
-    );
-    res.setHeader('Content-Type', result.mime);
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="${encodeURIComponent(result.filename)}"`,
-    );
-    res.setHeader('Content-Length', String(result.size));
-    return result.content;
+    return this.accounts.revealVersion(id, versionId, req.user, requestContext(req));
   }
 
-  @Delete('attachments/:attachmentId')
-  @RequirePermission('credentials:attachments')
-  @ApiOperation({ summary: 'Delete an attachment' })
-  deleteAttachment(
-    @Param('attachmentId') attachmentId: string,
+  @Post(':id/history/:versionId/restore')
+  @RequirePermission('credentials:update')
+  @UseGuards(VaultSessionGuard)
+  @ApiOperation({
+    summary:
+      'Restore a historic version as the current payload. Snapshots the current state as a new version so the restore itself is reversible. Fires Discord notif.',
+  })
+  async restoreVersion(
+    @Param('id') id: string,
+    @Param('versionId') versionId: string,
     @Req() req: Request & { user: AuthUser },
   ) {
-    return this.attachments.delete(attachmentId, req.user, requestContext(req));
+    return this.accounts.restoreVersion(id, versionId, req.user, requestContext(req));
+  }
+
+  // ─── Hard delete (Owner only) ─────────────────────────────────────
+
+  @Delete(':id')
+  @RequirePermission('credentials:hard_delete')
+  @UseGuards(VaultSessionGuard)
+  @ApiOperation({
+    summary:
+      'Hard delete (Owner). Requires active vault session, typed serviceName confirmation AND a fresh MFA step-up.',
+  })
+  async hardDelete(
+    @Param('id') id: string,
+    @Body() dto: HardDeleteAccountDto,
+    @Req() req: Request & { user: AuthUser },
+  ) {
+    await this.requireFreshMfa(req.user.id, dto.mfa);
+    return this.accounts.hardDelete(id, dto, req.user, requestContext(req));
   }
 }

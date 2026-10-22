@@ -268,43 +268,7 @@ async function main() {
       });
     }
 
-    // Attach one small demo attachment per profile — a text note so we
-    // exercise the encrypted-blob codepath without external file deps.
-    const attachmentCount = await prisma.credentialAttachment.count({
-      where: { account: { profileId: profile.id } },
-    });
-    if (attachmentCount === 0) {
-      const anyAccount = await prisma.credentialAccount.findFirst({
-        where: { profileId: profile.id },
-        select: { id: true },
-      });
-      if (anyAccount) {
-        const noteBuffer = Buffer.from(
-          `Demo attachment for ${p.name} — this file is encrypted at rest.`,
-          'utf8',
-        );
-        const meta = enc.encryptJson({
-          filename: `${p.slug}-demo.txt`,
-          mime: 'text/plain',
-        });
-        const content = enc.encryptBuffer(noteBuffer);
-        await prisma.credentialAttachment.create({
-          data: {
-            accountId: anyAccount.id,
-            encMeta: meta.ciphertext,
-            encMetaIv: meta.iv,
-            encMetaAuthTag: meta.authTag,
-            encContent: content.ciphertext,
-            encContentIv: content.iv,
-            encContentAuthTag: content.authTag,
-            encKeyVersion: content.keyVersion,
-            encAlgorithm: content.algorithm,
-            size: noteBuffer.length,
-            uploadedById: actor?.id ?? null,
-          },
-        });
-      }
-    }
+    // Credentials-attachments feature was removed — nothing to seed here.
   }
 
   const existingAudit = await prisma.auditEvent.findFirst({
@@ -330,11 +294,10 @@ async function main() {
   const totals = await Promise.all([
     prisma.credentialProfile.count(),
     prisma.credentialAccount.count(),
-    prisma.credentialAttachment.count(),
     prisma.auditEvent.count({ where: { domain: 'credentials' } }),
   ]);
   console.log(
-    `✓ seed:credentials complete · profiles=${totals[0]}, accounts=${totals[1]}, attachments=${totals[2]}, audit=${totals[3]}`,
+    `✓ seed:credentials complete · profiles=${totals[0]}, accounts=${totals[1]}, audit=${totals[2]}`,
   );
 }
 

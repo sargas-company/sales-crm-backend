@@ -69,8 +69,13 @@ export class ListProjectsDto {
   @IsEnum(ProjectStatus)
   status?: ProjectStatus;
 
-  @ApiPropertyOptional({ description: 'Filter by client counterparty' })
+  @ApiPropertyOptional({ description: 'Filter by legacy Counterparty id.' })
   @IsOptional()
   @IsUUID()
   clientId?: string;
+
+  @ApiPropertyOptional({ description: 'Filter by CRM Client id.' })
+  @IsOptional()
+  @IsUUID()
+  crmClientId?: string;
 }
