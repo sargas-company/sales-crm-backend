@@ -565,19 +565,27 @@ export class PayrollService {
         ? input.rate.times(input.hours ?? new Decimal(0))
         : input.rate,
     );
-    const tax = this.round2(
-      coeffs.fixedTax.plus(baseSalary.times(coeffs.taxRate)),
-    );
+    /* Tax only applies to the base compensation (hours × rate).
+     * Fixed ESV + 6% kick in exclusively when base > 0 — a pure-bonus
+     * or empty row carries zero tax, by owner's accounting rule. */
+    const tax = baseSalary.isZero()
+      ? new Decimal(0)
+      : this.round2(coeffs.fixedTax.plus(baseSalary.times(coeffs.taxRate)));
     const salaryWithTax = this.round2(baseSalary.plus(tax));
+    /* Bonus is NOT taxed: percentage applies to raw base (not swt).
+     * Fixed bonus plugs in flat. Employee covers taxes on bonus
+     * themselves — company compensation here is net. */
     const bonusAmount = this.round2(
-      salaryWithTax.times(input.bonusPercent).div(100).plus(input.fixedBonus),
+      baseSalary.times(input.bonusPercent).div(100).plus(input.fixedBonus),
     );
     const totalAccrued = this.round2(salaryWithTax.plus(bonusAmount));
-    const remainingRaw = totalAccrued.minus(input.advance);
-    const remainingToPay = this.round2(
-      remainingRaw.isNegative() ? new Decimal(0) : remainingRaw,
-    );
-    const payoneerFee = this.round2(totalAccrued.times(coeffs.payoneerRate));
+    /* Payoneer fee applies ONLY to what we actually wire today, i.e.
+     * the remainder after subtracting whatever was already paid as
+     * advance (the advance wire carried its own fee at the time). */
+    const owedRaw = totalAccrued.minus(input.advance);
+    const owed = owedRaw.isNegative() ? new Decimal(0) : owedRaw;
+    const payoneerFee = this.round2(owed.times(coeffs.payoneerRate));
+    const remainingToPay = this.round2(owed.plus(payoneerFee));
     const companyCost = this.round2(totalAccrued.plus(payoneerFee));
     return {
       baseSalary,
