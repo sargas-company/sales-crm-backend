@@ -1233,6 +1233,10 @@ model PayrollEntry {
   totalAccrued   Decimal       @db.Decimal(12, 2)
   remainingToPay Decimal       @db.Decimal(12, 2)
   payoneerFee    Decimal       @db.Decimal(12, 2)
+  /// Per-run Payoneer fee %, 1 or 3 (default 3). The dollar amount
+  /// `payoneerFee` is computed from this at save-time and stored
+  /// alongside it as a historical snapshot.
+  payoneerFeePct Decimal       @default(3) @db.Decimal(5, 2)
   companyCost    Decimal       @db.Decimal(12, 2)
   note           String?
   status         PayrollStatus @default(DRAFT)

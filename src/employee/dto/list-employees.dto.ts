@@ -7,6 +7,7 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   Max,
   MaxLength,
   Min,
@@ -97,4 +98,26 @@ export class ListEmployeesDto {
   @Min(1)
   @Max(12)
   birthdayMonth?: number;
+
+  /** YYYY-MM filter — "employees payable for this month".
+   *
+   * An employee is considered payable for month M when they were
+   * ACTIVE at any point during M:
+   *   • `hiredAt` is null OR `hiredAt <= last day of M`, AND
+   *   • `terminatedAt` is null OR `terminatedAt >= first day of M`.
+   *
+   * So someone terminated on the 15th of M still appears in that
+   * month's payroll (they worked days 1–14), and someone rehired
+   * mid-month appears starting from that month onwards. */
+  @ApiPropertyOptional({
+    description:
+      'YYYY-MM — filters to employees who were active at any point in that calendar month.',
+    example: '2026-10',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{4}-(0[1-9]|1[0-2])$/, {
+    message: 'activeInMonth must be in YYYY-MM format with month 01-12',
+  })
+  activeInMonth?: string;
 }

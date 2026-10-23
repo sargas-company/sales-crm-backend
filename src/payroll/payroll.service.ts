@@ -47,16 +47,20 @@ export class PayrollService {
    * into the entry when it is created / updated, so a Paid run keeps
    * the historical snapshot even after Settings changes.
    */
-  private async currentCoefficients() {
-    const [fixedTax, taxPercent, payoneerFeePercent] = await Promise.all([
+  private async currentCoefficients(overrideFeePct?: number | null) {
+    const [fixedTax, taxPercent, settingsFeePercent] = await Promise.all([
       this.settings.getNumberForKey(SK.PAYROLL_FIXED_TAX, 42.5),
       this.settings.getNumberForKey(SK.PAYROLL_TAX_PERCENT, 6),
       this.settings.getNumberForKey(SK.PAYROLL_PAYONEER_FEE_PERCENT, 3),
     ]);
+    const feePct =
+      overrideFeePct != null && Number.isFinite(overrideFeePct)
+        ? overrideFeePct
+        : settingsFeePercent;
     return {
       fixedTax: new Decimal(fixedTax),
       taxRate: new Decimal(taxPercent).div(100),
-      payoneerRate: new Decimal(payoneerFeePercent).div(100),
+      payoneerRate: new Decimal(feePct).div(100),
     };
   }
 
@@ -205,7 +209,7 @@ export class PayrollService {
     const fixedBonus = new Decimal(dto.fixedBonus ?? 0);
     const advance = new Decimal(dto.advance ?? 0);
 
-    const coeffs = await this.currentCoefficients();
+    const coeffs = await this.currentCoefficients(dto.payoneerFeePct);
     const numbers = this.computeAll(
       {
         rateType: dto.rateType,
@@ -230,6 +234,7 @@ export class PayrollService {
           bonusPercent,
           fixedBonus,
           advance,
+          payoneerFeePct: new Decimal(coeffs.payoneerRate.times(100).toFixed(2)),
           note: dto.note,
           ...numbers,
         },
@@ -283,7 +288,9 @@ export class PayrollService {
     const fixedBonus = new Decimal(dto.fixedBonus ?? existing.fixedBonus);
     const advance = new Decimal(dto.advance ?? existing.advance);
 
-    const coeffs = await this.currentCoefficients();
+    const feePctForUpdate =
+      dto.payoneerFeePct ?? Number(existing.payoneerFeePct);
+    const coeffs = await this.currentCoefficients(feePctForUpdate);
     const numbers = this.computeAll(
       {
         rateType,
@@ -305,6 +312,7 @@ export class PayrollService {
         bonusPercent,
         fixedBonus,
         advance,
+        payoneerFeePct: new Decimal(coeffs.payoneerRate.times(100).toFixed(2)),
         ...(dto.note !== undefined ? { note: dto.note } : {}),
         ...numbers,
       },

@@ -54,7 +54,14 @@ export class PaymentSourceService {
       where: { id },
       data: {
         ...(dto.name !== undefined ? { name: dto.name } : {}),
-        ...(dto.description !== undefined ? { description: dto.description } : {}),
+        ...(dto.description !== undefined
+          ? {
+              description:
+                dto.description && dto.description.trim() !== ''
+                  ? dto.description
+                  : null,
+            }
+          : {}),
         ...(dto.currency !== undefined
           ? { currency: dto.currency.toUpperCase() }
           : {}),

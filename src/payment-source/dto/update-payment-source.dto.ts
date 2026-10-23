@@ -1,5 +1,12 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsOptional, IsString, Length, MaxLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsOptional,
+  IsString,
+  Length,
+  MaxLength,
+  ValidateIf,
+} from 'class-validator';
 
 export class UpdatePaymentSourceDto {
   @ApiPropertyOptional()
@@ -8,11 +15,17 @@ export class UpdatePaymentSourceDto {
   @MaxLength(120)
   name?: string;
 
-  @ApiPropertyOptional()
+  /**
+   * Nullable: pass `null` explicitly to clear a previously-set
+   * description. Passing an empty string also clears. Omitting the
+   * field leaves it untouched.
+   */
+  @ApiPropertyOptional({ nullable: true })
   @IsOptional()
+  @ValidateIf((o: UpdatePaymentSourceDto) => o.description !== null)
   @IsString()
   @MaxLength(500)
-  description?: string;
+  description?: string | null;
 
   @ApiPropertyOptional()
   @IsOptional()

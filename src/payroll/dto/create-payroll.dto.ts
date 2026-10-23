@@ -69,6 +69,17 @@ export class CreatePayrollDto {
   @Min(0)
   advance?: number;
 
+  /** Per-run override for Payoneer transfer fee %. Omitted ⇒ falls
+   *  back to the global default (settings key PAYROLL_PAYONEER_FEE_PERCENT,
+   *  default 3). The monthly run UI exposes this as a 1% / 3% toggle. */
+  @ApiPropertyOptional({ description: 'Per-run Payoneer fee %, e.g. 1 or 3' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(100)
+  payoneerFeePct?: number;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()

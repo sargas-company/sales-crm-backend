@@ -111,12 +111,38 @@ export class EmployeeService {
       }
     }
 
+    /* activeInMonth=YYYY-MM: employees who were active at any point
+     * during that calendar month — see DTO docs for the full rule. */
+    let activeInMonthWhere: Prisma.EmployeeWhereInput | null = null;
+    if (dto.activeInMonth) {
+      const [y, m] = dto.activeInMonth.split('-').map(Number);
+      const monthStart = new Date(Date.UTC(y, m - 1, 1));
+      const monthEnd = new Date(Date.UTC(y, m, 0, 23, 59, 59, 999));
+      activeInMonthWhere = {
+        AND: [
+          {
+            OR: [
+              { hiredAt: null },
+              { hiredAt: { lte: monthEnd } },
+            ],
+          },
+          {
+            OR: [
+              { terminatedAt: null },
+              { terminatedAt: { gte: monthStart } },
+            ],
+          },
+        ],
+      };
+    }
+
     const where: Prisma.EmployeeWhereInput = {
       ...(dto.status ? { status: dto.status } : {}),
       ...(dto.position
         ? { positions: { some: { id: dto.position } } }
         : {}),
       ...(birthdayMonthIds !== null ? { id: { in: birthdayMonthIds } } : {}),
+      ...(activeInMonthWhere ?? {}),
       ...(dto.search
         ? {
             OR: [

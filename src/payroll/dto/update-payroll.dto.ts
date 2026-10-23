@@ -57,6 +57,16 @@ export class UpdatePayrollDto {
   @Min(0)
   advance?: number;
 
+  /** Per-run Payoneer fee % override. See CreatePayrollDto for the
+   *  full note; same semantics. */
+  @ApiPropertyOptional({ description: 'Per-run Payoneer fee %, e.g. 1 or 3' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(100)
+  payoneerFeePct?: number;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
