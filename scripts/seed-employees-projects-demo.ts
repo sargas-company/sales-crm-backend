@@ -624,16 +624,24 @@ async function main() {
             : rate;
         const tax = new Decimal('42.5').plus(base.times('0.06'));
         const salaryWithTax = base.plus(tax);
-        const bonusAmount = salaryWithTax
+        /* Mirror payroll.service.computeAll(): bonus % is applied to
+         * baseSalary (not salaryWithTax), and Payoneer fee grosses up
+         * on `owed = total - advance` (owed * r / (1 - r)) so the
+         * recipient receives exactly `owed`. Keeping this in step with
+         * the service means seeded rows are indistinguishable from
+         * rows saved through the UI. */
+        const bonusAmount = base
           .times(bonusPercent)
           .div(100)
           .plus(fixedBonus);
         const totalAccrued = salaryWithTax.plus(bonusAmount);
-        const remainingRaw = totalAccrued.minus(advance);
-        const remainingToPay = remainingRaw.isNegative()
+        const owedRaw = totalAccrued.minus(advance);
+        const owed = owedRaw.isNegative() ? new Decimal(0) : owedRaw;
+        const payoneerRate = new Decimal('0.03');
+        const payoneerFee = owed.isZero()
           ? new Decimal(0)
-          : remainingRaw;
-        const payoneerFee = totalAccrued.times('0.03');
+          : owed.times(payoneerRate).div(new Decimal(1).minus(payoneerRate));
+        const remainingToPay = owed.plus(payoneerFee);
         const companyCost = totalAccrued.plus(payoneerFee);
 
         // Most historical rows are Paid; the last two months are Draft

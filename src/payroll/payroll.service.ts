@@ -112,8 +112,7 @@ export class PayrollService {
       PayrollSortDirection.desc;
 
     const where: Prisma.PayrollEntryWhereInput = {
-      year: dto.year,
-      month: dto.month,
+      ...this.buildPeriodWhere(dto),
       ...(dto.status ? { status: dto.status } : {}),
       ...(dto.search
         ? {
@@ -134,6 +133,58 @@ export class PayrollService {
       include: this.include(),
     });
     return { data: rows };
+  }
+
+  /* Build the where-clause for date filtering. Range (from/to) wins
+   * when either half is supplied; otherwise fall back to single-month
+   * (year/month); otherwise return {} (all time). */
+  private buildPeriodWhere(dto: {
+    year?: number;
+    month?: number;
+    fromYear?: number;
+    fromMonth?: number;
+    toYear?: number;
+    toMonth?: number;
+  }): Prisma.PayrollEntryWhereInput {
+    const hasRange =
+      dto.fromYear != null ||
+      dto.fromMonth != null ||
+      dto.toYear != null ||
+      dto.toMonth != null;
+    if (hasRange) {
+      /* Compare (year, month) tuples. The lexicographic rule is:
+       *   row >= from  iff  row.year > from.year OR (row.year = from.year AND row.month >= from.month)
+       *   row <= to    iff  row.year < to.year   OR (row.year = to.year   AND row.month <= to.month) */
+      const and: Prisma.PayrollEntryWhereInput[] = [];
+      if (dto.fromYear != null && dto.fromMonth != null) {
+        and.push({
+          OR: [
+            { year: { gt: dto.fromYear } },
+            {
+              AND: [
+                { year: dto.fromYear },
+                { month: { gte: dto.fromMonth } },
+              ],
+            },
+          ],
+        });
+      }
+      if (dto.toYear != null && dto.toMonth != null) {
+        and.push({
+          OR: [
+            { year: { lt: dto.toYear } },
+            {
+              AND: [{ year: dto.toYear }, { month: { lte: dto.toMonth } }],
+            },
+          ],
+        });
+      }
+      return and.length ? { AND: and } : {};
+    }
+    if (dto.year != null && dto.month != null) {
+      return { year: dto.year, month: dto.month };
+    }
+    return {};
   }
 
   async findOne(id: string) {
@@ -622,6 +673,8 @@ export class PayrollService {
           firstName: true,
           lastName: true,
           status: true,
+          hiredAt: true,
+          terminatedAt: true,
           positions: true,
         },
       },

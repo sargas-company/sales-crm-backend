@@ -72,19 +72,21 @@ function assertLocal(): void {
 assertLocal();
 const prisma = new PrismaClient();
 
-/* Payroll computation — mirrors the service-side formulas just enough
- * to produce realistic rows. Not a reimplementation of payroll.service,
- * only enough to pass invariants: salaryWithTax = baseSalary * (1+tax%),
- * bonusAmount = baseSalary * bonusPercent/100 + fixedBonus,
- * totalAccrued = salaryWithTax + bonusAmount,
- * remainingToPay = totalAccrued - advance,
- * payoneerFee = remainingToPay * 2%,
- * companyCost = totalAccrued + payoneerFee. */
+/* Payroll computation — mirrors payroll.service.computeAll():
+ *   tax           = base > 0 ? 42.5 + base * 6% : 0
+ *   salaryWithTax = base + tax
+ *   bonusAmount   = base * bonusPercent/100 + fixedBonus
+ *   totalAccrued  = salaryWithTax + bonusAmount
+ *   owed          = max(0, totalAccrued - advance)
+ *   payoneerFee   = owed === 0 ? 0 : owed * r / (1 - r)   // gross-up
+ *   remainingToPay= owed + payoneerFee
+ *   companyCost   = totalAccrued + payoneerFee
+ * Keeping this in step with the service means seeded rows are
+ * indistinguishable from rows saved through the UI. */
 function computePayroll(args: {
   rateType: RateType;
   rate: number;
   hours: number | null;
-  taxPct: number;
   bonusPct: number;
   fixedBonus: number;
   advance: number;
@@ -93,13 +95,15 @@ function computePayroll(args: {
     args.rateType === 'HOURLY'
       ? args.rate * (args.hours ?? 0)
       : args.rate;
-  const tax = base * (args.taxPct / 100);
+  const tax = base > 0 ? 42.5 + base * 0.06 : 0;
   const salaryWithTax = base + tax;
   const bonusFromPct = base * (args.bonusPct / 100);
   const bonusAmount = bonusFromPct + args.fixedBonus;
   const totalAccrued = salaryWithTax + bonusAmount;
-  const remainingToPay = totalAccrued - args.advance;
-  const payoneerFee = totalAccrued * 0.03;
+  const owed = Math.max(0, totalAccrued - args.advance);
+  const r = 0.03;
+  const payoneerFee = owed === 0 ? 0 : (owed * r) / (1 - r);
+  const remainingToPay = owed + payoneerFee;
   const companyCost = totalAccrued + payoneerFee;
   return {
     baseSalary: new Decimal(base.toFixed(2)),
@@ -154,7 +158,6 @@ async function main() {
     if (dup) continue;
 
     const hours = rate.rateType === 'HOURLY' ? 160 + Math.floor(Math.random() * 20) : null;
-    const taxPct = 5; // low flat demo tax
     const bonusPct = Math.random() < 0.3 ? 10 : 0;
     const fixedBonus = Math.random() < 0.2 ? 200 : 0;
     const advance = Math.random() < 0.25 ? 500 : 0;
@@ -163,7 +166,6 @@ async function main() {
       rateType: rate.rateType,
       rate: Number(rate.rate),
       hours,
-      taxPct,
       bonusPct,
       fixedBonus,
       advance,

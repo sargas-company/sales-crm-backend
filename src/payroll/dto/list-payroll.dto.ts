@@ -30,18 +30,54 @@ export enum PayrollSortDirection {
 
 export class ListPayrollDto {
   @ApiPropertyOptional({ example: 2026 })
+  @IsOptional()
   @Transform(({ value }) => Number(value))
   @IsInt()
   @Min(2000)
   @Max(2100)
-  year: number;
+  year?: number;
 
   @ApiPropertyOptional({ example: 9 })
+  @IsOptional()
   @Transform(({ value }) => Number(value))
   @IsInt()
   @Min(1)
   @Max(12)
-  month: number;
+  month?: number;
+
+  /* Date-range filter. When any of these are supplied, year/month are
+   * ignored and the range becomes inclusive on both ends. */
+  @ApiPropertyOptional({ example: 2026 })
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(2000)
+  @Max(2100)
+  fromYear?: number;
+
+  @ApiPropertyOptional({ example: 1 })
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(1)
+  @Max(12)
+  fromMonth?: number;
+
+  @ApiPropertyOptional({ example: 2026 })
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(2000)
+  @Max(2100)
+  toYear?: number;
+
+  @ApiPropertyOptional({ example: 12 })
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(1)
+  @Max(12)
+  toMonth?: number;
 
   @ApiPropertyOptional({ enum: PayrollSortBy })
   @IsOptional()
