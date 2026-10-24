@@ -584,7 +584,18 @@ export class PayrollService {
      * advance (the advance wire carried its own fee at the time). */
     const owedRaw = totalAccrued.minus(input.advance);
     const owed = owedRaw.isNegative() ? new Decimal(0) : owedRaw;
-    const payoneerFee = this.round2(owed.times(coeffs.payoneerRate));
+    /* Payoneer charges its fee on the GROSS we send, not on the net
+     * the recipient receives. To deliver `owed` net at a rate `r`, the
+     * gross we debit is owed / (1 - r), so the fee is owed * r / (1 - r)
+     * — not owed * r. The previous formula under-charged the fee by a
+     * small amount that compounded across the monthly run. */
+    const payoneerFee = owed.isZero()
+      ? new Decimal(0)
+      : this.round2(
+          owed
+            .times(coeffs.payoneerRate)
+            .div(new Decimal(1).minus(coeffs.payoneerRate)),
+        );
     const remainingToPay = this.round2(owed.plus(payoneerFee));
     const companyCost = this.round2(totalAccrued.plus(payoneerFee));
     return {
