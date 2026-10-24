@@ -721,9 +721,16 @@ export class DiscordSchedulersService {
   // ─── Housekeeping ──────────────────────────────────────────────
 
   private async recordProfileSuccess(profileId: string): Promise<void> {
+    /* Any successful send clears the stale lastFailure fields —
+     * owner wants the UI badge to disappear the moment the issue
+     * stops reproducing, not persist as a historical scar. */
     await this.prisma.discordProfile.update({
       where: { id: profileId },
-      data: { lastSuccessAt: new Date() },
+      data: {
+        lastSuccessAt: new Date(),
+        lastFailureAt: null,
+        lastFailureMessage: null,
+      },
     });
   }
 

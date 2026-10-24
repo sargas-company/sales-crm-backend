@@ -105,9 +105,10 @@ export class FinanceWeeklyService {
       }),
     ]);
 
-    // All projects (excluding archived) so grid has a stable list.
+    /* All projects, including archived — owner needs them in the grid
+     * to backfill payments for inactive engagements. Archived rows
+     * surface with a status tag in the UI. */
     const projects = await this.prisma.project.findMany({
-      where: { status: { not: 'archived' } },
       select: {
         id: true,
         name: true,
@@ -384,11 +385,14 @@ export class FinanceWeeklyService {
   }
 
   async listProjectsSummary() {
+    /* Include archived projects too — the Payment grid dropdown needs
+     * them so backfill against an inactive project is possible. The
+     * client sorts them to the bottom and renders the status badge. */
     const projects = await this.prisma.project.findMany({
-      where: { status: { not: 'archived' } },
       select: {
         id: true,
         name: true,
+        status: true,
         client: {
           select: { firstName: true, lastName: true, company: true },
         },
@@ -398,6 +402,7 @@ export class FinanceWeeklyService {
     return projects.map((p) => ({
       id: p.id,
       name: p.name,
+      status: p.status,
       clientName: formatClientName(p.client),
     }));
   }

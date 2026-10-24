@@ -403,15 +403,24 @@ export class ProjectService {
       select: { name: true },
     });
     await this.assertCanAccessProject(id, user);
-    // Hard-delete with existing reports is refused: the project-day
-    // record is a historical team log, not personal data to withdraw.
-    // Archive the project instead.
-    const reportCount = await this.prisma.projectReport.count({
-      where: { projectId: id },
-    });
-    if (reportCount > 0) {
+    /* Hard-delete is refused if ANY of these reference the project —
+     * the WeeklyEntry case in particular would otherwise cascade and
+     * silently wipe historical payment rows. For every blocker the
+     * owner expects to archive instead. */
+    const [reports, weekly, members, rules] = await Promise.all([
+      this.prisma.projectReport.count({ where: { projectId: id } }),
+      this.prisma.weeklyEntry.count({ where: { projectId: id } }),
+      this.prisma.projectMember.count({ where: { projectId: id } }),
+      this.prisma.projectPaymentRule.count({ where: { projectId: id } }),
+    ]);
+    const blockers: string[] = [];
+    if (reports) blockers.push(`${reports} report${reports === 1 ? '' : 's'}`);
+    if (weekly) blockers.push(`${weekly} weekly payment${weekly === 1 ? '' : 's'}`);
+    if (members) blockers.push(`${members} member${members === 1 ? '' : 's'}`);
+    if (rules) blockers.push(`${rules} payment rule${rules === 1 ? '' : 's'}`);
+    if (blockers.length) {
       throw new ConflictException(
-        `Project "${existing.name}" has ${reportCount} report${reportCount === 1 ? '' : 's'}; archive the project instead of deleting.`,
+        `Project "${existing.name}" has ${blockers.join(', ')}; archive the project instead of deleting.`,
       );
     }
     await this.prisma.project.delete({ where: { id } });
