@@ -32,15 +32,6 @@ const MONTH_NAMES_SHORT = [
   'Dec',
 ];
 
-function mondayOfWeekContaining(date: Date): Date {
-  const d = new Date(date);
-  d.setUTCHours(0, 0, 0, 0);
-  const day = d.getUTCDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  d.setUTCDate(d.getUTCDate() + diff);
-  return d;
-}
-
 function addDays(d: Date, days: number): Date {
   const r = new Date(d);
   r.setUTCDate(r.getUTCDate() + days);
@@ -56,8 +47,23 @@ function labelWeek(start: Date, end: Date): string {
   return `${s} ${sm} – ${e} ${em}`;
 }
 
+/* Known-good anchor: fiscal January 2026 Week 1 starts Monday
+ * Jan 12 2026. From that point the 4-4-5 triad repeats continuously
+ * (12 months per fiscal year = 52 weeks = 364 days). Each adjacent
+ * fiscal year shifts by exactly 364 days — pure continuous pattern
+ * with ~1 day/year drift against the calendar (no 53-week leap-year
+ * correction yet; add later if accounting requires exact calendar
+ * alignment). */
+const BASE_YEAR = 2026;
+const BASE_YEAR_ANCHOR = new Date(Date.UTC(2026, 0, 12));
+const YEAR_LENGTH_DAYS = 52 * 7;
+
+function anchorForYear(year: number): Date {
+  return addDays(BASE_YEAR_ANCHOR, (year - BASE_YEAR) * YEAR_LENGTH_DAYS);
+}
+
 async function generateYear(year: number) {
-  const anchor = mondayOfWeekContaining(new Date(Date.UTC(year, 0, 1)));
+  const anchor = anchorForYear(year);
   const pattern = [4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4, 5];
   let weekCursor = anchor;
 
