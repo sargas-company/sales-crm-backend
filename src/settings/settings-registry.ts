@@ -456,7 +456,7 @@ export const SETTINGS_REGISTRY: Record<string, RegistryEntry> = {
     description:
       'Flat tax amount subtracted from each employee payroll row. Applies to new/open runs; paid runs keep their snapshot.',
     type: 'number',
-    default: 43,
+    default: 42.5,
     min: 0,
     max: 10000,
     step: 0.5,

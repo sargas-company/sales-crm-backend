@@ -30,7 +30,7 @@ const { Decimal } = Prisma;
 type D = Prisma.Decimal;
 
 // Formula constants (spec §1).
-const TAX_FIXED = new Decimal('43'); // fixed contribution
+const TAX_FIXED = new Decimal('42.5'); // fixed contribution
 const TAX_RATE = new Decimal('0.06'); // 5% + 1% flat
 const PAYONEER_RATE = new Decimal('0.03');
 
@@ -49,7 +49,7 @@ export class PayrollService {
    */
   private async currentCoefficients(overrideFeePct?: number | null) {
     const [fixedTax, taxPercent, settingsFeePercent] = await Promise.all([
-      this.settings.getNumberForKey(SK.PAYROLL_FIXED_TAX, 43),
+      this.settings.getNumberForKey(SK.PAYROLL_FIXED_TAX, 42.5),
       this.settings.getNumberForKey(SK.PAYROLL_TAX_PERCENT, 6),
       this.settings.getNumberForKey(SK.PAYROLL_PAYONEER_FEE_PERCENT, 3),
     ]);
