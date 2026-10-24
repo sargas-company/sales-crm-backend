@@ -18,6 +18,11 @@ const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as cons
 
 type HeatmapMetric = 'all' | 'qualified' | 'hot' | 'qualifiedRate' | 'averageScore';
 
+export interface HeatmapCountryBreakdown {
+  name: string;
+  count: number;
+}
+
 export interface HeatmapCell {
   weekdayIndex: number;
   hour: number;
@@ -26,6 +31,7 @@ export interface HeatmapCell {
   hot: number;
   averageScore: number;
   qualifiedRate: number;
+  countries: HeatmapCountryBreakdown[];
 }
 
 export interface HeatmapDailyCell extends HeatmapCell {
@@ -369,6 +375,44 @@ export class AnalyticsService {
       `,
     );
 
+    /* Second pass: per-cell country breakdown. Keeps the aggregate
+     * query lean (no triple GROUP BY) and lets the tooltip render a
+     * sorted list of country/count pairs for whichever cell the user
+     * hovers. NULL locations fold into "Unknown". */
+    const countryRows = await this.prisma.$queryRaw<
+      {
+        weekday_pg: number;
+        hour: number;
+        location: string | null;
+        count: bigint;
+      }[]
+    >(
+      Prisma.sql`
+        SELECT
+          EXTRACT(DOW FROM ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${timezone}))::int AS weekday_pg,
+          EXTRACT(HOUR FROM ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${timezone}))::int AS hour,
+          "location",
+          COUNT(*)::bigint AS count
+        FROM "JobPost"
+        WHERE ${this.buildWhereSql(filters, window)}
+        GROUP BY weekday_pg, hour, "location"
+      `,
+    );
+    const countriesByKey = new Map<string, HeatmapCountryBreakdown[]>();
+    for (const r of countryRows) {
+      const weekdayIndex = this.pgDowToMondayIdx(r.weekday_pg);
+      const key = `${weekdayIndex}-${r.hour}`;
+      const list = countriesByKey.get(key) ?? [];
+      list.push({
+        name: r.location?.trim() ? r.location : 'Unknown',
+        count: Number(r.count),
+      });
+      countriesByKey.set(key, list);
+    }
+    for (const list of Array.from(countriesByKey.values())) {
+      list.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+    }
+
     const byKey = new Map<string, HeatmapCell>();
     for (const r of rows) {
       const weekdayIndex = this.pgDowToMondayIdx(r.weekday_pg);
@@ -386,6 +430,7 @@ export class AnalyticsService {
         hot,
         averageScore,
         qualifiedRate,
+        countries: countriesByKey.get(`${weekdayIndex}-${r.hour}`) ?? [],
       });
     }
 
@@ -401,6 +446,7 @@ export class AnalyticsService {
             hot: 0,
             averageScore: 0,
             qualifiedRate: 0,
+            countries: [],
           },
         );
       }
@@ -456,6 +502,9 @@ export class AnalyticsService {
           hot,
           averageScore,
           qualifiedRate,
+          /* Daily cells reuse the weekly country breakdown — the
+           * tooltip only shows countries on the weekly matrix anyway. */
+          countries: [],
         };
       });
       dailyMaxValue = Math.max(0, ...dailyCells.map((c) => cellValue(c, metric)));
