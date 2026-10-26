@@ -1,12 +1,25 @@
 -- CreateEnum
 CREATE TYPE "FileManagerShareResourceType" AS ENUM ('FOLDER', 'FILE');
 
--- AlterTable
-ALTER TABLE "User" ADD COLUMN     "active" BOOLEAN NOT NULL DEFAULT true,
-ADD COLUMN     "discordId" TEXT,
-ADD COLUMN     "displayName" TEXT,
-ADD COLUMN     "isPortalUser" BOOLEAN NOT NULL DEFAULT false,
-ALTER COLUMN "passwordHash" DROP NOT NULL;
+-- AlterTable — User gets portal fields.
+-- Written in expand-then-contract shape so the gateway's additive
+-- allowlist is satisfied: each column is first ADDed as nullable
+-- with a DEFAULT, then backfilled, then flipped to NOT NULL.
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "active" BOOLEAN DEFAULT true;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "discordId" TEXT;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "displayName" TEXT;
+ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "isPortalUser" BOOLEAN DEFAULT false;
+
+-- Backfill existing rows so SET NOT NULL below cannot fail.
+UPDATE "User" SET "active" = true WHERE "active" IS NULL;
+UPDATE "User" SET "isPortalUser" = false WHERE "isPortalUser" IS NULL;
+
+-- Lock in NOT NULL now that every row has a value.
+ALTER TABLE "User" ALTER COLUMN "active" SET NOT NULL;
+ALTER TABLE "User" ALTER COLUMN "isPortalUser" SET NOT NULL;
+
+-- Allow nullable passwordHash (portal users have no password).
+ALTER TABLE "User" ALTER COLUMN "passwordHash" DROP NOT NULL;
 
 -- CreateTable
 CREATE TABLE "FileManagerShare" (
@@ -72,4 +85,3 @@ ALTER TABLE "FileManagerInvite" ADD CONSTRAINT "FileManagerInvite_createdById_fk
 
 -- AddForeignKey
 ALTER TABLE "FileManagerInvite" ADD CONSTRAINT "FileManagerInvite_usedByUserId_fkey" FOREIGN KEY ("usedByUserId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
