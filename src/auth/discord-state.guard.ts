@@ -20,8 +20,15 @@ import type { Request } from 'express';
 export class DiscordAuthGuard extends AuthGuard('discord') {
   getAuthenticateOptions(context: ExecutionContext) {
     const req = context.switchToHttp().getRequest<Request>();
-    const invite =
-      typeof req.query.invite === 'string' ? req.query.invite : undefined;
-    return invite ? { state: invite } : {};
+    /* Frontend passes the invite token in the `state` query (and the
+     * callback leg reads `req.query.state` as well), so accept both
+     * `?state=` and `?invite=` for forward compat. */
+    const token =
+      typeof req.query.state === 'string'
+        ? req.query.state
+        : typeof req.query.invite === 'string'
+          ? req.query.invite
+          : undefined;
+    return token ? { state: token } : {};
   }
 }
