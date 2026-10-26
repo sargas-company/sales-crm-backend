@@ -67,13 +67,22 @@ export class UploadSessionService {
     const safeOriginal = this.sanitize(dto.fileName);
     const storageKey = `file-manager/${dto.folderId ?? 'root'}/${randomUUID()}-${safeOriginal}`;
 
-    const { fileId } = await this.storage.startLarge(
-      StorageBucket.FILE_MANAGER,
-      storageKey,
-      dto.mimeType,
-    );
-
     const totalParts = Math.max(1, Math.ceil(dto.size / CHUNK_SIZE));
+
+    /* B2 refuses `finishLargeFile` on multipart with only 1 part
+     * ("large files must have at least 2 parts"). Small files that
+     * fit in a single chunk go through the single-shot upload path
+     * instead — we mark the session with an empty b2FileId and
+     * handle part/finalize paths differently below. */
+    let fileId = '';
+    if (totalParts > 1) {
+      const res = await this.storage.startLarge(
+        StorageBucket.FILE_MANAGER,
+        storageKey,
+        dto.mimeType,
+      );
+      fileId = res.fileId;
+    }
     const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
 
     const session = await this.prisma.fileManagerUploadSession.create({
@@ -136,7 +145,19 @@ export class UploadSessionService {
     }
 
     const sha1 = createHash('sha1').update(buffer).digest('hex');
-    await this.storage.uploadLargePart(session.b2FileId, partIndex, buffer, sha1);
+    /* Single-shot path (session.b2FileId === '') — upload the whole
+     * buffer via the regular put-file endpoint. finishLarge is never
+     * called; finalize just creates the DB row. */
+    if (session.b2FileId === '') {
+      await this.storage.upload({
+        bucket: StorageBucket.FILE_MANAGER,
+        fileName: session.storageKey,
+        buffer,
+        mimeType: session.mimeType,
+      });
+    } else {
+      await this.storage.uploadLargePart(session.b2FileId, partIndex, buffer, sha1);
+    }
 
     /* Record this part in the session. Use a tx to keep partsReceived
      * and partSha1s aligned. Idempotent: re-uploading the same part
@@ -193,17 +214,21 @@ export class UploadSessionService {
       );
     }
 
-    /* B2 wants partSha1Array ordered by partNumber ascending. Our
-     * partSha1s is in insertion order (which may be out of order),
-     * so re-sort by partsReceived. */
-    const paired = session.partsReceived.map((n, i) => ({
-      n,
-      sha1: session.partSha1s[i],
-    }));
-    paired.sort((a, b) => a.n - b.n);
-    const partSha1Array = paired.map((p) => p.sha1);
-
-    await this.storage.finishLarge(session.b2FileId, partSha1Array);
+    /* Single-shot path (empty b2FileId) uploaded the whole file in
+     * one request to B2's regular put-file endpoint — nothing to
+     * finalise on B2's side, straight to DB. */
+    if (session.b2FileId !== '') {
+      /* B2 wants partSha1Array ordered by partNumber ascending. Our
+       * partSha1s is in insertion order (which may be out of order),
+       * so re-sort by partsReceived. */
+      const paired = session.partsReceived.map((n, i) => ({
+        n,
+        sha1: session.partSha1s[i],
+      }));
+      paired.sort((a, b) => a.n - b.n);
+      const partSha1Array = paired.map((p) => p.sha1);
+      await this.storage.finishLarge(session.b2FileId, partSha1Array);
+    }
 
     const file = await this.prisma.$transaction(async (tx) => {
       const row = await tx.fileManagerFile.create({
@@ -262,7 +287,9 @@ export class UploadSessionService {
     if (session.status !== FileManagerUploadStatus.OPEN) {
       return { id: sessionId, status: session.status };
     }
-    await this.storage.cancelLarge(session.b2FileId);
+    if (session.b2FileId !== '') {
+      await this.storage.cancelLarge(session.b2FileId);
+    }
     const updated = await this.prisma.fileManagerUploadSession.update({
       where: { id: sessionId },
       data: { status: FileManagerUploadStatus.ABORTED },
@@ -306,7 +333,9 @@ export class UploadSessionService {
     let errors = 0;
     for (const s of expired) {
       try {
-        await this.storage.cancelLarge(s.b2FileId);
+        if (s.b2FileId !== '') {
+          await this.storage.cancelLarge(s.b2FileId);
+        }
         await this.prisma.fileManagerUploadSession.update({
           where: { id: s.id },
           data: { status: FileManagerUploadStatus.ABORTED },
