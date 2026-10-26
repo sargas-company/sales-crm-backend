@@ -39,7 +39,10 @@ const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 /* Chunk upload cap — one 8 MiB chunk, with 2 MiB headroom for the
  * multipart envelope. The resumable path above is where real large
  * files flow; this cap is per-part only. */
-const MAX_PART_BYTES = 10 * 1024 * 1024;
+/* Multer per-part cap. Must stay above CHUNK_SIZE in
+ * upload-session.service.ts (currently 16 MiB) with headroom for
+ * multipart/form-data boundary and headers. */
+const MAX_PART_BYTES = 20 * 1024 * 1024;
 
 @ApiTags('File Manager')
 @ApiBearerAuth('jwt')
