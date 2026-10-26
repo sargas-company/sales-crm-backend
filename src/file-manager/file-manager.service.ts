@@ -501,6 +501,112 @@ export class FileManagerService {
     return { id };
   }
 
+  /* ── Bulk ops ──────────────────────────────────────────────── */
+
+  async bulkDelete(
+    folderIds: string[],
+    fileIds: string[],
+    actorUserId: string,
+  ): Promise<{
+    deletedFolders: number;
+    deletedFiles: number;
+    failed: { id: string; kind: 'folder' | 'file'; reason: string }[];
+  }> {
+    const failed: { id: string; kind: 'folder' | 'file'; reason: string }[] = [];
+    let deletedFiles = 0;
+    let deletedFolders = 0;
+    /* Files first — folder-cascade would also delete them, but doing
+     * them independently gives a per-file success/fail report. */
+    for (const id of fileIds) {
+      try {
+        await this.deleteFile(id, actorUserId);
+        deletedFiles++;
+      } catch (err) {
+        failed.push({
+          id,
+          kind: 'file',
+          reason: (err as Error).message || 'delete failed',
+        });
+      }
+    }
+    for (const id of folderIds) {
+      try {
+        await this.deleteFolder(id, actorUserId);
+        deletedFolders++;
+      } catch (err) {
+        failed.push({
+          id,
+          kind: 'folder',
+          reason: (err as Error).message || 'delete failed',
+        });
+      }
+    }
+    return { deletedFolders, deletedFiles, failed };
+  }
+
+  async bulkMove(
+    folderIds: string[],
+    fileIds: string[],
+    destinationFolderId: string | null,
+    actorUserId: string,
+  ): Promise<{
+    movedFolders: number;
+    movedFiles: number;
+    failed: { id: string; kind: 'folder' | 'file'; reason: string }[];
+  }> {
+    /* Cycle check: destination must not be the same as, or a
+     * descendant of, any folder being moved. Walk destination's
+     * ancestor chain via the parent pointer and bail if we meet one
+     * of the sources. */
+    if (destinationFolderId && folderIds.length > 0) {
+      const sources = new Set(folderIds);
+      let cursor: string | null = destinationFolderId;
+      const seen = new Set<string>();
+      while (cursor && !seen.has(cursor)) {
+        seen.add(cursor);
+        if (sources.has(cursor)) {
+          throw new BadRequestException(
+            'Cannot move a folder into itself or its own subtree',
+          );
+        }
+        const row = await this.prisma.fileManagerFolder.findUnique({
+          where: { id: cursor },
+          select: { parentId: true },
+        });
+        cursor = row?.parentId ?? null;
+      }
+    }
+
+    const failed: { id: string; kind: 'folder' | 'file'; reason: string }[] = [];
+    let movedFolders = 0;
+    let movedFiles = 0;
+    for (const id of folderIds) {
+      try {
+        await this.moveFolder(id, destinationFolderId, actorUserId);
+        movedFolders++;
+      } catch (err) {
+        failed.push({
+          id,
+          kind: 'folder',
+          reason: (err as Error).message || 'move failed',
+        });
+      }
+    }
+    for (const id of fileIds) {
+      try {
+        await this.moveFile(id, destinationFolderId, actorUserId);
+        movedFiles++;
+      } catch (err) {
+        failed.push({
+          id,
+          kind: 'file',
+          reason: (err as Error).message || 'move failed',
+        });
+      }
+    }
+    return { movedFolders, movedFiles, failed };
+  }
+
   async getDownloadUrl(id: string, actorUserId: string) {
     const row = await this.loadFileOr404(id);
     const disposition = `attachment; filename*=UTF-8''${encodeURIComponent(row.originalName)}`;

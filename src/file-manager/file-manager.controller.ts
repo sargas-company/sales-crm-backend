@@ -29,6 +29,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { FileManagerAccessService } from './file-manager-access.service';
 import { FileManagerService } from './file-manager.service';
 import { UploadSessionService } from './upload-session.service';
+import { BulkDeleteDto, BulkMoveDto } from './dto/bulk-ops.dto';
 import { CreateFolderDto } from './dto/create-folder.dto';
 import { RenameFolderDto } from './dto/rename-folder.dto';
 import { MoveNodeDto } from './dto/move-node.dto';
@@ -377,6 +378,63 @@ export class FileManagerController {
       }
     }
     return this.svc.deleteFile(id, req.user.id);
+  }
+
+  /* ── Bulk ops ────────────────────────────────────────────────── */
+
+  @Post('bulk-delete')
+  @RequirePermission('file_manager:manage')
+  @ApiOperation({
+    summary:
+      'Delete multiple folders and/or files in one call. Returns per-item success/failure.',
+  })
+  async bulkDelete(
+    @Body() dto: BulkDeleteDto,
+    @Req() req: Request & { user: AuthUser },
+  ) {
+    const ctx = await this.context(req.user.id);
+    if (ctx.isPortal) {
+      throw new ForbiddenException('Portal users cannot delete');
+    }
+    return this.svc.bulkDelete(
+      dto.folderIds ?? [],
+      dto.fileIds ?? [],
+      req.user.id,
+    );
+  }
+
+  @Post('bulk-move')
+  @RequirePermission('file_manager:manage')
+  @ApiOperation({
+    summary:
+      'Move multiple folders and/or files to a destination folder (null = root). Returns per-item success/failure.',
+  })
+  async bulkMove(
+    @Body() dto: BulkMoveDto,
+    @Req() req: Request & { user: AuthUser },
+  ) {
+    const ctx = await this.context(req.user.id);
+    if (ctx.isPortal) {
+      /* Portal workers can move inside their scope only. Require
+       * canUpload on destination and on every source parent. */
+      if (dto.destinationFolderId) {
+        if (!this.access.canUploadInto(ctx.scope, dto.destinationFolderId)) {
+          throw new ForbiddenException(
+            'No upload permission on destination folder',
+          );
+        }
+      } else {
+        throw new ForbiddenException(
+          'Portal users cannot move to root',
+        );
+      }
+    }
+    return this.svc.bulkMove(
+      dto.folderIds ?? [],
+      dto.fileIds ?? [],
+      dto.destinationFolderId ?? null,
+      req.user.id,
+    );
   }
 
   @Get('files/:id/download-url')
