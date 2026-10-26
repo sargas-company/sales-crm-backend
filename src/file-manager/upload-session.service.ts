@@ -31,9 +31,9 @@ import { InitUploadDto } from './dto/init-upload.dto';
  * B2 requires minimum part size of 5 MiB (except the final part).
  * 8 MiB satisfies that with headroom. */
 
-const CHUNK_SIZE = 8 * 1024 * 1024;
+const CHUNK_SIZE = 16 * 1024 * 1024; // 16 MiB — halves chunk count vs 8 MiB
 const SESSION_TTL_MS = 48 * 60 * 60 * 1000;
-const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024; // 1 GiB
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024; // 5 GiB — covers 4 GiB target with headroom
 const B2_MIN_PART_BYTES = 5 * 1024 * 1024;
 
 @Injectable()

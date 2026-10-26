@@ -254,9 +254,13 @@ export class PortalAuthService {
     displayName: string | null;
     avatarUrl: string | null;
   }): PortalLoginResult {
+    /* 24h — long enough that a multi-GB upload over typical home
+     * uplink doesn't 401 mid-flight. Terminate still works instantly:
+     * PermissionGuard checks `active=false` on every request and
+     * throws regardless of JWT lifetime. */
     const accessToken = this.jwt.sign(
       { sub: user.id, email: user.email },
-      { expiresIn: '15m' },
+      { expiresIn: '24h' },
     );
     return { accessToken, user };
   }
