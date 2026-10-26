@@ -242,9 +242,20 @@ export class StorageService implements OnModuleInit {
           await this.authorize();
           continue;
         }
+        /* Surface B2's full response body — the one-line message is
+         * almost always just "Request failed with status code 400"
+         * which gives no actionable info. The body carries the real
+         * reason (missing parts, size violation, bad sha1, etc.). */
+        const body = (err as { response?: { data?: unknown } }).response?.data;
+        const bodyStr =
+          body === undefined
+            ? ''
+            : typeof body === 'string'
+              ? body
+              : JSON.stringify(body);
         const msg = (err as { message?: string })?.message ?? String(err);
         throw new InternalServerErrorException(
-          `B2 finishLargeFile failed for fileId=${fileId}: ${msg}`,
+          `B2 finishLargeFile failed for fileId=${fileId} (parts=${partSha1Array.length}): status=${status ?? '?'} msg=${msg} body=${bodyStr}`,
         );
       }
     }
