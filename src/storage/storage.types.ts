@@ -6,6 +6,7 @@ export enum StorageBucket {
   AVATARS = 'AVATARS',
   EMPLOYEE_ATTACHMENTS = 'EMPLOYEE_ATTACHMENTS',
   PROJECT_ATTACHMENTS = 'PROJECT_ATTACHMENTS',
+  FILE_MANAGER = 'FILE_MANAGER',
 }
 
 export interface StorageUploadOptions {

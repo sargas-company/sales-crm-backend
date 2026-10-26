@@ -171,6 +171,11 @@ export const ADMIN_MANAGER_PRESET_KEYS: ReadonlySet<string> = new Set<string>([
   // scanner outages, business signals and admin events reach them.
   'notifications:view',
 
+  // File Manager — standalone corporate file space, same tier as
+  // Owner (owner's rule: owner + admin + manager, no one else).
+  'file_manager:view',
+  'file_manager:manage',
+
   // Deliberately NOT granted (Owner-only). Keep this list exhaustive:
   // every row here is a decision, not an oversight.
   //   • settings:view, settings:update, settings_scanner:update,
@@ -205,6 +210,10 @@ export const REGULAR_MANAGER_PRESET_KEYS: ReadonlySet<string> = new Set<string>(
   'clients:view',
   'clients:create',
   'clients:update',
+  // File Manager — owner's rule: all three business roles get full
+  // read + manage. No per-folder ACL in the MVP.
+  'file_manager:view',
+  'file_manager:manage',
 ]);
 
 /**

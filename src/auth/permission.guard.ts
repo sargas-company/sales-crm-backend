@@ -53,6 +53,8 @@ export class PermissionGuard implements CanActivate {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
+        isPortalUser: true,
+        active: true,
         roleRef: {
           select: {
             permissions: {
@@ -62,6 +64,27 @@ export class PermissionGuard implements CanActivate {
         },
       },
     });
+
+    /* Portal users (Discord-OAuth file portal) have no role: they
+     * get a fixed implicit grant of `file_manager:view` and
+     * `file_manager:manage`. Visibility inside those routes is
+     * filtered down to shared resources at the service layer via
+     * FileManagerAccessService. All other permissions are denied. */
+    if (user?.isPortalUser) {
+      if (user.active === false) {
+        throw new ForbiddenException('Account deactivated');
+      }
+      const portalGrants = new Set([
+        'file_manager:view',
+        'file_manager:manage',
+      ]);
+      const missingPortal = requiredKeys.filter((k) => !portalGrants.has(k));
+      if (missingPortal.length > 0) {
+        throw new ForbiddenException('Insufficient permissions');
+      }
+      if (req.user) req.user.permissions = portalGrants;
+      return true;
+    }
 
     // No role assigned → treat as no permissions (spec §6 edge case).
     if (!user?.roleRef) {

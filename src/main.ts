@@ -30,6 +30,11 @@ async function bootstrap() {
   const allowedOrigins = [
     process.env.CORS_ORIGIN_1 ?? 'http://localhost:5173',
     process.env.CORS_ORIGIN_2,
+    // Portal (external workers surface) runs on files.* subdomain —
+    // same Vite dev server, different host, different origin from the
+    // browser's point of view. Allow its local default so the invite
+    // landing page can reach the API.
+    process.env.CORS_ORIGIN_PORTAL ?? 'http://files.localhost:5173',
   ].filter(Boolean) as string[];
 
   app.enableCors({

@@ -97,6 +97,88 @@ declare module 'backblaze-b2' {
       fileNamePrefix: string;
       validDurationInSeconds: number;
     }): Promise<B2Response<{ authorizationToken: string; bucketId: string; fileNamePrefix: string }>>;
+
+    /* ── Large-file multipart API ───────────────────────────────── */
+    startLargeFile(args: {
+      bucketId: string;
+      fileName: string;
+      contentType?: string;
+      fileInfo?: Record<string, string>;
+    }): Promise<
+      B2Response<{
+        fileId: string;
+        fileName: string;
+        contentType: string;
+        bucketId: string;
+      }>
+    >;
+    getUploadPartUrl(args: {
+      fileId: string;
+    }): Promise<
+      B2Response<{
+        fileId: string;
+        uploadUrl: string;
+        authorizationToken: string;
+      }>
+    >;
+    uploadPart(args: {
+      partNumber: number;
+      uploadUrl: string;
+      uploadAuthToken: string;
+      data: Buffer;
+      hash?: string;
+    }): Promise<
+      B2Response<{
+        fileId: string;
+        partNumber: number;
+        contentLength: number;
+        contentSha1: string;
+      }>
+    >;
+    finishLargeFile(args: {
+      fileId: string;
+      partSha1Array: string[];
+    }): Promise<
+      B2Response<{
+        fileId: string;
+        fileName: string;
+        contentType: string;
+        contentLength: number;
+      }>
+    >;
+    cancelLargeFile(args: {
+      fileId: string;
+    }): Promise<B2Response<{ fileId: string }>>;
+    listParts(args: {
+      fileId: string;
+      startPartNumber?: number;
+      maxPartCount?: number;
+    }): Promise<
+      B2Response<{
+        parts: Array<{
+          fileId: string;
+          partNumber: number;
+          contentLength: number;
+          contentSha1: string;
+        }>;
+        nextPartNumber: number | null;
+      }>
+    >;
+    listUnfinishedLargeFiles(args: {
+      bucketId: string;
+      startFileId?: string;
+      maxFileCount?: number;
+      namePrefix?: string;
+    }): Promise<
+      B2Response<{
+        files: Array<{
+          fileId: string;
+          fileName: string;
+          uploadTimestamp: number;
+        }>;
+        nextFileId: string | null;
+      }>
+    >;
   }
 
   export = B2;

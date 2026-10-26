@@ -12,7 +12,8 @@ datasource db {
 model User {
   id               String     @id @default(uuid())
   email            String     @unique
-  passwordHash     String
+  // passwordHash is null for portal users (Discord-OAuth only).
+  passwordHash     String?
   refreshTokenHash String?
   firstName        String
   lastName         String
@@ -21,6 +22,20 @@ model User {
   roleId           String?
   roleRef          Role?      @relation(fields: [roleId], references: [id])
   createdAt        DateTime   @default(now())
+
+  // ── File Manager Portal (external worker surface) ────────────
+  // discordId is set when the user signs in through Discord OAuth
+  // on the files.sargas.io portal. Admins never fill this.
+  discordId        String?    @unique
+  // Separates admin users (CRM main app) from external workers.
+  // Portal users land on files.sargas.io, never see the admin UI.
+  isPortalUser     Boolean    @default(false)
+  // Flipped by admin on terminate. Checked by `ActiveUserGuard` on
+  // every portal request → within JWT TTL the worker is kicked.
+  active           Boolean    @default(true)
+  // Optional override for the Discord-synced display name — portal
+  // users can edit this on their My Account page.
+  displayName      String?
 
   proposals       Proposal[]
   accounts        Account[]
@@ -32,6 +47,18 @@ model User {
   attachments     Attachment[]
   employeeAttachmentsUploaded EmployeeAttachment[] @relation("EmployeeAttachmentUploadedBy")
   projectAttachmentsUploaded  ProjectAttachment[]  @relation("ProjectAttachmentUploadedBy")
+  fileManagerFoldersCreated   FileManagerFolder[]
+  fileManagerFilesUploaded    FileManagerFile[]
+  fileManagerUploadSessions   FileManagerUploadSession[]
+
+  // Shares *received* by this user (portal workers get rows here).
+  fileManagerSharesReceived   FileManagerShare[]   @relation("FileManagerShareRecipient")
+  // Shares *granted* by this user (admin grants).
+  fileManagerSharesGranted    FileManagerShare[]   @relation("FileManagerShareGrantedBy")
+  // Invites authored by this user (admin side).
+  fileManagerInvitesCreated   FileManagerInvite[]  @relation("FileManagerInviteCreatedBy")
+  // Invite this user used to join the portal (nullable; one-shot).
+  fileManagerInvitesConsumed  FileManagerInvite[]  @relation("FileManagerInviteConsumedBy")
 }
 
 model Role {
@@ -2052,4 +2079,148 @@ enum DiscordDeliveryStatus {
   PENDING
   SENT
   FAILED
+}
+
+// ─── File Manager ────────────────────────────────────────────────────────────
+//
+// Standalone corporate file space — ZERO ties to Project, Client,
+// Employee or any other business entity. Existing per-entity
+// attachments stay where they are and never surface here (owner's
+// explicit rule). Nested folders of unlimited depth; access gated
+// to owner / admin / manager roles via the file_manager permissions.
+
+model FileManagerFolder {
+  id         String   @id @default(uuid())
+  name       String
+  parentId   String?
+  parent     FileManagerFolder?  @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children   FileManagerFolder[] @relation("FolderTree")
+  files      FileManagerFile[]
+  createdById String?
+  createdBy  User?    @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([parentId, name])
+  @@index([parentId])
+  @@index([createdAt])
+}
+
+model FileManagerFile {
+  id           String   @id @default(uuid())
+  folderId     String?
+  folder       FileManagerFolder? @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  originalName String
+  storageKey   String   @unique
+  mimeType     String
+  size         Int
+  uploadedById String?
+  uploadedBy   User?    @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([folderId])
+  @@index([createdAt])
+}
+
+// Resumable upload session — one row per in-flight upload. Lives
+// outside FileManagerFile because the final row only gets created
+// on successful finalize. Multipart B2 state lives here:
+//   b2FileId          — the incomplete large file on B2
+//   totalParts        — expected number of parts (ceil(size / chunkSize))
+//   partsReceived     — indices our backend has acknowledged (1-based,
+//                       matches B2 part numbers)
+//   partSha1s         — SHA-1 of each received part, aligned with
+//                       partsReceived (for b2_finish_large_file)
+//   sha1              — expected SHA-1 of the whole file (sent by
+//                       client at init; used to verify re-selection
+//                       after reload)
+// expiresAt + cron (every 15 min) cancels abandoned sessions on B2.
+model FileManagerUploadSession {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folderId      String?
+  fileName      String
+  mimeType      String
+  size          Int
+  sha1          String
+  chunkSize     Int
+  totalParts    Int
+  partsReceived Int[]    @default([])
+  partSha1s    String[]  @default([])
+  storageKey    String
+  b2FileId      String
+  status        FileManagerUploadStatus @default(OPEN)
+  expiresAt     DateTime
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId, status])
+  @@index([expiresAt])
+  @@index([status])
+}
+
+enum FileManagerUploadStatus {
+  OPEN
+  FINALIZED
+  ABORTED
+}
+
+// External worker access control. One row per
+// (user, resource, permissions) tuple. Portal users (`isPortalUser`)
+// are filtered against this table on every File Manager query;
+// admins bypass the filter. `recursive` on a FOLDER share
+// propagates to all descendants (current + future).
+model FileManagerShare {
+  id             String   @id @default(uuid())
+  userId         String
+  user           User     @relation("FileManagerShareRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  resourceType   FileManagerShareResourceType
+  // Loose polymorphic FK — resolved at query time against either
+  // FileManagerFolder or FileManagerFile depending on resourceType.
+  // Trade-off: no DB-level FK but we can share both kinds through one
+  // table and keep queries simple.
+  resourceId     String
+  recursive      Boolean  @default(false)
+  canDownload    Boolean  @default(true)
+  canUpload      Boolean  @default(false)
+  canCreateSubfolders Boolean @default(false)
+  grantedById    String?
+  grantedBy      User?    @relation("FileManagerShareGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([userId, resourceType, resourceId])
+  @@index([userId])
+  @@index([resourceType, resourceId])
+}
+
+enum FileManagerShareResourceType {
+  FOLDER
+  FILE
+}
+
+// Single-use invite link. Carries one or more `shares` (as JSON
+// blueprint) that get materialised into real `FileManagerShare`
+// rows the moment the invite is consumed through Discord OAuth.
+// Token is the public identifier used in the invite URL.
+model FileManagerInvite {
+  id            String   @id @default(uuid())
+  token         String   @unique
+  createdById   String
+  createdBy     User     @relation("FileManagerInviteCreatedBy", fields: [createdById], references: [id])
+  // JSON array of blueprint shares — see UploadInviteBlueprint type
+  // on the backend. Shape: [{resourceType, resourceId, recursive,
+  // canDownload, canUpload, canCreateSubfolders}, ...]
+  sharesJson    Json
+  note          String?
+  expiresAt     DateTime?
+  usedAt        DateTime?
+  usedByUserId  String?
+  usedByUser    User?    @relation("FileManagerInviteConsumedBy", fields: [usedByUserId], references: [id], onDelete: SetNull)
+  createdAt     DateTime @default(now())
+
+  @@index([createdById])
+  @@index([usedByUserId])
 }

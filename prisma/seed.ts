@@ -728,6 +728,83 @@ async function main() {
   await seedPhoneNumbers();
   await seedPortfolio({ ownerId });
   await seedBackupRuns();
+  await seedPortalUsers();
+}
+
+/* ─── Portal users demo seed ──────────────────────────────────────
+ * A handful of external workers so the ShareModal "Share with
+ * existing worker" dropdown and the Portal Users admin page have
+ * live data to render against. Idempotent: records are keyed by
+ * their marker emails. Discord IDs are plausible snowflakes but not
+ * real — the OAuth flow owns real IDs. */
+async function seedPortalUsers() {
+  const defs: Array<{
+    email: string;
+    firstName: string;
+    lastName: string;
+    discordId: string;
+    displayName: string | null;
+    active: boolean;
+  }> = [
+    {
+      email: 'alex.hartford.demo@portal.sargas.local',
+      firstName: 'Alex',
+      lastName: 'Hartford',
+      discordId: '418273645192837401',
+      displayName: 'alexh',
+      active: true,
+    },
+    {
+      email: 'maria.novak.demo@portal.sargas.local',
+      firstName: 'Maria',
+      lastName: 'Novak',
+      discordId: '528374619283746502',
+      displayName: 'maria_n',
+      active: true,
+    },
+    {
+      email: 'takeshi.sato.demo@portal.sargas.local',
+      firstName: 'Takeshi',
+      lastName: 'Sato',
+      discordId: '638475920384756703',
+      displayName: null,
+      active: true,
+    },
+    {
+      email: 'emma.kohler.demo@portal.sargas.local',
+      firstName: 'Emma',
+      lastName: 'Köhler',
+      discordId: '748596031495867804',
+      displayName: 'emma.k',
+      active: false,
+    },
+  ];
+
+  for (const d of defs) {
+    await prisma.user.upsert({
+      where: { email: d.email },
+      update: {
+        firstName: d.firstName,
+        lastName: d.lastName,
+        discordId: d.discordId,
+        displayName: d.displayName,
+        isPortalUser: true,
+        active: d.active,
+      },
+      create: {
+        email: d.email,
+        firstName: d.firstName,
+        lastName: d.lastName,
+        discordId: d.discordId,
+        displayName: d.displayName,
+        isPortalUser: true,
+        active: d.active,
+        passwordHash: null,
+      },
+    });
+  }
+
+  console.log(`Seeded ${defs.length} demo portal users.`);
 }
 
 // ─── Phone Numbers demo seed ────────────────────────────────────────────────

@@ -106,7 +106,8 @@ export class AuthController {
   })
   async updateMe(
     @Request() req,
-    @Body() dto: { firstName?: string; lastName?: string },
+    @Body()
+    dto: { firstName?: string; lastName?: string; displayName?: string | null },
   ) {
     return this.authService.updateMe(req.user.id, dto);
   }

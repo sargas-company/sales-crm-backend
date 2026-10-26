@@ -47,6 +47,9 @@ const DEFAULT_TTL_SECONDS: Record<StorageBucket, number> = {
   [StorageBucket.EMPLOYEE_ATTACHMENTS]: 60,
   // Project docs mirror the employee shape.
   [StorageBucket.PROJECT_ATTACHMENTS]: 60,
+  // File Manager: standalone corporate space — 5m URLs so previews
+  // in the browser have time to load without hitting an auth race.
+  [StorageBucket.FILE_MANAGER]: 5 * 60,
 };
 
 const TTL_ENV_KEY: Record<StorageBucket, string> = {
@@ -59,6 +62,7 @@ const TTL_ENV_KEY: Record<StorageBucket, string> = {
     'B2_SIGNED_TTL_EMPLOYEE_ATTACHMENTS_SECONDS',
   [StorageBucket.PROJECT_ATTACHMENTS]:
     'B2_SIGNED_TTL_PROJECT_ATTACHMENTS_SECONDS',
+  [StorageBucket.FILE_MANAGER]: 'B2_SIGNED_TTL_FILE_MANAGER_SECONDS',
 };
 
 @Injectable()
@@ -143,6 +147,151 @@ export class StorageService implements OnModuleInit {
         this.b2.deleteFileVersion({ fileId: f.fileId, fileName: f.fileName }),
       ),
     );
+  }
+
+  /* ────────────────────────────────────────────────────────────────
+   * Large-file multipart API
+   * ────────────────────────────────────────────────────────────────
+   * Backs the resumable File Manager upload path. Flow:
+   *   startLarge → repeat uploadPart(partNumber, buffer) → finishLarge
+   * On abandonment: cancelLarge releases the incomplete-file holdings
+   * on B2 so we are not billed for stranded parts.
+   * listParts is used when the client re-selects a file after reload
+   * to figure out which parts are still missing.
+   *
+   * B2 requires parts to be >= 5 MB (except the last). Our chunk
+   * size is 8 MB (owner-approved default). */
+
+  async startLarge(
+    bucket: StorageBucket,
+    fileName: string,
+    mimeType: string,
+  ): Promise<{ fileId: string; key: string }> {
+    const { id: bucketId } = this.getBucketConfig(bucket);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const { data } = await this.b2.startLargeFile({
+          bucketId,
+          fileName,
+          contentType: mimeType || 'application/octet-stream',
+        });
+        return { fileId: data.fileId, key: data.fileName };
+      } catch (err: unknown) {
+        const status =
+          (err as { response?: { status?: number } }).response?.status ??
+          (err as { status?: number }).status;
+        if (attempt === 0 && status === 401) {
+          await this.authorize();
+          continue;
+        }
+        const msg = (err as { message?: string })?.message ?? String(err);
+        throw new InternalServerErrorException(
+          `B2 startLargeFile failed for "${fileName}": ${msg}`,
+        );
+      }
+    }
+    throw new InternalServerErrorException('startLargeFile: retries exhausted');
+  }
+
+  async uploadLargePart(
+    fileId: string,
+    partNumber: number,
+    buffer: Buffer,
+    sha1: string,
+  ): Promise<{ contentSha1: string }> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const { data: urlData } = await this.b2.getUploadPartUrl({ fileId });
+        const { data } = await this.b2.uploadPart({
+          partNumber,
+          uploadUrl: urlData.uploadUrl,
+          uploadAuthToken: urlData.authorizationToken,
+          data: buffer,
+          hash: sha1,
+        });
+        return { contentSha1: data.contentSha1 };
+      } catch (err: unknown) {
+        const status =
+          (err as { response?: { status?: number } }).response?.status ??
+          (err as { status?: number }).status;
+        if (attempt === 0 && (status === 401 || status === 503)) {
+          if (status === 401) await this.authorize();
+          continue;
+        }
+        const msg = (err as { message?: string })?.message ?? String(err);
+        throw new InternalServerErrorException(
+          `B2 uploadPart ${partNumber} failed for fileId=${fileId}: ${msg}`,
+        );
+      }
+    }
+    throw new InternalServerErrorException(
+      `uploadLargePart ${partNumber}: retries exhausted`,
+    );
+  }
+
+  async finishLarge(fileId: string, partSha1Array: string[]): Promise<void> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await this.b2.finishLargeFile({ fileId, partSha1Array });
+        return;
+      } catch (err: unknown) {
+        const status =
+          (err as { response?: { status?: number } }).response?.status ??
+          (err as { status?: number }).status;
+        if (attempt === 0 && status === 401) {
+          await this.authorize();
+          continue;
+        }
+        const msg = (err as { message?: string })?.message ?? String(err);
+        throw new InternalServerErrorException(
+          `B2 finishLargeFile failed for fileId=${fileId}: ${msg}`,
+        );
+      }
+    }
+    throw new InternalServerErrorException('finishLargeFile: retries exhausted');
+  }
+
+  /** Best-effort — swallows errors because this is a cleanup call. */
+  async cancelLarge(fileId: string): Promise<void> {
+    try {
+      await this.b2.cancelLargeFile({ fileId });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `cancelLargeFile fileId=${fileId}: ${(err as { message?: string })?.message ?? err}`,
+      );
+    }
+  }
+
+  async listLargeParts(
+    fileId: string,
+  ): Promise<Array<{ partNumber: number; contentSha1: string }>> {
+    const all: Array<{ partNumber: number; contentSha1: string }> = [];
+    let start: number | undefined;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        do {
+          const { data } = await this.b2.listParts({
+            fileId,
+            startPartNumber: start,
+            maxPartCount: 1000,
+          });
+          for (const p of data.parts)
+            all.push({ partNumber: p.partNumber, contentSha1: p.contentSha1 });
+          start = data.nextPartNumber ?? undefined;
+        } while (start);
+        return all;
+      } catch (err: unknown) {
+        const status =
+          (err as { response?: { status?: number } }).response?.status ??
+          (err as { status?: number }).status;
+        if (attempt < 2 && status === 401) {
+          await this.authorize();
+          continue;
+        }
+        throw err;
+      }
+    }
+    return all;
   }
 
   async deleteFolder(bucket: StorageBucket, prefix: string): Promise<void> {
@@ -348,6 +497,10 @@ export class StorageService implements OnModuleInit {
       [StorageBucket.PROJECT_ATTACHMENTS]: {
         id: 'B2_BUCKET_PROJECT_ATTACHMENTS_ID',
         name: 'B2_BUCKET_PROJECT_ATTACHMENTS_NAME',
+      },
+      [StorageBucket.FILE_MANAGER]: {
+        id: 'B2_BUCKET_FILE_MANAGER_ID',
+        name: 'B2_BUCKET_FILE_MANAGER_NAME',
       },
     };
     const keys = envKeys[bucket];

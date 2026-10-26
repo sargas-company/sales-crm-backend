@@ -75,7 +75,11 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    const isValid = await bcrypt.compare(dto.password, user.passwordHash);
+    /* Portal users (Discord-OAuth only) have null passwordHash;
+     * password login must always fail for them regardless of input. */
+    const isValid = user.passwordHash
+      ? await bcrypt.compare(dto.password, user.passwordHash)
+      : false;
     if (!isValid) {
       await this.audit.recordSafe({
         actorUserId: user.id,
@@ -184,6 +188,11 @@ export class AuthService {
         lastName: true,
         avatarUrl: true,
         avatarKey: true,
+        /* Portal-user fields. For admins these are empty / false. */
+        displayName: true,
+        discordId: true,
+        isPortalUser: true,
+        active: true,
         roleRef: {
           select: {
             id: true,
@@ -233,6 +242,13 @@ export class AuthService {
       }
     }
 
+    /* Portal users get the implicit file_manager:view/manage grants
+     * from PermissionGuard; mirror that in the /me payload so the
+     * frontend can show the right UI without a separate lookup. */
+    const effectivePermissions = user.isPortalUser
+      ? ['file_manager:view', 'file_manager:manage']
+      : permissions;
+
     return {
       id: user.id,
       email: user.email,
@@ -240,7 +256,11 @@ export class AuthService {
       lastName: user.lastName,
       avatarUrl: resolvedAvatarUrl,
       role,
-      permissions,
+      permissions: effectivePermissions,
+      displayName: user.displayName,
+      discordId: user.discordId,
+      isPortalUser: user.isPortalUser,
+      active: user.active,
     };
   }
 
@@ -249,11 +269,16 @@ export class AuthService {
    *  stays immutable through this surface. */
   async updateMe(
     userId: string,
-    dto: { firstName?: string; lastName?: string },
+    dto: { firstName?: string; lastName?: string; displayName?: string | null },
   ) {
-    const data: Record<string, string> = {};
+    const data: Record<string, string | null> = {};
     if (dto.firstName !== undefined) data.firstName = dto.firstName.trim();
     if (dto.lastName !== undefined) data.lastName = dto.lastName.trim();
+    if (dto.displayName !== undefined) {
+      const trimmed =
+        typeof dto.displayName === 'string' ? dto.displayName.trim() : '';
+      data.displayName = trimmed === '' ? null : trimmed;
+    }
     if (Object.keys(data).length === 0) return this.getMe(userId);
     await this.prisma.user.update({ where: { id: userId }, data });
     return this.getMe(userId);

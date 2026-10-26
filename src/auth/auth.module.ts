@@ -3,10 +3,17 @@ import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 
 import { StorageModule } from '../storage/storage.module';
+import { ActiveUserGuard } from './active-user.guard';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { DiscordStrategy } from './discord.strategy';
 import { JwtStrategy } from './jwt.strategy';
 import { PermissionGuard } from './permission.guard';
+import {
+  PortalAuthController,
+  PortalAuthDevController,
+} from './portal-auth.controller';
+import { PortalAuthService } from './portal-auth.service';
 
 @Module({
   imports: [
@@ -17,8 +24,15 @@ import { PermissionGuard } from './permission.guard';
     }),
     StorageModule,
   ],
-  controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, PermissionGuard],
-  exports: [JwtModule, PermissionGuard],
+  controllers: [AuthController, PortalAuthController, PortalAuthDevController],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    PermissionGuard,
+    DiscordStrategy,
+    PortalAuthService,
+    ActiveUserGuard,
+  ],
+  exports: [JwtModule, PermissionGuard, ActiveUserGuard],
 })
 export class AuthModule {}
