@@ -8,6 +8,7 @@ import {
   Post,
   Query,
   Req,
+  Res,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -15,7 +16,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { memoryStorage } from 'multer';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 
 import { AuthUser } from '../auth/auth-user';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -511,6 +512,31 @@ export class FileManagerController {
   ) {
     await this.ensurePortalCanAccessFile(req.user.id, id, 'download');
     return this.svc.getDownloadUrl(id, req.user.id);
+  }
+
+  @Get('files/:id/content')
+  @RequirePermission('file_manager:view')
+  @ApiOperation({
+    summary:
+      'Stream file bytes through the backend for in-browser previews (bypasses B2 CORS).',
+  })
+  async fileContent(
+    @Param('id') id: string,
+    @Req() req: Request & { user: AuthUser },
+    @Res() res: Response,
+  ) {
+    await this.ensurePortalCanAccessFile(req.user.id, id, 'download');
+    const { buffer, mimeType, originalName } = await this.svc.getFileContent(id);
+    res.setHeader('Content-Type', mimeType || 'application/octet-stream');
+    res.setHeader('Content-Length', String(buffer.byteLength));
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename*=UTF-8''${encodeURIComponent(originalName)}`,
+    );
+    /* Cache per-user for 5 min — same ballpark as the signed-URL TTL.
+     * Not public: browser cache only, since auth is per-session. */
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.end(buffer);
   }
 
   @Get('files/:id/preview-url')

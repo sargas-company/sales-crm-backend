@@ -632,6 +632,27 @@ export class FileManagerService {
     return { url, fileName: row.originalName };
   }
 
+  /** Backend-proxied preview content. Needed for the frontend
+   *  previewers (docx-preview, xlsx, marked, highlight.js) that
+   *  parse the file bytes via `fetch(url).then(r => r.arrayBuffer())`
+   *  — a direct B2 presigned URL fails those with "Failed to fetch"
+   *  because the bucket's CORS config doesn't whitelist the frontend
+   *  origin. Streaming through this endpoint keeps the fetch
+   *  same-origin, no bucket CORS changes required. */
+  async getFileContent(id: string) {
+    const row = await this.loadFileOr404(id);
+    const buffer = await this.storage.downloadBuffer(
+      StorageBucket.FILE_MANAGER,
+      row.storageKey,
+    );
+    return {
+      buffer,
+      mimeType: row.mimeType,
+      originalName: row.originalName,
+      size: row.size,
+    };
+  }
+
   async getInlineUrl(id: string, actorUserId: string) {
     const row = await this.loadFileOr404(id);
     const url = await this.storage.getDownloadUrl(
