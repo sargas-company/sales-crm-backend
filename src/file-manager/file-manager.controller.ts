@@ -196,7 +196,27 @@ export class FileManagerController {
     @Req() req: Request & { user: AuthUser },
   ) {
     const ctx = await this.context(req.user.id);
-    if (ctx.isPortal) throw new ForbiddenException('Portal users cannot delete folders');
+    if (ctx.isPortal) {
+      /* Portal users may delete only folders THEY created and only
+       * within 24 h — mirrors the deleteFile rule the owner approved
+       * earlier (see controller line below). Lets external workers
+       * clean up their own mistakes without touching admin or peer
+       * content. */
+      const folder = await this.prisma.fileManagerFolder.findUnique({
+        where: { id },
+        select: { createdById: true, createdAt: true },
+      });
+      if (!folder) throw new ForbiddenException('Folder not found');
+      if (folder.createdById !== req.user.id) {
+        throw new ForbiddenException('You can only delete your own folders');
+      }
+      const ageMs = Date.now() - folder.createdAt.getTime();
+      if (ageMs > 24 * 60 * 60 * 1000) {
+        throw new ForbiddenException(
+          'You can delete your own folders only within 24 hours of creation',
+        );
+      }
+    }
     return this.svc.deleteFolder(id, req.user.id);
   }
 
@@ -393,14 +413,79 @@ export class FileManagerController {
     @Req() req: Request & { user: AuthUser },
   ) {
     const ctx = await this.context(req.user.id);
+    const folderIds = dto.folderIds ?? [];
+    const fileIds = dto.fileIds ?? [];
     if (ctx.isPortal) {
-      throw new ForbiddenException('Portal users cannot delete');
+      /* Portal: pre-filter ids to the ones the actor owns AND
+       * created within 24 h — same rules as the single-item
+       * endpoints. Skipped items come back in `failed[]` so the
+       * frontend can toast "deleted N, skipped N (not yours)". */
+      const now = Date.now();
+      const windowMs = 24 * 60 * 60 * 1000;
+      const ownFolders =
+        folderIds.length > 0
+          ? await this.prisma.fileManagerFolder.findMany({
+              where: { id: { in: folderIds } },
+              select: { id: true, createdById: true, createdAt: true },
+            })
+          : [];
+      const ownFiles =
+        fileIds.length > 0
+          ? await this.prisma.fileManagerFile.findMany({
+              where: { id: { in: fileIds } },
+              select: { id: true, uploadedById: true, createdAt: true },
+            })
+          : [];
+      const allowedFolders: string[] = [];
+      const allowedFiles: string[] = [];
+      const skipped: {
+        id: string;
+        kind: 'folder' | 'file';
+        reason: string;
+      }[] = [];
+      for (const id of folderIds) {
+        const row = ownFolders.find((r) => r.id === id);
+        if (!row) {
+          skipped.push({ id, kind: 'folder', reason: 'not_found' });
+          continue;
+        }
+        if (row.createdById !== req.user.id) {
+          skipped.push({ id, kind: 'folder', reason: 'not_owner' });
+          continue;
+        }
+        if (now - row.createdAt.getTime() > windowMs) {
+          skipped.push({ id, kind: 'folder', reason: 'outside_24h_window' });
+          continue;
+        }
+        allowedFolders.push(id);
+      }
+      for (const id of fileIds) {
+        const row = ownFiles.find((r) => r.id === id);
+        if (!row) {
+          skipped.push({ id, kind: 'file', reason: 'not_found' });
+          continue;
+        }
+        if (row.uploadedById !== req.user.id) {
+          skipped.push({ id, kind: 'file', reason: 'not_owner' });
+          continue;
+        }
+        if (now - row.createdAt.getTime() > windowMs) {
+          skipped.push({ id, kind: 'file', reason: 'outside_24h_window' });
+          continue;
+        }
+        allowedFiles.push(id);
+      }
+      const res = await this.svc.bulkDelete(
+        allowedFolders,
+        allowedFiles,
+        req.user.id,
+      );
+      return {
+        ...res,
+        failed: [...res.failed, ...skipped],
+      };
     }
-    return this.svc.bulkDelete(
-      dto.folderIds ?? [],
-      dto.fileIds ?? [],
-      req.user.id,
-    );
+    return this.svc.bulkDelete(folderIds, fileIds, req.user.id);
   }
 
   @Post('bulk-move')

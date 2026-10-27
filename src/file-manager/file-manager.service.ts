@@ -79,6 +79,7 @@ export class FileManagerService {
         id: f.id,
         name: f.name,
         parentId: f.parentId,
+        createdById: f.createdById,
         createdAt: f.createdAt,
         updatedAt: f.updatedAt,
         childFolderCount: f._count.children,
@@ -125,6 +126,7 @@ export class FileManagerService {
         /* Hide real parentId from portal users — they only see this
          * folder as a top-level item. */
         parentId: null,
+        createdById: f.createdById,
         createdAt: f.createdAt,
         updatedAt: f.updatedAt,
         childFolderCount: f._count.children,
@@ -168,6 +170,7 @@ export class FileManagerService {
         id: f.id,
         name: f.name,
         parentId: f.parentId,
+        createdById: f.createdById,
         createdAt: f.createdAt,
         updatedAt: f.updatedAt,
         childFolderCount: f._count.children,
