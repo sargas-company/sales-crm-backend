@@ -197,24 +197,15 @@ export class FileManagerController {
   ) {
     const ctx = await this.context(req.user.id);
     if (ctx.isPortal) {
-      /* Portal users may delete only folders THEY created and only
-       * within 24 h — mirrors the deleteFile rule the owner approved
-       * earlier (see controller line below). Lets external workers
-       * clean up their own mistakes without touching admin or peer
-       * content. */
+      /* Portal: own folders only, no time window. See deleteFile
+       * for the rationale. */
       const folder = await this.prisma.fileManagerFolder.findUnique({
         where: { id },
-        select: { createdById: true, createdAt: true },
+        select: { createdById: true },
       });
       if (!folder) throw new ForbiddenException('Folder not found');
       if (folder.createdById !== req.user.id) {
         throw new ForbiddenException('You can only delete your own folders');
-      }
-      const ageMs = Date.now() - folder.createdAt.getTime();
-      if (ageMs > 24 * 60 * 60 * 1000) {
-        throw new ForbiddenException(
-          'You can delete your own folders only within 24 hours of creation',
-        );
       }
     }
     return this.svc.deleteFolder(id, req.user.id);
@@ -380,21 +371,18 @@ export class FileManagerController {
   ) {
     const ctx = await this.context(req.user.id);
     if (ctx.isPortal) {
-      /* Portal user may delete only OWN files uploaded within the
-       * last 24 hours (owner-approved rule). */
+      /* Portal: own files only. Previously also gated by a 24 h
+       * window — removed because the restriction surprised owners
+       * (Delete button vanishes on day two) and no scenario needs
+       * the hard cut-off: the share permission is what controls
+       * reach, ownership is what controls destructive actions. */
       const file = await this.prisma.fileManagerFile.findUnique({
         where: { id },
-        select: { uploadedById: true, createdAt: true },
+        select: { uploadedById: true },
       });
       if (!file) throw new ForbiddenException('File not found');
       if (file.uploadedById !== req.user.id) {
         throw new ForbiddenException('You can only delete your own files');
-      }
-      const ageMs = Date.now() - file.createdAt.getTime();
-      if (ageMs > 24 * 60 * 60 * 1000) {
-        throw new ForbiddenException(
-          'You can delete your own files only within 24 hours of upload',
-        );
       }
     }
     return this.svc.deleteFile(id, req.user.id);
@@ -416,24 +404,22 @@ export class FileManagerController {
     const folderIds = dto.folderIds ?? [];
     const fileIds = dto.fileIds ?? [];
     if (ctx.isPortal) {
-      /* Portal: pre-filter ids to the ones the actor owns AND
-       * created within 24 h — same rules as the single-item
-       * endpoints. Skipped items come back in `failed[]` so the
-       * frontend can toast "deleted N, skipped N (not yours)". */
-      const now = Date.now();
-      const windowMs = 24 * 60 * 60 * 1000;
+      /* Portal: pre-filter ids to the ones the actor owns. The
+       * frontend already hides the bulk Delete button when any
+       * selected row isn't owned, so this is a defence-in-depth
+       * step — skipped items still come back in `failed[]`. */
       const ownFolders =
         folderIds.length > 0
           ? await this.prisma.fileManagerFolder.findMany({
               where: { id: { in: folderIds } },
-              select: { id: true, createdById: true, createdAt: true },
+              select: { id: true, createdById: true },
             })
           : [];
       const ownFiles =
         fileIds.length > 0
           ? await this.prisma.fileManagerFile.findMany({
               where: { id: { in: fileIds } },
-              select: { id: true, uploadedById: true, createdAt: true },
+              select: { id: true, uploadedById: true },
             })
           : [];
       const allowedFolders: string[] = [];
@@ -453,10 +439,6 @@ export class FileManagerController {
           skipped.push({ id, kind: 'folder', reason: 'not_owner' });
           continue;
         }
-        if (now - row.createdAt.getTime() > windowMs) {
-          skipped.push({ id, kind: 'folder', reason: 'outside_24h_window' });
-          continue;
-        }
         allowedFolders.push(id);
       }
       for (const id of fileIds) {
@@ -467,10 +449,6 @@ export class FileManagerController {
         }
         if (row.uploadedById !== req.user.id) {
           skipped.push({ id, kind: 'file', reason: 'not_owner' });
-          continue;
-        }
-        if (now - row.createdAt.getTime() > windowMs) {
-          skipped.push({ id, kind: 'file', reason: 'outside_24h_window' });
           continue;
         }
         allowedFiles.push(id);
