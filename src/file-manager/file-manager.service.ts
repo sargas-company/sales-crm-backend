@@ -249,7 +249,7 @@ export class FileManagerService {
     let total = 0;
     let count = 0;
     for (const f of files) {
-      const bytes = f.size ?? 0;
+      const bytes = Number(f.size ?? 0);
       total += bytes;
       count += 1;
       const m = (f.mimeType ?? '').toLowerCase();
@@ -414,7 +414,7 @@ export class FileManagerService {
         originalName: input.file.originalname,
         storageKey: uploaded.key,
         mimeType: input.file.mimetype || 'application/octet-stream',
-        size: input.file.size,
+        size: BigInt(input.file.size),
         uploadedById: input.actorUserId,
       },
       include: {
@@ -649,7 +649,7 @@ export class FileManagerService {
       buffer,
       mimeType: row.mimeType,
       originalName: row.originalName,
-      size: row.size,
+      size: Number(row.size),
     };
   }
 
@@ -794,7 +794,7 @@ export class FileManagerService {
     folderId: string | null;
     originalName: string;
     mimeType: string;
-    size: number;
+    size: bigint;
     createdAt: Date;
     updatedAt: Date;
     uploadedBy?: {
@@ -809,7 +809,7 @@ export class FileManagerService {
       folderId: row.folderId,
       originalName: row.originalName,
       mimeType: row.mimeType,
-      size: row.size,
+      size: Number(row.size),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       uploadedBy: row.uploadedBy

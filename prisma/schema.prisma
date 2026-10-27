@@ -2113,7 +2113,7 @@ model FileManagerFile {
   originalName String
   storageKey   String   @unique
   mimeType     String
-  size         Int
+  size         BigInt
   uploadedById String?
   uploadedBy   User?    @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
   createdAt    DateTime @default(now())
@@ -2143,7 +2143,7 @@ model FileManagerUploadSession {
   folderId      String?
   fileName      String
   mimeType      String
-  size          Int
+  size          BigInt
   sha1          String
   chunkSize     Int
   totalParts    Int

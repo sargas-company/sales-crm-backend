@@ -91,7 +91,7 @@ export class UploadSessionService {
         folderId: dto.folderId ?? null,
         fileName: dto.fileName,
         mimeType: dto.mimeType || 'application/octet-stream',
-        size: dto.size,
+        size: BigInt(dto.size),
         sha1: dto.sha1,
         chunkSize: CHUNK_SIZE,
         totalParts,
@@ -128,7 +128,8 @@ export class UploadSessionService {
       );
     }
     if (isLast) {
-      const expected = session.size - session.chunkSize * (session.totalParts - 1);
+      const expected =
+        Number(session.size) - session.chunkSize * (session.totalParts - 1);
       if (buffer.length !== expected) {
         throw new BadRequestException(
           `last part ${partIndex} must be ${expected} bytes (got ${buffer.length})`,
@@ -263,7 +264,7 @@ export class UploadSessionService {
       result: AuditResult.SUCCESS,
       metadata: {
         folderId: session.folderId,
-        size: session.size,
+        size: Number(session.size),
         resumable: true,
         sessionId,
       },
@@ -273,7 +274,7 @@ export class UploadSessionService {
       id: file.id,
       originalName: file.originalName,
       mimeType: file.mimeType,
-      size: file.size,
+      size: Number(file.size),
       folderId: file.folderId,
       createdAt: file.createdAt,
       uploadedBy: file.uploadedBy,
@@ -392,7 +393,7 @@ export class UploadSessionService {
       folderId: s.folderId,
       fileName: s.fileName,
       mimeType: s.mimeType,
-      size: s.size,
+      size: Number(s.size),
       sha1: s.sha1,
       chunkSize: s.chunkSize,
       totalParts: s.totalParts,
