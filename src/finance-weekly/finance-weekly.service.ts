@@ -26,10 +26,10 @@ const INCOME_STATUSES: PaymentStatus[] = [
 ];
 
 function formatClientName(
-  c: { firstName: string; lastName: string; company: string | null } | null,
+  c: { firstName: string; lastName: string | null; company: string | null } | null,
 ): string | null {
   if (!c) return null;
-  const person = `${c.firstName} ${c.lastName}`.trim();
+  const person = `${c.firstName} ${c.lastName ?? ''}`.trim();
   const company = (c.company ?? '').trim();
   if (company && person) return `${company} · ${person}`;
   return company || person || null;
@@ -212,6 +212,9 @@ export class FinanceWeeklyService {
                     client: {
                       select: { firstName: true, lastName: true },
                     },
+                    crmClient: {
+                      select: { firstName: true, lastName: true },
+                    },
                   },
                 },
               },
@@ -249,9 +252,10 @@ export class FinanceWeeklyService {
           weekEnd: week.endDate.toISOString().slice(0, 10),
           projectId: e.projectId,
           projectName: e.project.name,
-          clientName: e.project.client
-            ? `${e.project.client.firstName} ${e.project.client.lastName}`.trim()
-            : null,
+          clientName: (() => {
+            const c = e.project.crmClient ?? e.project.client;
+            return c ? `${c.firstName} ${c.lastName ?? ''}`.trim() : null;
+          })(),
           amount: e.amount ? e.amount.toString() : null,
           status: e.status,
           note: e.note,
@@ -343,6 +347,9 @@ export class FinanceWeeklyService {
               client: {
                 select: { firstName: true, lastName: true, company: true },
               },
+              crmClient: {
+                select: { firstName: true, lastName: true, company: true },
+              },
             },
           },
         },
@@ -359,7 +366,7 @@ export class FinanceWeeklyService {
       monthLabel: e.fiscalWeek.fiscalMonth.label,
       projectId: e.projectId,
       projectName: e.project.name,
-      clientName: formatClientName(e.project.client),
+      clientName: formatClientName(e.project.crmClient ?? e.project.client),
       amount: e.amount ? e.amount.toString() : null,
       status: e.status,
       note: e.note,
@@ -396,6 +403,9 @@ export class FinanceWeeklyService {
         client: {
           select: { firstName: true, lastName: true, company: true },
         },
+        crmClient: {
+          select: { firstName: true, lastName: true, company: true },
+        },
       },
       orderBy: { name: 'asc' },
     });
@@ -403,7 +413,7 @@ export class FinanceWeeklyService {
       id: p.id,
       name: p.name,
       status: p.status,
-      clientName: formatClientName(p.client),
+      clientName: formatClientName(p.crmClient ?? p.client),
     }));
   }
 

@@ -21,10 +21,10 @@ const PIPELINE_STATUSES: PaymentStatus[] = [
 ];
 
 function formatClientName(
-  c: { firstName: string; lastName: string; company: string | null } | null,
+  c: { firstName: string; lastName: string | null; company: string | null } | null,
 ): string {
   if (!c) return 'Unassigned';
-  const person = `${c.firstName} ${c.lastName}`.trim();
+  const person = `${c.firstName} ${c.lastName ?? ''}`.trim();
   const company = (c.company ?? '').trim();
   if (company && person) return `${company} · ${person}`;
   return company || person || 'Unassigned';
@@ -140,7 +140,14 @@ export class FinanceAnalyticsService {
         },
         ...(query.projectId ? { projectId: query.projectId } : {}),
         ...(query.clientId
-          ? { project: { clientId: query.clientId } }
+          ? {
+              project: {
+                OR: [
+                  { crmClientId: query.clientId },
+                  { clientId: query.clientId },
+                ],
+              },
+            }
           : {}),
       },
       include: {
@@ -155,6 +162,8 @@ export class FinanceAnalyticsService {
             name: true,
             clientId: true,
             client: { select: { firstName: true, lastName: true, company: true } },
+            crmClientId: true,
+            crmClient: { select: { firstName: true, lastName: true, company: true } },
           },
         },
       },
@@ -172,7 +181,14 @@ export class FinanceAnalyticsService {
         },
         ...(query.projectId ? { projectId: query.projectId } : {}),
         ...(query.clientId
-          ? { project: { clientId: query.clientId } }
+          ? {
+              project: {
+                OR: [
+                  { crmClientId: query.clientId },
+                  { clientId: query.clientId },
+                ],
+              },
+            }
           : {}),
       },
       include: {
@@ -183,6 +199,8 @@ export class FinanceAnalyticsService {
             name: true,
             clientId: true,
             client: { select: { firstName: true, lastName: true, company: true } },
+            crmClientId: true,
+            crmClient: { select: { firstName: true, lastName: true, company: true } },
           },
         },
       },
@@ -280,11 +298,16 @@ export class FinanceAnalyticsService {
       const amount = toNumber(e.amount);
       const isReceived = e.status === 'received';
 
+      // Resolve effective client — new CRM link takes priority, legacy
+      // Counterparty link stays as a fallback for pre-migration rows.
+      const effectiveClient = e.project.crmClient ?? e.project.client;
+      const effectiveClientId = e.project.crmClientId ?? e.project.clientId;
+
       // Project bucket
       const pKey = e.project.id;
       const pBucket = projectBuckets.get(pKey) ?? {
         label: e.project.name,
-        sub: formatClientName(e.project.client),
+        sub: formatClientName(effectiveClient),
         received: 0,
         pipeline: 0,
         entriesReceived: 0,
@@ -298,9 +321,9 @@ export class FinanceAnalyticsService {
       projectBuckets.set(pKey, pBucket);
 
       // Client bucket
-      const cKey = e.project.clientId ?? '__unassigned__';
+      const cKey = effectiveClientId ?? '__unassigned__';
       const cBucket = clientBuckets.get(cKey) ?? {
-        label: formatClientName(e.project.client),
+        label: formatClientName(effectiveClient),
         sub: null,
         received: 0,
         pipeline: 0,
