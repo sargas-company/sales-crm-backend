@@ -682,8 +682,31 @@ export class JobPostService {
         by: ['status', 'enqueueState'],
         _count: { _all: true },
       }),
-      this.queue.queueCounts().then(
-        (counts) => ({ ok: true as const, counts }),
+      /* Redis-side counts. Wrap in a race against a 2 s timeout:
+       * BullMQ requires `maxRetriesPerRequest: null` on the ioredis
+       * connection, which means a down Redis makes `getJobCounts`
+       * hang indefinitely rather than throw. Without this race the
+       * HTTP request itself hangs and the UI panel sits on "Loading…"
+       * forever. Treat timeout the same as any other failure —
+       * redisAvailable = false and the Postgres-side counts are
+       * still returned. */
+      Promise.race([
+        this.queue.queueCounts().then((counts) => ({
+          ok: true as const,
+          counts,
+        })),
+        new Promise<{ ok: false; reason: 'timeout' }>((resolve) =>
+          setTimeout(() => resolve({ ok: false, reason: 'timeout' }), 2000),
+        ),
+      ]).then(
+        (res) => {
+          if (!res.ok) {
+            this.logger.warn(
+              'queueCounts timed out after 2s, reporting Redis as unavailable',
+            );
+          }
+          return res;
+        },
         (err: unknown) => {
           this.logger.warn(
             `queueCounts failed, reporting Redis as unavailable: ${(err as Error).message}`,
