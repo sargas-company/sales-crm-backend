@@ -48,6 +48,7 @@ import { CompensationAnalyticsModule } from './compensation-analytics/compensati
 import { LinkedInAccountModule } from './linkedin-account/linkedin-account.module';
 import { LinkedInIdeaModule } from './linkedin-idea/linkedin-idea.module';
 import { LinkedInPostModule } from './linkedin-post/linkedin-post.module';
+import { UpworkModule } from './upwork/upwork.module';
 import { ProjectAnalyticsModule } from './project-analytics/project-analytics.module';
 import { FinanceWeeklyModule } from './finance-weekly/finance-weekly.module';
 import { AttentionModule } from './attention/attention.module';
@@ -102,6 +103,7 @@ import { LiveEventsModule } from './live-events/live-events.module';
     LinkedInAccountModule,
     LinkedInIdeaModule,
     LinkedInPostModule,
+    UpworkModule,
     ProjectAnalyticsModule,
     FinanceWeeklyModule,
     AttentionModule,

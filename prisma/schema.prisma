@@ -2224,3 +2224,144 @@ model FileManagerInvite {
   @@index([createdById])
   @@index([usedByUserId])
 }
+
+/* ─── Upwork module ──────────────────────────────────────────────── */
+
+enum UpworkReferenceCategory {
+  title_phrase
+  suggestion
+  related_query
+  green_skill
+  job_skill
+  client_phrase
+  requirement
+  product_type
+  hire_list_skill
+  fact
+}
+
+enum UpworkChangeLogSection {
+  title
+  overview
+  skills
+  portfolio
+  project_catalog
+  consultation
+  certificate
+  employment_history
+  other_experience
+  contract
+  video
+  other
+}
+
+/* Upwork profile — one entity per managed Upwork account. All data in
+ * this module is entered manually; no external API or scraping. */
+model UpworkProfile {
+  id        String   @id @default(uuid())
+  name      String
+  url       String?
+  note      String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  referenceEntries UpworkReferenceData[]
+  changeLogEntries UpworkChangeLog[]
+  snapshots        UpworkMetricsSnapshot[]
+
+  @@index([active])
+}
+
+/* Reusable reference data — words/phrases/skills/facts used to build
+ * change-log entries. `profileId` null = shared across all profiles. */
+model UpworkReferenceData {
+  id            String                 @id @default(uuid())
+  profileId     String?
+  profile       UpworkProfile?         @relation(fields: [profileId], references: [id], onDelete: SetNull)
+  category      UpworkReferenceCategory
+  value         String
+  parentId      String?
+  parent        UpworkReferenceData?   @relation("UpworkReferenceParent", fields: [parentId], references: [id], onDelete: SetNull)
+  children      UpworkReferenceData[]  @relation("UpworkReferenceParent")
+  order         Int?
+  frequency     Int?
+  note          String?
+  collectedDate DateTime
+  active        Boolean                @default(true)
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+
+  changeLogLinks UpworkChangeLogReference[]
+  snapshotPositions UpworkMetricsSnapshotPosition[]
+
+  @@index([profileId, category])
+  @@index([category, active])
+  @@index([parentId])
+}
+
+/* Change log entry — a single edit to the profile. Before / after are
+ * free-text long strings; UI renders them side-by-side. */
+model UpworkChangeLog {
+  id        String                   @id @default(uuid())
+  date      DateTime
+  profileId String
+  profile   UpworkProfile            @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  section   UpworkChangeLogSection
+  item      String?
+  summary   String
+  reason    String?
+  before    String
+  after     String
+  createdAt DateTime                 @default(now())
+  updatedAt DateTime                 @updatedAt
+
+  references UpworkChangeLogReference[]
+
+  @@index([profileId, date])
+  @@index([profileId, section])
+  @@index([date])
+}
+
+/* Join: which reference entries were used in which change-log entry. */
+model UpworkChangeLogReference {
+  changeLogId     String
+  changeLog       UpworkChangeLog     @relation(fields: [changeLogId], references: [id], onDelete: Cascade)
+  referenceDataId String
+  referenceData   UpworkReferenceData @relation(fields: [referenceDataId], references: [id], onDelete: Restrict)
+  createdAt       DateTime            @default(now())
+
+  @@id([changeLogId, referenceDataId])
+  @@index([referenceDataId])
+}
+
+/* Weekly / per-day metrics snapshot — manual input. Position per
+ * title-phrase reference entry is captured in a child row. */
+model UpworkMetricsSnapshot {
+  id             String   @id @default(uuid())
+  date           DateTime
+  profileId      String
+  profile        UpworkProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  views          Int      @default(0)
+  invites        Int      @default(0)
+  directMessages Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  positions UpworkMetricsSnapshotPosition[]
+
+  @@unique([profileId, date])
+  @@index([profileId, date])
+}
+
+model UpworkMetricsSnapshotPosition {
+  id              String                 @id @default(uuid())
+  snapshotId      String
+  snapshot        UpworkMetricsSnapshot  @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  referenceDataId String
+  referenceData   UpworkReferenceData    @relation(fields: [referenceDataId], references: [id], onDelete: Cascade)
+  position        Int
+
+  @@unique([snapshotId, referenceDataId])
+  @@index([referenceDataId])
+}
