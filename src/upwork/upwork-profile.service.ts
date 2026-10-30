@@ -17,7 +17,11 @@ export class UpworkProfileService {
 
   list() {
     return this.prisma.upworkProfile.findMany({
-      orderBy: [{ active: 'desc' }, { name: 'asc' }],
+      orderBy: [
+        { active: 'desc' },
+        { firstName: 'asc' },
+        { lastName: 'asc' },
+      ],
     });
   }
 
@@ -30,7 +34,9 @@ export class UpworkProfileService {
   async create(dto: CreateUpworkProfileDto, actorUserId: string) {
     const row = await this.prisma.upworkProfile.create({
       data: {
-        name: dto.name.trim(),
+        firstName: dto.firstName.trim(),
+        lastName: dto.lastName?.trim() || null,
+        title: dto.title?.trim() || null,
         url: dto.url ?? null,
         note: dto.note ?? null,
         active: dto.active ?? true,
@@ -42,7 +48,7 @@ export class UpworkProfileService {
       action: 'upwork.profile.create',
       targetType: 'UpworkProfile',
       targetId: row.id,
-      targetLabel: row.name,
+      targetLabel: displayName(row),
       result: AuditResult.SUCCESS,
     });
     return row;
@@ -53,7 +59,15 @@ export class UpworkProfileService {
     const row = await this.prisma.upworkProfile.update({
       where: { id },
       data: {
-        ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+        ...(dto.firstName !== undefined
+          ? { firstName: dto.firstName.trim() }
+          : {}),
+        ...(dto.lastName !== undefined
+          ? { lastName: dto.lastName?.trim() || null }
+          : {}),
+        ...(dto.title !== undefined
+          ? { title: dto.title?.trim() || null }
+          : {}),
         ...(dto.url !== undefined ? { url: dto.url ?? null } : {}),
         ...(dto.note !== undefined ? { note: dto.note ?? null } : {}),
         ...(dto.active !== undefined ? { active: dto.active } : {}),
@@ -65,7 +79,7 @@ export class UpworkProfileService {
       action: 'upwork.profile.update',
       targetType: 'UpworkProfile',
       targetId: row.id,
-      targetLabel: row.name,
+      targetLabel: displayName(row),
       result: AuditResult.SUCCESS,
     });
     return row;
@@ -80,9 +94,16 @@ export class UpworkProfileService {
       action: 'upwork.profile.delete',
       targetType: 'UpworkProfile',
       targetId: id,
-      targetLabel: row.name,
+      targetLabel: displayName(row),
       result: AuditResult.SUCCESS,
     });
     return { id };
   }
+}
+
+function displayName(r: {
+  firstName: string;
+  lastName: string | null;
+}): string {
+  return `${r.firstName} ${r.lastName ?? ''}`.trim();
 }

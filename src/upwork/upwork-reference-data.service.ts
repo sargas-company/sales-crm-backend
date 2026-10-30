@@ -38,7 +38,7 @@ export class UpworkReferenceDataService {
       orderBy,
       take: 500,
       include: {
-        profile: { select: { id: true, name: true } },
+        profile: { select: { id: true, firstName: true, lastName: true, title: true } },
         parent: { select: { id: true, value: true, category: true } },
       },
     });
@@ -48,7 +48,7 @@ export class UpworkReferenceDataService {
     const row = await this.prisma.upworkReferenceData.findUnique({
       where: { id },
       include: {
-        profile: { select: { id: true, name: true } },
+        profile: { select: { id: true, firstName: true, lastName: true, title: true } },
         parent: { select: { id: true, value: true, category: true } },
       },
     });

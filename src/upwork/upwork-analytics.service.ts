@@ -28,7 +28,13 @@ export interface ChangeLogMarker {
 }
 
 export interface AnalyticsResponse {
-  profile: { id: string; name: string };
+  profile: {
+    id: string;
+    firstName: string;
+    lastName: string | null;
+    title: string | null;
+    name: string;
+  };
   weekly: WeeklyPoint[];
   positionsWeekly: PositionsWeeklyPoint[];
   titlePhrases: Array<{ id: string; value: string }>;
@@ -165,7 +171,13 @@ export class UpworkAnalyticsService {
     const vpiValue = vpiInvites > 0 ? vpiViews / vpiInvites : null;
 
     return {
-      profile: { id: profile.id, name: profile.name },
+      profile: {
+        id: profile.id,
+        firstName: profile.firstName,
+        lastName: profile.lastName,
+        title: profile.title,
+        name: `${profile.firstName} ${profile.lastName ?? ''}`.trim(),
+      },
       weekly,
       positionsWeekly,
       titlePhrases,

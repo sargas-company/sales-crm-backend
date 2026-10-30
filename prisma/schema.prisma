@@ -2259,7 +2259,9 @@ enum UpworkChangeLogSection {
  * this module is entered manually; no external API or scraping. */
 model UpworkProfile {
   id        String   @id @default(uuid())
-  name      String
+  firstName String
+  lastName  String?
+  title     String?
   url       String?
   note      String?
   active    Boolean  @default(true)

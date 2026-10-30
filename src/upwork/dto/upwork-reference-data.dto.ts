@@ -1,6 +1,7 @@
 import { PartialType } from '@nestjs/mapped-types';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { UpworkReferenceCategory } from '@prisma/client';
+import { Transform } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -16,6 +17,15 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
+
+/* Query strings always arrive as strings. Coerce 'true'/'false'
+ * (and the actual booleans) into real booleans so @IsBoolean passes
+ * and the Prisma `where` sees a proper boolean. */
+const toBool = ({ value }: { value: unknown }) => {
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  return value;
+};
 
 export class CreateUpworkReferenceDataDto {
   @ApiPropertyOptional({ description: 'null = shared across all profiles' })
@@ -106,6 +116,7 @@ export class ListUpworkReferenceDataDto {
 
   @ApiPropertyOptional({ default: true })
   @IsOptional()
+  @Transform(toBool)
   @IsBoolean()
   active?: boolean;
 
@@ -114,6 +125,7 @@ export class ListUpworkReferenceDataDto {
     default: false,
   })
   @IsOptional()
+  @Transform(toBool)
   @IsBoolean()
   sortByFrequency?: boolean;
 }

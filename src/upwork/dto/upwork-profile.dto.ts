@@ -10,11 +10,23 @@ import {
 } from 'class-validator';
 
 export class CreateUpworkProfileDto {
-  @ApiProperty({ example: 'Senior Full-Stack' })
+  @ApiProperty({ example: 'Vadym' })
   @IsString()
   @MinLength(1)
+  @MaxLength(100)
+  firstName!: string;
+
+  @ApiPropertyOptional({ example: 'Chervonchenko' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  lastName?: string;
+
+  @ApiPropertyOptional({ example: 'Senior Full-Stack Developer' })
+  @IsOptional()
+  @IsString()
   @MaxLength(200)
-  name!: string;
+  title?: string;
 
   @ApiPropertyOptional()
   @IsOptional()

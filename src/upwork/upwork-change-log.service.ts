@@ -14,7 +14,7 @@ import {
 } from './dto/upwork-change-log.dto';
 
 const INCLUDE = {
-  profile: { select: { id: true, name: true } },
+  profile: { select: { id: true, firstName: true, lastName: true, title: true } },
   references: {
     include: {
       referenceData: {
