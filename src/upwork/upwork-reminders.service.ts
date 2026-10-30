@@ -43,6 +43,23 @@ export class UpworkRemindersService {
             days: rule.days,
           });
         }
+      } else if (rule.sections && rule.sections.length) {
+        /* ANY of these sections keeps the reminder green — a single
+         * fresh entry in portfolio OR skills OR title is enough.
+         * Used by the "Daily update" rule. */
+        const latest = await this.prisma.upworkChangeLog.findFirst({
+          where: { profileId, section: { in: rule.sections } },
+          orderBy: { date: 'desc' },
+          select: { date: true },
+        });
+        if (this.isStale(latest?.date ?? null, rule.days, now)) {
+          reminders.push({
+            key: rule.key,
+            label: rule.label,
+            severity: 'warn',
+            days: rule.days,
+          });
+        }
       } else if (rule.kind === 'snapshot') {
         const latest = await this.prisma.upworkMetricsSnapshot.findFirst({
           where: { profileId },

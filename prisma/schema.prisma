@@ -2236,7 +2236,6 @@ enum UpworkReferenceCategory {
   client_phrase
   requirement
   product_type
-  hire_list_skill
   fact
 }
 
@@ -2250,9 +2249,6 @@ enum UpworkChangeLogSection {
   certificate
   employment_history
   other_experience
-  contract
-  video
-  other
 }
 
 /* Upwork profile — one entity per managed Upwork account. All data in

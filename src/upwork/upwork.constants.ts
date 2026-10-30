@@ -11,18 +11,28 @@ export interface UpworkReminderRule {
   key: string;
   label: string;
   days: number;
-  /* Exactly one of the following matches a source table. */
+  /* Exactly one of the following selectors matches a source table.
+   *  - section   : staleness of a single change-log section
+   *  - sections  : ANY of the listed sections keeps the reminder green
+   *                (used by the "Daily update" rule that cares about
+   *                portfolio, skills OR title)
+   *  - kind      : non-change-log sources ('snapshot' today)
+   *  - refCategories : staleness across the newest reference entry in
+   *                any of the listed categories
+   */
   section?: UpworkChangeLogSection;
+  sections?: UpworkChangeLogSection[];
   kind?: 'snapshot';
   refCategories?: UpworkReferenceCategory[];
 }
 
 export const UPWORK_REMINDER_RULES: UpworkReminderRule[] = [
   {
-    key: 'portfolio-stale',
-    section: 'portfolio',
+    key: 'daily-update',
+    sections: ['portfolio', 'skills', 'title'],
     days: 2,
-    label: 'Add a portfolio case',
+    label:
+      'Daily update: add a portfolio case, swap one skill or tweak the title',
   },
   {
     key: 'project-catalog-stale',
@@ -31,16 +41,29 @@ export const UPWORK_REMINDER_RULES: UpworkReminderRule[] = [
     label: 'Recreate the weakest catalog',
   },
   {
+    key: 'overview-stale',
+    section: 'overview',
+    days: 30,
+    label:
+      'Refresh the overview with new suggestions, related queries and numbers',
+  },
+  {
+    key: 'consultation-stale',
+    section: 'consultation',
+    days: 30,
+    label: 'Refresh consultations: topics, text and skills',
+  },
+  {
+    key: 'employment-history-stale',
+    section: 'employment_history',
+    days: 30,
+    label: 'Add or refresh an employment history entry',
+  },
+  {
     key: 'snapshot-stale',
     kind: 'snapshot',
     days: 7,
     label: 'Add a snapshot',
-  },
-  {
-    key: 'contract-stale',
-    section: 'contract',
-    days: 30,
-    label: 'Close a ready contract milestone with feedback',
   },
   {
     key: 'ref-fresh-30d',
@@ -49,15 +72,14 @@ export const UPWORK_REMINDER_RULES: UpworkReminderRule[] = [
     label: 'Update reference data',
   },
   {
-    key: 'ref-fresh-90d',
+    key: 'ref-fresh-365d',
     refCategories: [
       'job_skill',
       'client_phrase',
       'requirement',
       'product_type',
-      'hire_list_skill',
     ],
-    days: 90,
+    days: 365,
     label: 'Update reference data',
   },
 ];
