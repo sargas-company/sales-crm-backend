@@ -86,4 +86,27 @@ export class UpworkRemindersService {
     const diffDays = (now - date.getTime()) / (1000 * 60 * 60 * 24);
     return diffDays > days;
   }
+
+  /** Aggregate across all active profiles. Returns the number of
+   *  profiles with at least one lit reminder plus the total count
+   *  of lit reminders. Used by the attention panel. */
+  async summary(): Promise<{
+    profiles: number;
+    totalReminders: number;
+  }> {
+    const active = await this.prisma.upworkProfile.findMany({
+      where: { active: true },
+      select: { id: true },
+    });
+    let profiles = 0;
+    let totalReminders = 0;
+    for (const p of active) {
+      const list = await this.forProfile(p.id);
+      if (list.length > 0) {
+        profiles++;
+        totalReminders += list.length;
+      }
+    }
+    return { profiles, totalReminders };
+  }
 }

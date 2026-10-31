@@ -19,5 +19,6 @@ import { UpworkRemindersService } from './upwork-reminders.service';
     UpworkRemindersService,
     UpworkAnalyticsService,
   ],
+  exports: [UpworkRemindersService],
 })
 export class UpworkModule {}

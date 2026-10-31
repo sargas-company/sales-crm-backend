@@ -24,35 +24,11 @@ export class CreateUpworkChangeLogDto {
   @IsEnum(UpworkChangeLogSection)
   section!: UpworkChangeLogSection;
 
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  @MaxLength(300)
-  item?: string;
-
-  @ApiProperty()
+  @ApiProperty({ description: 'Free-text note — what did you change?' })
   @IsString()
   @MinLength(1)
-  @MaxLength(500)
-  summary!: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
   @MaxLength(2000)
-  reason?: string;
-
-  /* Optional. For job_analysis entries (research notes) before/after
-   * can be omitted entirely; stored as empty strings when absent. */
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  before?: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsString()
-  after?: string;
+  note!: string;
 }
 
 export class UpdateUpworkChangeLogDto extends PartialType(

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { SK } from '../settings/settings-registry';
+import { UpworkRemindersService } from '../upwork/upwork-reminders.service';
 import {
 	AttentionItem,
 	AttentionResponse,
@@ -18,9 +19,10 @@ export class AttentionService {
 	constructor(
 		private readonly prisma: PrismaService,
 		private readonly settings: SettingsService,
+		private readonly upworkReminders: UpworkRemindersService,
 	) {}
 
-	async getItems(): Promise<AttentionResponse> {
+	async getItems(callerPerms: Set<string> = new Set()): Promise<AttentionResponse> {
 		const items: AttentionItem[] = [];
 		const now = Date.now();
 
@@ -159,6 +161,36 @@ export class AttentionService {
 				},
 				createdAt: highScoreCutoff.toISOString(),
 			});
+		}
+
+		// ─── Business: Upwork reminders waiting ─────────────────────
+		//   Attention panel dedupes to a single aggregated row —
+		//   details live on /upwork/reminders. Auto-disappears when
+		//   the owner clears everything. Upwork is owner-only, so
+		//   non-owners (admin_manager with notifications:view but
+		//   without upwork:view) get no item and no dead-end link.
+		if (callerPerms.has('upwork:view')) {
+			const upworkSummary = await this.upworkReminders.summary();
+			if (upworkSummary.profiles > 0) {
+				const { profiles, totalReminders } = upworkSummary;
+				items.push({
+					id: 'upwork.remindersWaiting',
+					severity:
+						totalReminders >= 10
+							? 'critical'
+							: totalReminders >= 5
+								? 'warn'
+								: 'info',
+					category: 'business',
+					title: `${profiles} Upwork profile${profiles === 1 ? '' : 's'} need${profiles === 1 ? 's' : ''} attention`,
+					description: `${totalReminders} reminder${totalReminders === 1 ? '' : 's'} across ${profiles} profile${profiles === 1 ? '' : 's'}. Open to see which sections and snapshots are overdue.`,
+					action: {
+						route: '/upwork/reminders',
+						label: 'Open reminders',
+					},
+					createdAt: new Date().toISOString(),
+				});
+			}
 		}
 
 		// Sort by severity (critical first), then by createdAt (newest first).

@@ -2237,7 +2237,6 @@ enum UpworkChangeLogSection {
   certificate
   employment_history
   other_experience
-  job_analysis
 }
 
 enum UpworkProfileTier {
@@ -2251,7 +2250,6 @@ model UpworkProfile {
   id        String            @id @default(uuid())
   firstName String
   lastName  String?
-  title     String?
   tier      UpworkProfileTier @default(secondary)
   url       String?
   note      String?
@@ -2266,21 +2264,19 @@ model UpworkProfile {
   @@index([tier])
 }
 
-/* Change log entry — a single edit to the profile. Before / after are
- * free-text long strings; UI renders them stacked full-width. */
+/* Change log entry — a single edit to the profile. Just a date,
+ * a profile, a section and a free-text `note`. No before/after,
+ * no narrative block — the fact the entry exists is the signal
+ * that the owner touched that section. */
 model UpworkChangeLog {
-  id        String                   @id @default(uuid())
+  id        String                 @id @default(uuid())
   date      DateTime
   profileId String
-  profile   UpworkProfile            @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  profile   UpworkProfile          @relation(fields: [profileId], references: [id], onDelete: Cascade)
   section   UpworkChangeLogSection
-  item      String?
-  summary   String
-  reason    String?
-  before    String
-  after     String
-  createdAt DateTime                 @default(now())
-  updatedAt DateTime                 @updatedAt
+  note      String
+  createdAt DateTime               @default(now())
+  updatedAt DateTime               @updatedAt
 
   @@index([profileId, date])
   @@index([profileId, section])

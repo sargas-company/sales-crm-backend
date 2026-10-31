@@ -24,7 +24,7 @@ export interface PositionsWeeklyPoint {
 export interface ChangeLogMarker {
   date: string;
   section: string;
-  summary: string;
+  note: string;
 }
 
 export interface AnalyticsResponse {
@@ -32,7 +32,6 @@ export interface AnalyticsResponse {
     id: string;
     firstName: string;
     lastName: string | null;
-    title: string | null;
     name: string;
   };
   weekly: WeeklyPoint[];
@@ -140,17 +139,14 @@ export class UpworkAnalyticsService {
       where: {
         profileId: profile.id,
         date: { gte: from, lte: to },
-        /* `job_analysis` is research, not a profile change; keep it
-         * out of chart markers and the activity-by-section bar. */
-        section: { not: 'job_analysis' },
       },
       orderBy: { date: 'asc' },
-      select: { date: true, section: true, summary: true },
+      select: { date: true, section: true, note: true },
     });
     const changeLogMarkers: ChangeLogMarker[] = markerRows.map((m) => ({
       date: m.date.toISOString().slice(0, 10),
       section: m.section,
-      summary: m.summary,
+      note: m.note,
     }));
 
     /* views-per-invite — rolling 4-week window ending at `to`. */
@@ -172,7 +168,6 @@ export class UpworkAnalyticsService {
         id: profile.id,
         firstName: profile.firstName,
         lastName: profile.lastName,
-        title: profile.title,
         name: `${profile.firstName} ${profile.lastName ?? ''}`.trim(),
       },
       weekly,

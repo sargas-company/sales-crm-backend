@@ -59,12 +59,6 @@ const PRIMARY_RULES: UpworkReminderRule[] = [
     days: 7,
     label: 'Add a snapshot',
   },
-  {
-    key: 'job-analysis-stale',
-    section: 'job_analysis',
-    days: 365,
-    label: 'Run the yearly job post analysis (100 posts)',
-  },
 ];
 
 /* Secondary: light-touch cadence for worker / support profiles.

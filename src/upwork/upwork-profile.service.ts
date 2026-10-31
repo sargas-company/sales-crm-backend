@@ -4,7 +4,6 @@ import { AuditResult } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditEventService } from '../audit-event/audit-event.service';
 import {
-  BulkDeleteUpworkProfilesDto,
   CreateUpworkProfileDto,
   UpdateUpworkProfileDto,
 } from './dto/upwork-profile.dto';
@@ -37,7 +36,6 @@ export class UpworkProfileService {
       data: {
         firstName: dto.firstName.trim(),
         lastName: dto.lastName?.trim() || null,
-        title: dto.title?.trim() || null,
         tier: dto.tier ?? 'secondary',
         url: dto.url ?? null,
         note: dto.note ?? null,
@@ -66,9 +64,6 @@ export class UpworkProfileService {
           : {}),
         ...(dto.lastName !== undefined
           ? { lastName: dto.lastName?.trim() || null }
-          : {}),
-        ...(dto.title !== undefined
-          ? { title: dto.title?.trim() || null }
           : {}),
         ...(dto.tier !== undefined ? { tier: dto.tier } : {}),
         ...(dto.url !== undefined ? { url: dto.url ?? null } : {}),
@@ -101,27 +96,6 @@ export class UpworkProfileService {
       result: AuditResult.SUCCESS,
     });
     return { id };
-  }
-
-  async bulkDelete(
-    dto: BulkDeleteUpworkProfilesDto,
-    actorUserId: string,
-  ): Promise<{ deleted: number }> {
-    if (dto.ids.length === 0) return { deleted: 0 };
-    const result = await this.prisma.upworkProfile.deleteMany({
-      where: { id: { in: dto.ids } },
-    });
-    await this.audit.recordSafe({
-      actorUserId,
-      domain: 'SETTINGS',
-      action: 'upwork.profile.bulk_delete',
-      targetType: 'UpworkProfile',
-      targetId: null,
-      targetLabel: `${result.count} profile(s)`,
-      result: AuditResult.SUCCESS,
-      metadata: { count: result.count },
-    });
-    return { deleted: result.count };
   }
 }
 

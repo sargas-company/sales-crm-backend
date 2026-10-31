@@ -1,5 +1,6 @@
-import { Controller, Get, HttpCode, HttpStatus, UseGuards } from '@nestjs/common';
+import { Controller, Get, HttpCode, HttpStatus, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { AuthUser } from '../auth/auth-user';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PermissionGuard } from '../auth/permission.guard';
 import { RequirePermission } from '../auth/permission.decorator';
@@ -19,7 +20,7 @@ export class AttentionController {
 		summary:
 			'Returns the current list of items that need the caller’s attention (actionable notifications). Gated by notifications:view — Owner + Admin Manager; Regular Manager receives 403.',
 	})
-	async list() {
-		return this.service.getItems();
+	async list(@Req() req: { user: AuthUser }) {
+		return this.service.getItems(req.user.permissions);
 	}
 }

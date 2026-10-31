@@ -11,7 +11,7 @@ import {
 
 const INCLUDE = {
   profile: {
-    select: { id: true, firstName: true, lastName: true, title: true },
+    select: { id: true, firstName: true, lastName: true },
   },
 } as const;
 
@@ -55,11 +55,7 @@ export class UpworkChangeLogService {
         date: new Date(dto.date),
         profileId: dto.profileId,
         section: dto.section,
-        item: dto.item ?? null,
-        summary: dto.summary.trim(),
-        reason: dto.reason ?? null,
-        before: dto.before ?? '',
-        after: dto.after ?? '',
+        note: dto.note.trim(),
       },
       include: INCLUDE,
     });
@@ -69,7 +65,7 @@ export class UpworkChangeLogService {
       action: 'upwork.changelog.create',
       targetType: 'UpworkChangeLog',
       targetId: row.id,
-      targetLabel: `${row.section}: ${row.summary.slice(0, 60)}`,
+      targetLabel: `${row.section}: ${row.note.slice(0, 60)}`,
       result: AuditResult.SUCCESS,
       metadata: { profileId: row.profileId },
     });
@@ -87,11 +83,7 @@ export class UpworkChangeLogService {
         ...(dto.date !== undefined ? { date: new Date(dto.date) } : {}),
         ...(dto.profileId !== undefined ? { profileId: dto.profileId } : {}),
         ...(dto.section !== undefined ? { section: dto.section } : {}),
-        ...(dto.item !== undefined ? { item: dto.item ?? null } : {}),
-        ...(dto.summary !== undefined ? { summary: dto.summary.trim() } : {}),
-        ...(dto.reason !== undefined ? { reason: dto.reason ?? null } : {}),
-        ...(dto.before !== undefined ? { before: dto.before } : {}),
-        ...(dto.after !== undefined ? { after: dto.after } : {}),
+        ...(dto.note !== undefined ? { note: dto.note.trim() } : {}),
       },
       include: INCLUDE,
     });
@@ -102,7 +94,7 @@ export class UpworkChangeLogService {
       action: 'upwork.changelog.update',
       targetType: 'UpworkChangeLog',
       targetId: id,
-      targetLabel: row.summary.slice(0, 60),
+      targetLabel: row.note.slice(0, 60),
       result: AuditResult.SUCCESS,
     });
     return row;
@@ -117,7 +109,7 @@ export class UpworkChangeLogService {
       action: 'upwork.changelog.delete',
       targetType: 'UpworkChangeLog',
       targetId: id,
-      targetLabel: existing.summary.slice(0, 60),
+      targetLabel: existing.note.slice(0, 60),
       result: AuditResult.SUCCESS,
     });
     return { id };

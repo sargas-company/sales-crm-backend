@@ -1,8 +1,9 @@
 /**
  * Upwork module demo seed — profiles, change-log entries and metrics
- * snapshots (with inline phrases). Idempotent: re-running will not
- * create duplicate profiles (by title) and will replace this
- * profile's snapshots so the chart stays stable.
+ * snapshots (with inline phrases). Identity is `firstName + lastName`
+ * (profile.title was dropped). Idempotent: re-running updates the
+ * matched profile in place and prunes same-name duplicates created
+ * by earlier seed revisions.
  *
  * Local-only. Run via:
  *   APP_ENV=local npx tsx scripts/seed-upwork-demo.ts
@@ -17,10 +18,9 @@ const prisma = new PrismaClient();
 /* ─── Fixtures ────────────────────────────────────────────────── */
 
 interface ProfileSpec {
-  key: string; // used to look rows up on re-seed
+  key: string; // not persisted; used only to link other seed fixtures
   firstName: string;
   lastName: string | null;
-  title: string | null;
   tier: 'primary' | 'secondary';
   url: string;
   note: string;
@@ -32,7 +32,6 @@ const PROFILES: ProfileSpec[] = [
     key: 'vadym',
     firstName: 'Vadym',
     lastName: 'Chervonchenko',
-    title: 'Senior Full-Stack Developer',
     tier: 'primary',
     url: 'https://www.upwork.com/freelancers/senior-fullstack-react-node',
     note: 'Primary profile. React 18 / TypeScript / NestJS / Postgres. US and EU time zones.',
@@ -42,7 +41,6 @@ const PROFILES: ProfileSpec[] = [
     key: 'olha',
     firstName: 'Olha',
     lastName: 'Kovalenko',
-    title: 'AI Engineer',
     tier: 'primary',
     url: 'https://www.upwork.com/freelancers/ai-llm-engineer',
     note: 'LLM apps, Claude + OpenAI, retrieval, evals.',
@@ -52,7 +50,6 @@ const PROFILES: ProfileSpec[] = [
     key: 'anna',
     firstName: 'Anna',
     lastName: 'Petrenko',
-    title: 'React Native Developer',
     tier: 'secondary',
     url: 'https://www.upwork.com/freelancers/rn-mobile',
     note: 'Worker profile. Monthly stats only; rarely re-tuned.',
@@ -62,7 +59,6 @@ const PROFILES: ProfileSpec[] = [
     key: 'dmytro',
     firstName: 'Dmytro',
     lastName: 'Sarafaniuk',
-    title: 'DevOps Engineer',
     tier: 'secondary',
     url: 'https://www.upwork.com/freelancers/devops-aws-iac',
     note: 'Archived — reactivate if DevOps leads start arriving.',
@@ -70,146 +66,91 @@ const PROFILES: ProfileSpec[] = [
   },
 ];
 
+const profileFullName = (p: Pick<ProfileSpec, 'firstName' | 'lastName'>) =>
+  `${p.firstName} ${p.lastName ?? ''}`.trim();
+
 interface ChangeLogSpec {
-  profile: string;
+  profile: string; // "FirstName LastName"
   daysAgo: number;
   section: UpworkChangeLogSection;
-  item?: string;
-  summary: string;
-  reason?: string;
-  before: string;
-  after: string;
+  note: string;
 }
 
 const CHANGE_LOG: ChangeLogSpec[] = [
   {
-    profile: 'Senior Full-Stack Developer',
+    profile: 'Vadym Chervonchenko',
     daysAgo: 85,
     section: 'title',
-    summary: 'Pivoted the title to React-first phrasing',
-    reason: 'Analytics showed React-explicit titles pull 2× the views.',
-    before: 'Full-Stack TypeScript Developer | Node.js, React, PostgreSQL',
-    after: 'Senior React Developer (TypeScript, Node, PostgreSQL)',
+    note: 'Pivoted the title to React-first phrasing.',
   },
   {
-    profile: 'Senior Full-Stack Developer',
+    profile: 'Vadym Chervonchenko',
     daysAgo: 70,
     section: 'overview',
-    summary: 'Rewrote overview around outcomes, not stack',
-    reason: 'Previous overview led with stack and lost readers.',
-    before:
-      'I am a full-stack engineer with 7+ years of experience building web applications using React, TypeScript, Node.js, PostgreSQL, Redis, and AWS. I have shipped many projects…',
-    after:
-      "I ship SaaS products that pay back their cost of development inside the first year. Last engagement: cut a client's weekly ops time from 11 hours to 90 minutes with a focused React + NestJS portal.\n\nStack when it matters: React 18 · TypeScript · NestJS · PostgreSQL · Prisma.",
+    note: 'Rewrote overview around outcomes, not stack.',
   },
   {
-    profile: 'Senior Full-Stack Developer',
+    profile: 'Vadym Chervonchenko',
     daysAgo: 55,
     section: 'portfolio',
-    item: 'Internal CRM for a 40-person services firm',
-    summary: 'Added CRM case study with 3-shot before/after screenshots',
-    before: '(no portfolio case for this engagement)',
-    after:
-      'Case: Internal CRM for a 40-person services firm.\nProblem → Approach → Numbers.\nOutcome: 11 h/week → 90 min/week on operations.',
+    note: 'Added CRM case study with before/after screenshots.',
   },
   {
-    profile: 'Senior Full-Stack Developer',
+    profile: 'Vadym Chervonchenko',
     daysAgo: 40,
     section: 'skills',
-    summary: 'Trimmed skills list from 24 to 12 — kept only strong signals',
-    reason: 'Upwork search weights top-10. The long tail was noise.',
-    before:
-      'React, TypeScript, JavaScript, HTML, CSS, Tailwind, Node.js, NestJS, Express, PostgreSQL, MySQL, MongoDB, Redis, RabbitMQ, Docker, Kubernetes, AWS, GCP, Vercel, Prisma, TypeORM, Jest, Playwright, Cypress',
-    after:
-      'React · TypeScript · Node.js · NestJS · PostgreSQL · Prisma · Redis · AWS · Playwright · Tailwind · tRPC · Vercel',
+    note: 'Trimmed skills list from 24 to 12.',
   },
   {
-    profile: 'Senior Full-Stack Developer',
+    profile: 'Vadym Chervonchenko',
     daysAgo: 20,
     section: 'project_catalog',
-    item: 'Catalog · MVP in 6 weeks',
-    summary: 'Rewrote the weakest catalog (MVP in 6 weeks) around deliverables',
-    reason: 'This catalog had the worst invite-to-view ratio of the three.',
-    before:
-      "I'll build your MVP in 6 weeks using modern tools. Includes planning, design review, implementation, deployment.",
-    after:
-      'A working MVP, deployed on your domain, in 6 weeks. Fixed scope, fixed price.\n\nWeek 1: concrete spec + Figma.\nWeeks 2–5: ship weekly to staging.\nWeek 6: production + handoff doc.',
+    note: 'Rewrote the "MVP in 6 weeks" catalog around deliverables.',
   },
   {
-    profile: 'Senior Full-Stack Developer',
+    profile: 'Vadym Chervonchenko',
     daysAgo: 10,
     section: 'portfolio',
-    item: 'Patient-flow dashboard for a clinic chain',
-    summary: 'Added second portfolio case: healthcare dashboard',
-    before: '(single portfolio case present)',
-    after:
-      'Case: patient-flow dashboard for a 5-location clinic chain.\n6-week delivery, pay-per-location onboarding.\nResult: no-show rate down from 22% to 12% in 90 days.',
+    note: 'Added second portfolio case: healthcare dashboard.',
   },
 
   {
-    profile: 'AI Engineer',
+    profile: 'Olha Kovalenko',
     daysAgo: 60,
     section: 'title',
-    summary: 'Opened AI profile with LLM-first phrasing',
-    before: '(new profile)',
-    after: 'LLM Applications Engineer (RAG, agents, evals)',
+    note: 'Opened AI profile with LLM-first phrasing.',
   },
   {
-    profile: 'AI Engineer',
+    profile: 'Olha Kovalenko',
     daysAgo: 45,
     section: 'overview',
-    summary: 'First AI overview focused on evals and production',
-    before: '(empty)',
-    after:
-      'I build LLM features that make it to production: evals before launch, retries + fallbacks after, cost ceilings baked in. Comfortable with Claude, OpenAI, pgvector, LangGraph.',
+    note: 'First AI overview focused on evals and production.',
   },
   {
-    profile: 'AI Engineer',
+    profile: 'Olha Kovalenko',
     daysAgo: 25,
     section: 'portfolio',
-    item: 'Internal assistant for a legal-ops team',
-    summary: 'Added first AI portfolio case: legal-ops assistant',
-    before: '(empty)',
-    after:
-      'Case: internal assistant for a legal-ops team. 11k documents in pgvector. Evals suite with 42 fixed questions. 94% answer-grounding rate at launch.',
+    note: 'Added first AI portfolio case: legal-ops assistant.',
   },
   {
-    profile: 'AI Engineer',
+    profile: 'Olha Kovalenko',
     daysAgo: 6,
     section: 'certificate',
-    summary: 'Added Anthropic prompt-engineering certificate',
-    before: '(none)',
-    after: 'Anthropic — Prompt engineering interactive tutorial · certificate attached.',
+    note: 'Added Anthropic prompt-engineering certificate.',
   },
 
   {
-    profile: 'React Native Developer',
+    profile: 'Anna Petrenko',
     daysAgo: 50,
     section: 'title',
-    summary: 'Opened Mobile profile with narrow RN focus',
-    before: '(new profile)',
-    after: 'React Native Mobile Engineer (Expo, TypeScript)',
-  },
-
-  /* Yearly research — `job_analysis` carries notes only. Excluded
-   * from chart markers and the activity-by-section bar in analytics. */
-  {
-    profile: 'Senior Full-Stack Developer',
-    daysAgo: 120,
-    section: 'job_analysis',
-    item: '100 job posts · Jul 2026',
-    summary: 'Yearly job post analysis — 100 posts',
-    reason:
-      'Common patterns: more LLM references in B2B SaaS briefs; Playwright now mentioned ~40% of the time; MVP timelines tightening (4–8 weeks dominant).',
-    before: '',
-    after: '',
+    note: 'Opened Mobile profile with narrow RN focus.',
   },
 ];
 
 /* ─── Snapshot generator ─────────────────────────────────────── */
 
 interface SnapshotProfileSpec {
-  profile: string;
+  profile: string; // "FirstName LastName"
   days: number;
   viewsBase: number;
   viewsVar: number;
@@ -222,7 +163,7 @@ interface SnapshotProfileSpec {
 
 const SNAPSHOT_SPECS: SnapshotProfileSpec[] = [
   {
-    profile: 'Senior Full-Stack Developer',
+    profile: 'Vadym Chervonchenko',
     days: 180,
     viewsBase: 85,
     viewsVar: 50,
@@ -238,7 +179,7 @@ const SNAPSHOT_SPECS: SnapshotProfileSpec[] = [
     ],
   },
   {
-    profile: 'AI Engineer',
+    profile: 'Olha Kovalenko',
     days: 120,
     viewsBase: 56,
     viewsVar: 36,
@@ -253,7 +194,7 @@ const SNAPSHOT_SPECS: SnapshotProfileSpec[] = [
     ],
   },
   {
-    profile: 'React Native Developer',
+    profile: 'Anna Petrenko',
     days: 75,
     viewsBase: 34,
     viewsVar: 24,
@@ -293,62 +234,49 @@ async function main() {
   }
   console.log('🌱 Upwork demo seed starting…');
 
-  /* 0. Clean up profiles created by earlier revisions of this seed
-   * under their old composite names. */
-  const OBSOLETE_TITLES = [
-    'Senior Full-Stack · React + Node',
-    'AI Engineer · LLM / RAG / Agents',
-    'Mobile · React Native',
-    'DevOps · AWS / IaC (archived)',
-  ];
-  const OBSOLETE_FIRSTS = ['Senior', 'AI', 'Mobile', 'DevOps'];
-  const removed = await prisma.upworkProfile.deleteMany({
-    where: {
-      OR: [
-        { title: { in: OBSOLETE_TITLES } },
-        {
-          AND: [
-            { title: null },
-            { firstName: { in: OBSOLETE_FIRSTS } },
-            { lastName: { contains: '·' } },
-          ],
-        },
-      ],
-    },
-  });
-  if (removed.count) console.log(`• Removed ${removed.count} legacy profile(s).`);
-
-  /* 1. Profiles — upsert by title. */
+  /* 1. Profiles — upsert by (firstName, lastName). Prunes same-name
+   * duplicates left by earlier revisions. */
   const profileByName = new Map<string, string>();
   for (const spec of PROFILES) {
-    const existing = await prisma.upworkProfile.findFirst({
-      where: { title: spec.title ?? undefined },
+    const existing = await prisma.upworkProfile.findMany({
+      where: { firstName: spec.firstName, lastName: spec.lastName },
+      orderBy: { createdAt: 'asc' },
     });
-    const row = existing
-      ? await prisma.upworkProfile.update({
-          where: { id: existing.id },
-          data: {
-            firstName: spec.firstName,
-            lastName: spec.lastName,
-            title: spec.title,
-            tier: spec.tier,
-            url: spec.url,
-            note: spec.note,
-            active: spec.active,
-          },
-        })
-      : await prisma.upworkProfile.create({
-          data: {
-            firstName: spec.firstName,
-            lastName: spec.lastName,
-            title: spec.title,
-            tier: spec.tier,
-            url: spec.url,
-            note: spec.note,
-            active: spec.active,
-          },
+    let keptId: string;
+    if (existing.length === 0) {
+      const row = await prisma.upworkProfile.create({
+        data: {
+          firstName: spec.firstName,
+          lastName: spec.lastName,
+          tier: spec.tier,
+          url: spec.url,
+          note: spec.note,
+          active: spec.active,
+        },
+      });
+      keptId = row.id;
+    } else {
+      const [first, ...dupes] = existing;
+      if (dupes.length) {
+        await prisma.upworkProfile.deleteMany({
+          where: { id: { in: dupes.map((d) => d.id) } },
         });
-    if (spec.title) profileByName.set(spec.title, row.id);
+        console.log(
+          `• Pruned ${dupes.length} duplicate(s) of ${profileFullName(spec)}.`,
+        );
+      }
+      const row = await prisma.upworkProfile.update({
+        where: { id: first.id },
+        data: {
+          tier: spec.tier,
+          url: spec.url,
+          note: spec.note,
+          active: spec.active,
+        },
+      });
+      keptId = row.id;
+    }
+    profileByName.set(profileFullName(spec), keptId);
   }
   console.log(`✓ Profiles: ${profileByName.size}`);
 
@@ -356,9 +284,9 @@ async function main() {
    * running stays idempotent. */
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
-  const seedSummaries = CHANGE_LOG.map((c) => c.summary);
+  const seedNotes = CHANGE_LOG.map((c) => c.note);
   await prisma.upworkChangeLog.deleteMany({
-    where: { summary: { in: seedSummaries } },
+    where: { note: { in: seedNotes } },
   });
   let changeLogN = 0;
   for (const c of CHANGE_LOG) {
@@ -370,11 +298,7 @@ async function main() {
         date,
         profileId,
         section: c.section,
-        item: c.item ?? null,
-        summary: c.summary,
-        reason: c.reason ?? null,
-        before: c.before,
-        after: c.after,
+        note: c.note,
       },
     });
     changeLogN++;

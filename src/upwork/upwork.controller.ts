@@ -19,7 +19,6 @@ import { PermissionGuard } from '../auth/permission.guard';
 import { RequirePermission } from '../auth/permission.decorator';
 
 import {
-  BulkDeleteUpworkProfilesDto,
   CreateUpworkProfileDto,
   UpdateUpworkProfileDto,
 } from './dto/upwork-profile.dto';
@@ -91,17 +90,6 @@ export class UpworkController {
   @HttpCode(HttpStatus.NO_CONTENT)
   removeProfile(@Param('id') id: string, @Req() req: ReqWithUser) {
     return this.profiles.remove(id, req.user.id);
-  }
-
-  @Post('profiles/bulk-delete')
-  @RequirePermission('upwork:delete')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Bulk-delete profiles (cascades through all children)' })
-  bulkDeleteProfiles(
-    @Body() dto: BulkDeleteUpworkProfilesDto,
-    @Req() req: ReqWithUser,
-  ) {
-    return this.profiles.bulkDelete(dto, req.user.id);
   }
 
   /* ── Change log ────────────────────────────────────────────────── */
