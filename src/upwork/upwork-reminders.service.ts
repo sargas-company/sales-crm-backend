@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
-import { UPWORK_REMINDER_RULES } from './upwork.constants';
+import { UPWORK_REMINDER_RULES_BY_TIER } from './upwork.constants';
 
 export interface UpworkReminder {
   key: string;
@@ -16,9 +16,8 @@ export class UpworkRemindersService {
   constructor(private readonly prisma: PrismaService) {}
 
   /** Returns reminders for the given profile — computed on the fly
-   *  from change-log + snapshot + reference-data freshness. No
-   *  persisted "reminders" table; thresholds live in
-   *  upwork.constants.ts. */
+   *  from change-log + snapshot freshness. No persisted "reminders"
+   *  table; thresholds live in upwork.constants.ts. */
   async forProfile(profileId: string): Promise<UpworkReminder[]> {
     const profile = await this.prisma.upworkProfile.findUnique({
       where: { id: profileId },
@@ -27,8 +26,9 @@ export class UpworkRemindersService {
 
     const now = Date.now();
     const reminders: UpworkReminder[] = [];
+    const rules = UPWORK_REMINDER_RULES_BY_TIER[profile.tier];
 
-    for (const rule of UPWORK_REMINDER_RULES) {
+    for (const rule of rules) {
       if (rule.section) {
         const latest = await this.prisma.upworkChangeLog.findFirst({
           where: { profileId, section: rule.section },
@@ -46,7 +46,8 @@ export class UpworkRemindersService {
       } else if (rule.sections && rule.sections.length) {
         /* ANY of these sections keeps the reminder green — a single
          * fresh entry in portfolio OR skills OR title is enough.
-         * Used by the "Daily update" rule. */
+         * Used by the "Daily update" rule and the secondary
+         * "review the profile" rule. */
         const latest = await this.prisma.upworkChangeLog.findFirst({
           where: { profileId, section: { in: rule.sections } },
           orderBy: { date: 'desc' },
@@ -73,27 +74,6 @@ export class UpworkRemindersService {
             severity: 'warn',
             days: rule.days,
           });
-        }
-      } else if (rule.refCategories) {
-        for (const cat of rule.refCategories) {
-          const latest = await this.prisma.upworkReferenceData.findFirst({
-            where: {
-              category: cat,
-              active: true,
-              OR: [{ profileId }, { profileId: null }],
-            },
-            orderBy: { collectedDate: 'desc' },
-            select: { collectedDate: true },
-          });
-          if (this.isStale(latest?.collectedDate ?? null, rule.days, now)) {
-            reminders.push({
-              key: `${rule.key}:${cat}`,
-              label: `${rule.label}: ${cat}`,
-              severity: 'info',
-              days: rule.days,
-              context: cat,
-            });
-          }
         }
       }
     }

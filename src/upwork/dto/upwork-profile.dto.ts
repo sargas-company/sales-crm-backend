@@ -1,10 +1,15 @@
 import { PartialType } from '@nestjs/mapped-types';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { UpworkProfileTier } from '@prisma/client';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsBoolean,
+  IsEnum,
   IsOptional,
   IsString,
   IsUrl,
+  IsUUID,
   MaxLength,
   MinLength,
 } from 'class-validator';
@@ -25,8 +30,16 @@ export class CreateUpworkProfileDto {
   @ApiPropertyOptional({ example: 'Senior Full-Stack Developer' })
   @IsOptional()
   @IsString()
-  @MaxLength(200)
+  @MaxLength(70)
   title?: string;
+
+  @ApiPropertyOptional({
+    enum: UpworkProfileTier,
+    description: 'primary = strict reminder cadence; secondary = monthly cadence (default)',
+  })
+  @IsOptional()
+  @IsEnum(UpworkProfileTier)
+  tier?: UpworkProfileTier;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -46,3 +59,11 @@ export class CreateUpworkProfileDto {
 }
 
 export class UpdateUpworkProfileDto extends PartialType(CreateUpworkProfileDto) {}
+
+export class BulkDeleteUpworkProfilesDto {
+  @ApiProperty({ type: [String] })
+  @IsArray()
+  @ArrayMaxSize(100)
+  @IsUUID('all', { each: true })
+  ids!: string[];
+}

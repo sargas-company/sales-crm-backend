@@ -7,15 +7,20 @@ import {
   IsDateString,
   IsInt,
   IsOptional,
+  IsString,
   IsUUID,
+  MaxLength,
+  MinLength,
   Min,
   ValidateNested,
 } from 'class-validator';
 
 export class SnapshotPositionDto {
-  @ApiProperty({ description: 'title_phrase reference-data id' })
-  @IsUUID()
-  referenceDataId!: string;
+  @ApiProperty({ description: 'Title phrase (free text; normalized server-side).' })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(200)
+  phrase!: string;
 
   @ApiProperty()
   @IsInt()
@@ -59,9 +64,10 @@ export class CreateUpworkSnapshotDto {
 export class UpdateUpworkSnapshotDto extends PartialType(CreateUpworkSnapshotDto) {}
 
 export class ListUpworkSnapshotsDto {
-  @ApiProperty()
+  @ApiPropertyOptional({ description: 'Filter by profile; omit for all profiles.' })
+  @IsOptional()
   @IsUUID()
-  profileId!: string;
+  profileId?: string;
 
   @ApiPropertyOptional({ example: '2026-10-01' })
   @IsOptional()

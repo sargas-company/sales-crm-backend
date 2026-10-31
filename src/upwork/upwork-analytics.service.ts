@@ -18,7 +18,7 @@ export interface WeeklyPoint {
 
 export interface PositionsWeeklyPoint {
   weekStart: string;
-  byReferenceId: Record<string, number>; // latest-in-week position
+  byPhrase: Record<string, number>; // latest-in-week position per phrase
 }
 
 export interface ChangeLogMarker {
@@ -37,7 +37,7 @@ export interface AnalyticsResponse {
   };
   weekly: WeeklyPoint[];
   positionsWeekly: PositionsWeeklyPoint[];
-  titlePhrases: Array<{ id: string; value: string }>;
+  titlePhrases: string[];
   changeLogMarkers: ChangeLogMarker[];
   viewsPerInvite4w: {
     value: number | null;
@@ -71,11 +71,7 @@ export class UpworkAnalyticsService {
       orderBy: { date: 'asc' },
       include: {
         positions: {
-          include: {
-            referenceData: {
-              select: { id: true, value: true, category: true },
-            },
-          },
+          select: { phrase: true, position: true },
         },
       },
     });
@@ -110,9 +106,9 @@ export class UpworkAnalyticsService {
         posWeeklyMap.set(wk, posW);
       }
       for (const p of s.positions) {
-        const prev = posW.get(p.referenceDataId);
+        const prev = posW.get(p.phrase);
         if (!prev || prev.date < s.date) {
-          posW.set(p.referenceDataId, { date: s.date, position: p.position });
+          posW.set(p.phrase, { date: s.date, position: p.position });
         }
       }
     }
@@ -124,29 +120,30 @@ export class UpworkAnalyticsService {
     }));
     const positionsWeekly: PositionsWeeklyPoint[] = weeks.map((wk) => {
       const inner = posWeeklyMap.get(wk);
-      const byReferenceId: Record<string, number> = {};
+      const byPhrase: Record<string, number> = {};
       if (inner) {
-        Array.from(inner.entries()).forEach(([refId, v]) => {
-          byReferenceId[refId] = v.position;
+        Array.from(inner.entries()).forEach(([phrase, v]) => {
+          byPhrase[phrase] = v.position;
         });
       }
-      return { weekStart: wk, byReferenceId };
+      return { weekStart: wk, byPhrase };
     });
 
-    /* title_phrase entries used anywhere in the window (active + for
-     * this profile or shared) — used to label chart series. */
-    const titlePhrases = await this.prisma.upworkReferenceData.findMany({
-      where: {
-        category: 'title_phrase',
-        active: true,
-        OR: [{ profileId: profile.id }, { profileId: null }],
-      },
-      orderBy: [{ order: { sort: 'asc', nulls: 'last' } }, { value: 'asc' }],
-      select: { id: true, value: true },
-    });
+    /* Distinct phrases seen across all snapshots in the window —
+     * used to label chart series. Sort alphabetically for stable
+     * rendering. */
+    const titlePhrases = Array.from(
+      new Set(snapshots.flatMap((s) => s.positions.map((p) => p.phrase))),
+    ).sort();
 
     const markerRows = await this.prisma.upworkChangeLog.findMany({
-      where: { profileId: profile.id, date: { gte: from, lte: to } },
+      where: {
+        profileId: profile.id,
+        date: { gte: from, lte: to },
+        /* `job_analysis` is research, not a profile change; keep it
+         * out of chart markers and the activity-by-section bar. */
+        section: { not: 'job_analysis' },
+      },
       orderBy: { date: 'asc' },
       select: { date: true, section: true, summary: true },
     });

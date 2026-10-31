@@ -7,7 +7,6 @@ import { UpworkAnalyticsService } from './upwork-analytics.service';
 import { UpworkChangeLogService } from './upwork-change-log.service';
 import { UpworkMetricsService } from './upwork-metrics.service';
 import { UpworkProfileService } from './upwork-profile.service';
-import { UpworkReferenceDataService } from './upwork-reference-data.service';
 import { UpworkRemindersService } from './upwork-reminders.service';
 
 @Module({
@@ -15,7 +14,6 @@ import { UpworkRemindersService } from './upwork-reminders.service';
   controllers: [UpworkController],
   providers: [
     UpworkProfileService,
-    UpworkReferenceDataService,
     UpworkChangeLogService,
     UpworkMetricsService,
     UpworkRemindersService,

@@ -2,8 +2,6 @@ import { PartialType } from '@nestjs/mapped-types';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { UpworkChangeLogSection } from '@prisma/client';
 import {
-  ArrayMaxSize,
-  IsArray,
   IsDateString,
   IsEnum,
   IsOptional,
@@ -44,20 +42,17 @@ export class CreateUpworkChangeLogDto {
   @MaxLength(2000)
   reason?: string;
 
-  @ApiProperty()
-  @IsString()
-  before!: string;
-
-  @ApiProperty()
-  @IsString()
-  after!: string;
-
-  @ApiPropertyOptional({ type: [String] })
+  /* Optional. For job_analysis entries (research notes) before/after
+   * can be omitted entirely; stored as empty strings when absent. */
+  @ApiPropertyOptional()
   @IsOptional()
-  @IsArray()
-  @ArrayMaxSize(100)
-  @IsUUID('all', { each: true })
-  referenceIds?: string[];
+  @IsString()
+  before?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  after?: string;
 }
 
 export class UpdateUpworkChangeLogDto extends PartialType(

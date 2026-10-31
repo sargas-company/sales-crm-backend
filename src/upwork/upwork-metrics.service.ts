@@ -14,16 +14,19 @@ import {
   SnapshotPositionDto,
   UpdateUpworkSnapshotDto,
 } from './dto/upwork-metrics.dto';
+import { normalizeUpworkPhrase } from './upwork.constants';
 
 const INCLUDE = {
   positions: {
-    include: {
-      referenceData: {
-        select: { id: true, value: true, category: true, profileId: true },
-      },
-    },
+    select: { id: true, phrase: true, position: true },
+    orderBy: { position: 'asc' } as const,
   },
 } as const;
+
+interface NormalizedPosition {
+  phrase: string;
+  position: number;
+}
 
 @Injectable()
 export class UpworkMetricsService {
@@ -33,9 +36,8 @@ export class UpworkMetricsService {
   ) {}
 
   async list(query: ListUpworkSnapshotsDto) {
-    const where: Prisma.UpworkMetricsSnapshotWhereInput = {
-      profileId: query.profileId,
-    };
+    const where: Prisma.UpworkMetricsSnapshotWhereInput = {};
+    if (query.profileId) where.profileId = query.profileId;
     if (query.from || query.to) {
       where.date = {};
       if (query.from) where.date.gte = new Date(query.from);
@@ -60,8 +62,7 @@ export class UpworkMetricsService {
 
   async create(dto: CreateUpworkSnapshotDto, actorUserId: string) {
     await this.ensureProfile(dto.profileId);
-    const positions = dto.positions ?? [];
-    if (positions.length) await this.validatePositions(positions, dto.profileId);
+    const positions = this.normalizePositions(dto.positions ?? []);
     const date = new Date(dto.date);
     try {
       const row = await this.prisma.upworkMetricsSnapshot.create({
@@ -72,12 +73,7 @@ export class UpworkMetricsService {
           invites: dto.invites,
           directMessages: dto.directMessages,
           positions: positions.length
-            ? {
-                create: positions.map((p) => ({
-                  referenceDataId: p.referenceDataId,
-                  position: p.position,
-                })),
-              }
+            ? { create: positions }
             : undefined,
         },
         include: INCLUDE,
@@ -110,11 +106,9 @@ export class UpworkMetricsService {
     if (dto.profileId && dto.profileId !== existing.profileId) {
       await this.ensureProfile(dto.profileId);
     }
-    const nextProfileId = dto.profileId ?? existing.profileId;
-    const positions = dto.positions;
-    if (positions && positions.length) {
-      await this.validatePositions(positions, nextProfileId);
-    }
+    const positions = dto.positions
+      ? this.normalizePositions(dto.positions)
+      : undefined;
     const row = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.upworkMetricsSnapshot.update({
         where: { id },
@@ -136,7 +130,7 @@ export class UpworkMetricsService {
           await tx.upworkMetricsSnapshotPosition.createMany({
             data: positions.map((p) => ({
               snapshotId: id,
-              referenceDataId: p.referenceDataId,
+              phrase: p.phrase,
               position: p.position,
             })),
           });
@@ -177,29 +171,26 @@ export class UpworkMetricsService {
     if (!p) throw new NotFoundException(`profile ${id} not found`);
   }
 
-  /** Positions must reference title_phrase entries that belong to this
-   *  profile or are shared (profileId = null). */
-  private async validatePositions(
+  /** Normalize phrases (lower + collapse ws + trim) and reject
+   *  duplicates within the same payload. */
+  private normalizePositions(
     positions: SnapshotPositionDto[],
-    profileId: string,
-  ) {
-    const ids = positions.map((p) => p.referenceDataId);
-    const rows = await this.prisma.upworkReferenceData.findMany({
-      where: { id: { in: ids } },
-      select: { id: true, profileId: true, category: true },
-    });
-    if (rows.length !== ids.length) {
-      throw new NotFoundException('one or more reference entries not found');
+  ): NormalizedPosition[] {
+    const seen = new Set<string>();
+    const out: NormalizedPosition[] = [];
+    for (const p of positions) {
+      const phrase = normalizeUpworkPhrase(p.phrase);
+      if (!phrase) {
+        throw new BadRequestException('position phrase cannot be empty');
+      }
+      if (seen.has(phrase)) {
+        throw new BadRequestException(
+          `duplicate phrase in payload: "${phrase}"`,
+        );
+      }
+      seen.add(phrase);
+      out.push({ phrase, position: p.position });
     }
-    const bad = rows.find(
-      (r) =>
-        r.category !== 'title_phrase' ||
-        (r.profileId !== null && r.profileId !== profileId),
-    );
-    if (bad) {
-      throw new BadRequestException(
-        'positions may only reference title_phrase entries from this profile (or shared)',
-      );
-    }
+    return out;
   }
 }

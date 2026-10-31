@@ -19,16 +19,10 @@ import { PermissionGuard } from '../auth/permission.guard';
 import { RequirePermission } from '../auth/permission.decorator';
 
 import {
+  BulkDeleteUpworkProfilesDto,
   CreateUpworkProfileDto,
   UpdateUpworkProfileDto,
 } from './dto/upwork-profile.dto';
-import {
-  BulkAddUpworkReferenceDataDto,
-  BulkDeleteUpworkReferenceDataDto,
-  CreateUpworkReferenceDataDto,
-  ListUpworkReferenceDataDto,
-  UpdateUpworkReferenceDataDto,
-} from './dto/upwork-reference-data.dto';
 import {
   CreateUpworkChangeLogDto,
   ListUpworkChangeLogDto,
@@ -41,7 +35,6 @@ import {
 } from './dto/upwork-metrics.dto';
 
 import { UpworkProfileService } from './upwork-profile.service';
-import { UpworkReferenceDataService } from './upwork-reference-data.service';
 import { UpworkChangeLogService } from './upwork-change-log.service';
 import { UpworkMetricsService } from './upwork-metrics.service';
 import { UpworkRemindersService } from './upwork-reminders.service';
@@ -56,7 +49,6 @@ type ReqWithUser = { user: { id: string } };
 export class UpworkController {
   constructor(
     private readonly profiles: UpworkProfileService,
-    private readonly refs: UpworkReferenceDataService,
     private readonly changeLog: UpworkChangeLogService,
     private readonly metrics: UpworkMetricsService,
     private readonly reminders: UpworkRemindersService,
@@ -101,65 +93,15 @@ export class UpworkController {
     return this.profiles.remove(id, req.user.id);
   }
 
-  /* ── Reference data ────────────────────────────────────────────── */
-
-  @Get('reference-data')
-  @RequirePermission('upwork:view')
-  listReferences(@Query() query: ListUpworkReferenceDataDto) {
-    return this.refs.list(query);
-  }
-
-  @Get('reference-data/:id')
-  @RequirePermission('upwork:view')
-  getReference(@Param('id') id: string) {
-    return this.refs.findOne(id);
-  }
-
-  @Post('reference-data')
-  @RequirePermission('upwork:create')
-  @HttpCode(HttpStatus.CREATED)
-  createReference(
-    @Body() dto: CreateUpworkReferenceDataDto,
-    @Req() req: ReqWithUser,
-  ) {
-    return this.refs.create(dto, req.user.id);
-  }
-
-  @Post('reference-data/bulk-add')
-  @RequirePermission('upwork:create')
-  @ApiOperation({ summary: 'Bulk add N values under shared category/profile/date' })
-  @HttpCode(HttpStatus.CREATED)
-  bulkAddReferences(
-    @Body() dto: BulkAddUpworkReferenceDataDto,
-    @Req() req: ReqWithUser,
-  ) {
-    return this.refs.bulkAdd(dto, req.user.id);
-  }
-
-  @Patch('reference-data/:id')
-  @RequirePermission('upwork:update')
-  updateReference(
-    @Param('id') id: string,
-    @Body() dto: UpdateUpworkReferenceDataDto,
-    @Req() req: ReqWithUser,
-  ) {
-    return this.refs.update(id, dto, req.user.id);
-  }
-
-  @Post('reference-data/:id/archive')
-  @RequirePermission('upwork:update')
-  archiveReference(@Param('id') id: string, @Req() req: ReqWithUser) {
-    return this.refs.archive(id, req.user.id);
-  }
-
-  @Post('reference-data/bulk-delete')
+  @Post('profiles/bulk-delete')
   @RequirePermission('upwork:delete')
   @HttpCode(HttpStatus.OK)
-  bulkDeleteReferences(
-    @Body() dto: BulkDeleteUpworkReferenceDataDto,
+  @ApiOperation({ summary: 'Bulk-delete profiles (cascades through all children)' })
+  bulkDeleteProfiles(
+    @Body() dto: BulkDeleteUpworkProfilesDto,
     @Req() req: ReqWithUser,
   ) {
-    return this.refs.bulkDelete(dto, req.user.id);
+    return this.profiles.bulkDelete(dto, req.user.id);
   }
 
   /* ── Change log ────────────────────────────────────────────────── */
