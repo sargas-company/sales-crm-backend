@@ -502,9 +502,13 @@ export class AnalyticsService {
           hot,
           averageScore,
           qualifiedRate,
-          /* Daily cells reuse the weekly country breakdown — the
-           * tooltip only shows countries on the weekly matrix anyway. */
-          countries: [],
+          /* Reuse the weekly (weekday, hour) country breakdown so the
+           * tooltip still shows a country list in daily view. Keyed by
+           * weekdayIndex-hour — same as the weekly matrix. */
+          countries:
+            countriesByKey.get(
+              `${this.pgDowToMondayIdx(r.weekday_pg)}-${r.hour}`,
+            ) ?? [],
         };
       });
       dailyMaxValue = Math.max(0, ...dailyCells.map((c) => cellValue(c, metric)));
