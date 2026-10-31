@@ -162,6 +162,7 @@ export class JobPostService {
     const {
       decision,
       priority,
+      gate,
       minScore,
       maxScore,
       sortBy,
@@ -211,6 +212,31 @@ export class JobPostService {
         }
       : {};
 
+    // Gatekeeper outcome filter. `pass` = Sonnet evaluation ran (its
+    // key is present on the aiResponse JSON); `reject` = gatekeeper
+    // ran but evaluation never did (killed at gate).
+    const gateFilter: Prisma.JobPostWhereInput =
+      gate === 'pass'
+        ? { aiResponse: { path: ['evaluation'], not: Prisma.AnyNull } }
+        : gate === 'reject'
+          ? {
+              AND: [
+                {
+                  aiResponse: {
+                    path: ['gatekeeper'],
+                    not: Prisma.AnyNull,
+                  },
+                },
+                {
+                  aiResponse: {
+                    path: ['evaluation'],
+                    equals: Prisma.AnyNull,
+                  },
+                },
+              ],
+            }
+          : {};
+
     const where: Prisma.JobPostWhereInput = {
       ...(status ? { status } : {}),
       ...(decision && { decision }),
@@ -231,6 +257,7 @@ export class JobPostService {
         : {}),
       ...viewFilter,
       ...countryFilter,
+      ...gateFilter,
     };
 
     const orderBy = this.buildOrderBy(sortBy, sortDirection);

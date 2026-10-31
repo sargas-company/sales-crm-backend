@@ -47,6 +47,15 @@ export class ListJobPostsDto {
   @IsEnum(JobPostPriority)
   priority?: JobPostPriority;
 
+  @ApiPropertyOptional({
+    description:
+      'Gatekeeper outcome. `pass` = reached Sonnet evaluation; `reject` = killed at gatekeeper (no evaluation).',
+    enum: ['pass', 'reject'],
+  })
+  @IsOptional()
+  @IsEnum(['pass', 'reject'] as unknown as object)
+  gate?: 'pass' | 'reject';
+
   @ApiPropertyOptional({ example: 50 })
   @IsOptional()
   @Transform(({ value }) => Number(value))
