@@ -359,10 +359,13 @@ export class FileManagerService {
 
   async deleteFolder(id: string, actorUserId: string) {
     const row = await this.loadFolderOr404(id);
-    /* Recursively collect every file under this subtree so we can
-     * best-effort drop their B2 objects. Postgres then cascades the
-     * folder + file rows via FK ON DELETE CASCADE. */
-    const files = await this.collectFilesUnder(id);
+    /* Snapshot subtree ids BEFORE the DB delete — Postgres cascades
+     * via FK ON DELETE CASCADE between folder/file rows, but we
+     * also have to app-cascade FileManagerShare because its
+     * resourceId is a polymorphic (string-only) FK with no DB-level
+     * cascade. Collect everything, then: B2 cleanup → share
+     * deleteMany → folder delete (one tx for the DB writes). */
+    const { folderIds, files } = await this.collectSubtreeIds(id);
     for (const f of files) {
       try {
         await this.storage.deleteByName(StorageBucket.FILE_MANAGER, f.storageKey);
@@ -375,7 +378,25 @@ export class FileManagerService {
         }
       }
     }
-    await this.prisma.fileManagerFolder.delete({ where: { id } });
+    const fileIds = files.map((f) => f.id);
+    await this.prisma.$transaction([
+      this.prisma.fileManagerShare.deleteMany({
+        where: {
+          OR: [
+            { resourceType: 'FOLDER', resourceId: { in: folderIds } },
+            ...(fileIds.length > 0
+              ? [
+                  {
+                    resourceType: 'FILE' as const,
+                    resourceId: { in: fileIds },
+                  },
+                ]
+              : []),
+          ],
+        },
+      }),
+      this.prisma.fileManagerFolder.delete({ where: { id } }),
+    ]);
     await this.audit.record({
       actorUserId,
       domain: 'SETTINGS',
@@ -490,7 +511,15 @@ export class FileManagerService {
         );
       }
     }
-    await this.prisma.fileManagerFile.delete({ where: { id } });
+    /* App-cascade: polymorphic resourceId on FileManagerShare has no
+     * DB-level cascade, so sweep the file's shares in the same tx
+     * as the file delete. */
+    await this.prisma.$transaction([
+      this.prisma.fileManagerShare.deleteMany({
+        where: { resourceType: 'FILE', resourceId: id },
+      }),
+      this.prisma.fileManagerFile.delete({ where: { id } }),
+    ]);
     await this.audit.record({
       actorUserId,
       domain: 'SETTINGS',
@@ -868,6 +897,40 @@ export class FileManagerService {
       for (const f of childFolders) stack.push(f.id);
     }
     return files;
+  }
+
+  /** Walk the folder subtree and return every folder id (incl. the
+   *  root) plus every file row. Used by delete paths to app-cascade
+   *  share cleanup — the `resourceId` on FileManagerShare is a
+   *  polymorphic (string-only) FK with no DB-level cascade, so we
+   *  snapshot the subtree before deleting the folder and sweep the
+   *  shares ourselves. */
+  private async collectSubtreeIds(folderId: string) {
+    const folderIds: string[] = [folderId];
+    const files: Array<{ id: string; storageKey: string }> = [];
+    const stack = [folderId];
+    const seen = new Set<string>();
+    while (stack.length) {
+      const current = stack.pop() as string;
+      if (seen.has(current)) continue;
+      seen.add(current);
+      const [childFolders, childFiles] = await Promise.all([
+        this.prisma.fileManagerFolder.findMany({
+          where: { parentId: current },
+          select: { id: true },
+        }),
+        this.prisma.fileManagerFile.findMany({
+          where: { folderId: current },
+          select: { id: true, storageKey: true },
+        }),
+      ]);
+      for (const f of childFiles) files.push(f);
+      for (const f of childFolders) {
+        folderIds.push(f.id);
+        stack.push(f.id);
+      }
+    }
+    return { folderIds, files };
   }
 
   private sanitizeFileName(name: string): string {

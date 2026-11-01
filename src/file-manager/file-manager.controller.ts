@@ -23,7 +23,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PermissionGuard } from '../auth/permission.guard';
 import { RequirePermission } from '../auth/permission.decorator';
 
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -145,6 +145,15 @@ export class FileManagerController {
     @Req() req: Request & { user: AuthUser },
   ) {
     const ctx = await this.context(req.user.id);
+    /* 404 before 403: the portal view uses the status to pick a
+     * screen — "Folder was deleted" (404) vs "No access to this
+     * folder" (403). Admin paths just need the 404 in case someone
+     * follows a stale link. */
+    const exists = await this.prisma.fileManagerFolder.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!exists) throw new NotFoundException('Folder does not exist');
     if (ctx.isPortal) {
       if (!this.access.canSeeFolder(ctx.scope, id)) {
         throw new ForbiddenException('No access to this folder');
@@ -579,7 +588,9 @@ export class FileManagerController {
         size: true,
       },
     });
-    if (!file) throw new ForbiddenException('File not found');
+    /* 404 vs 403 — the portal view uses the status code to pick a
+     * screen: "File was deleted" vs "No access to this file". */
+    if (!file) throw new NotFoundException('File does not exist');
     if (
       ctx.isPortal &&
       !this.access.canSeeFile(ctx.scope, file.id, file.folderId)
