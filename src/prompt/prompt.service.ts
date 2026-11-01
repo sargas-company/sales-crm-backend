@@ -28,6 +28,19 @@ export class PromptService {
 
   constructor(private readonly prisma: PrismaService) {}
 
+  /** Resolve a user id to a display name like "Vadim C." for the
+   *  createdBy / updatedBy audit columns. Returns null when the user
+   *  isn't found so the write stays nullable instead of blocking. */
+  private async userLabel(userId: string): Promise<string | null> {
+    const u = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { firstName: true, lastName: true },
+    });
+    if (!u) return null;
+    const initial = (u.lastName ?? '').trim().slice(0, 1).toUpperCase();
+    return initial ? `${u.firstName} ${initial}.` : u.firstName;
+  }
+
   private cacheGet<T>(key: string): T | undefined {
     const entry = this.cache.get(key);
     if (!entry || Date.now() > entry.expiresAt) {
@@ -111,12 +124,13 @@ export class PromptService {
     }
   }
 
-  async createPrompt(dto: CreatePromptDto) {
+  async createPrompt(dto: CreatePromptDto, actorUserId: string) {
     const title = dto.title.trim();
     if (!title) throw new BadRequestException('Title cannot be empty');
     const content = dto.content.trim();
     if (!content) throw new BadRequestException('Content cannot be empty');
 
+    const actor = await this.userLabel(actorUserId);
     return this.prisma.prompt.create({
       data: {
         type: dto.type,
@@ -124,22 +138,29 @@ export class PromptService {
         content,
         version: 1,
         isActive: false,
+        createdBy: actor,
+        updatedBy: actor,
       },
     });
   }
 
-  async updatePrompt(id: string, dto: UpdatePromptDto) {
+  async updatePrompt(
+    id: string,
+    dto: UpdatePromptDto,
+    actorUserId: string,
+  ) {
     const content = dto.content.trim();
     if (!content) throw new BadRequestException('Content cannot be empty');
 
     const existing = await this.findOrThrow(id);
     const nextVersion = (existing.version ?? 1) + 1;
+    const actor = await this.userLabel(actorUserId);
 
     if (existing.isActive) {
       const [, created] = await this.prisma.$transaction([
         this.prisma.prompt.update({
           where: { id },
-          data: { isActive: false },
+          data: { isActive: false, updatedBy: actor },
         }),
         this.prisma.prompt.create({
           data: {
@@ -148,6 +169,8 @@ export class PromptService {
             content,
             version: nextVersion,
             isActive: true,
+            createdBy: actor,
+            updatedBy: actor,
           },
         }),
       ]);
@@ -162,20 +185,23 @@ export class PromptService {
         content,
         version: nextVersion,
         isActive: false,
+        createdBy: actor,
+        updatedBy: actor,
       },
     });
   }
 
-  async activatePrompt(id: string) {
+  async activatePrompt(id: string, actorUserId: string) {
     const prompt = await this.findOrThrow(id);
+    const actor = await this.userLabel(actorUserId);
     const [, activated] = await this.prisma.$transaction([
       this.prisma.prompt.updateMany({
         where: { type: prompt.type, isActive: true },
-        data: { isActive: false },
+        data: { isActive: false, updatedBy: actor },
       }),
       this.prisma.prompt.update({
         where: { id },
-        data: { isActive: true },
+        data: { isActive: true, updatedBy: actor },
       }),
     ]);
     this.cache.clear();

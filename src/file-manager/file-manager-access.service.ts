@@ -61,10 +61,14 @@ export class FileManagerAccessService {
       if (s.resourceType === FileManagerShareResourceType.FOLDER) {
         topLevelFolderIds.add(s.resourceId);
         openFolderIds.add(s.resourceId);
-        if (s.recursive) {
-          recursiveFolderIds.add(s.resourceId);
-          recursiveRootFolderIds.push(s.resourceId);
-        }
+        /* Folder shares are always recursive — the `s.recursive` flag
+         * is kept on the model for backwards compat but ignored. The
+         * old non-recursive mode (folder visible, subfolders hidden)
+         * confused admins — they'd share a folder and the recipient
+         * would miss half the content. Matches the way Google Drive /
+         * Dropbox / OneDrive handle folder shares. */
+        recursiveFolderIds.add(s.resourceId);
+        recursiveRootFolderIds.push(s.resourceId);
       } else {
         topLevelFileIds.add(s.resourceId);
       }

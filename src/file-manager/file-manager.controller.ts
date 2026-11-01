@@ -558,6 +558,43 @@ export class FileManagerController {
     res.end(buffer);
   }
 
+  @Get('files/:id/meta')
+  @RequirePermission('file_manager:view')
+  @ApiOperation({
+    summary:
+      'Lightweight file metadata for standalone-preview routes (direct portal link). Returns 403 for portal users without visibility on the file.',
+  })
+  async fileMeta(
+    @Param('id') id: string,
+    @Req() req: Request & { user: AuthUser },
+  ) {
+    const ctx = await this.context(req.user.id);
+    const file = await this.prisma.fileManagerFile.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        folderId: true,
+        originalName: true,
+        mimeType: true,
+        size: true,
+      },
+    });
+    if (!file) throw new ForbiddenException('File not found');
+    if (
+      ctx.isPortal &&
+      !this.access.canSeeFile(ctx.scope, file.id, file.folderId)
+    ) {
+      throw new ForbiddenException('No access to this file');
+    }
+    return {
+      id: file.id,
+      folderId: file.folderId,
+      originalName: file.originalName,
+      mimeType: file.mimeType,
+      size: Number(file.size),
+    };
+  }
+
   @Get('files/:id/preview-url')
   @RequirePermission('file_manager:view')
   @ApiOperation({
