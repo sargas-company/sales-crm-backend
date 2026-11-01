@@ -86,6 +86,12 @@ export interface AnalyticsMonthlyPnl {
     label: string;
     sequenceInYear: number;
     revenueReceived: number;
+    /* Booked but not yet received revenue for this fiscal month —
+     * strict subset: `in_transit` + `planned_invoice` only.
+     * Softer forecasts (expected_this_month, expected_later) stay
+     * out so the badge reflects money that is practically
+     * guaranteed to land. */
+    revenuePipeline: number;
     salaryCost: number;
     margin: number;
     marginPercent: number | null;
@@ -288,9 +294,21 @@ export class FinanceAnalyticsService {
     /* Monthly history ─────────────────────────────── */
     const monthAgg = new Map<
       string,
-      { received: number; pipeline: number; entriesReceived: number }
+      {
+        received: number;
+        pipeline: number;
+        /* Booked = in_transit + planned_invoice only. Monthly margin's
+         * "incoming" badge uses this strict subset so the admin sees
+         * money that is practically guaranteed to land, not the softer
+         * expected_this_month / expected_later forecasts. The wider
+         * `pipeline` field keeps feeding Monthly received + Pipeline
+         * breakdown as before. */
+        booked: number;
+        entriesReceived: number;
+      }
     >();
-    for (const m of fiscalMonths) monthAgg.set(m.id, { received: 0, pipeline: 0, entriesReceived: 0 });
+    for (const m of fiscalMonths)
+      monthAgg.set(m.id, { received: 0, pipeline: 0, booked: 0, entriesReceived: 0 });
 
     for (const e of yearEntries) {
       const mid = e.fiscalWeek.fiscalMonth.id;
@@ -302,11 +320,16 @@ export class FinanceAnalyticsService {
         bucket.entriesReceived += 1;
       } else {
         bucket.pipeline += amount;
+        if (e.status === 'in_transit' || e.status === 'planned_invoice') {
+          bucket.booked += amount;
+        }
       }
     }
 
     const monthlyRows = fiscalMonths.map((m) => {
-      const agg = monthAgg.get(m.id) ?? { received: 0, pipeline: 0, entriesReceived: 0 };
+      const agg =
+        monthAgg.get(m.id) ??
+        { received: 0, pipeline: 0, booked: 0, entriesReceived: 0 };
       return {
         monthId: m.id,
         label: m.label,
@@ -474,16 +497,21 @@ export class FinanceAnalyticsService {
       bucket.employeeIds.add(p.employeeId);
     }
     const monthlyPnlRows = fiscalMonths.map((m) => {
-      const revenueReceived = monthAgg.get(m.id)?.received ?? 0;
+      const revAgg =
+        monthAgg.get(m.id) ??
+        { received: 0, pipeline: 0, booked: 0, entriesReceived: 0 };
       const pnl = pnlAgg.get(m.id) ?? { salaryCost: 0, employeeIds: new Set<string>() };
-      const margin = revenueReceived - pnl.salaryCost;
+      const margin = revAgg.received - pnl.salaryCost;
       const marginPercent =
-        revenueReceived > 0 ? (margin / revenueReceived) * 100 : null;
+        revAgg.received > 0 ? (margin / revAgg.received) * 100 : null;
       return {
         monthId: m.id,
         label: m.label,
         sequenceInYear: m.sequenceInYear,
-        revenueReceived,
+        revenueReceived: revAgg.received,
+        /* Monthly margin "incoming" badge: booked only
+         * (in_transit + planned_invoice). */
+        revenuePipeline: revAgg.booked,
         salaryCost: pnl.salaryCost,
         margin,
         marginPercent,
