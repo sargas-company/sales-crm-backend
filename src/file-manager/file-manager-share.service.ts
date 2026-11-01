@@ -217,26 +217,56 @@ export class FileManagerShareService {
     if (!user || !user.isPortalUser) {
       throw new NotFoundException('portal user not found');
     }
-    /* Resolve resource names on each share for display. */
+    /* Resolve resource names + breadcrumbs on each share for display.
+     * breadcrumbs = ordered list of ancestor folders from the root
+     * down to the resource's parent (NOT including the resource
+     * itself). For a top-level share the array is empty. parentId
+     * on the share resource gives us the jump target for the admin
+     * "Jump to folder" action — for a FOLDER share it's the folder's
+     * own id (open the folder itself), for a FILE share it's the
+     * folder that contains the file. */
     const sharesEnriched: Array<
-      (typeof user.fileManagerSharesReceived)[number] & { resourceName: string | null }
+      (typeof user.fileManagerSharesReceived)[number] & {
+        resourceName: string | null
+        breadcrumbs: Array<{ id: string; name: string }>
+        parentId: string | null
+      }
     > = []
     for (const s of user.fileManagerSharesReceived) {
-      const name =
-        s.resourceType === 'FOLDER'
-          ? (
-              await this.prisma.fileManagerFolder.findUnique({
-                where: { id: s.resourceId },
-                select: { name: true },
-              })
-            )?.name ?? null
-          : (
-              await this.prisma.fileManagerFile.findUnique({
-                where: { id: s.resourceId },
-                select: { originalName: true },
-              })
-            )?.originalName ?? null
-      sharesEnriched.push({ ...s, resourceName: name })
+      let name: string | null = null
+      let parentId: string | null = null
+      let crumbStart: string | null = null
+      if (s.resourceType === 'FOLDER') {
+        const row = await this.prisma.fileManagerFolder.findUnique({
+          where: { id: s.resourceId },
+          select: { name: true, parentId: true },
+        })
+        name = row?.name ?? null
+        parentId = row?.parentId ?? null
+        crumbStart = parentId
+      } else {
+        const row = await this.prisma.fileManagerFile.findUnique({
+          where: { id: s.resourceId },
+          select: { originalName: true, folderId: true },
+        })
+        name = row?.originalName ?? null
+        parentId = row?.folderId ?? null
+        crumbStart = parentId
+      }
+      const breadcrumbs: Array<{ id: string; name: string }> = []
+      let cursor = crumbStart
+      const seen = new Set<string>()
+      while (cursor && !seen.has(cursor)) {
+        seen.add(cursor)
+        const row = await this.prisma.fileManagerFolder.findUnique({
+          where: { id: cursor },
+          select: { id: true, name: true, parentId: true },
+        })
+        if (!row) break
+        breadcrumbs.unshift({ id: row.id, name: row.name })
+        cursor = row.parentId
+      }
+      sharesEnriched.push({ ...s, resourceName: name, breadcrumbs, parentId })
     }
     return { ...user, fileManagerSharesReceived: sharesEnriched }
   }
