@@ -10,6 +10,7 @@ import {
   ListCounterpartiesDto,
 } from './dto/list-counterparties.dto';
 import { UpdateCounterpartyDto } from './dto/update-counterparty.dto';
+import { multiTermSearch } from '../common/utils/multi-term-search';
 
 @Injectable()
 export class CounterpartyService {
@@ -36,15 +37,11 @@ export class CounterpartyService {
 
     const where: Prisma.CounterpartyWhereInput = {
       type: { in: effectiveTypes },
-      ...(dto.search
-        ? {
-            OR: [
-              { firstName: { contains: dto.search, mode: 'insensitive' } },
-              { lastName: { contains: dto.search, mode: 'insensitive' } },
-              { company: { contains: dto.search, mode: 'insensitive' } },
-            ],
-          }
-        : {}),
+      ...(multiTermSearch(dto.search, [
+        'firstName',
+        'lastName',
+        'company',
+      ]) ?? {}),
     };
 
     const orderBy = this.buildOrderBy(dto.sortBy, dir);

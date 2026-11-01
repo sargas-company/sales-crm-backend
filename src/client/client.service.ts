@@ -22,6 +22,7 @@ import {
   ListClientsDto,
 } from './dto/list-clients.dto';
 import { UpdateClientDto } from './dto/update-client.dto';
+import { multiTermSearch } from '../common/utils/multi-term-search';
 
 const DOMAIN = 'clients';
 const TARGET_TYPE = 'Client';
@@ -93,17 +94,13 @@ export class ClientService {
       ...(dto.location
         ? { location: { contains: dto.location, mode: 'insensitive' } }
         : {}),
-      ...(dto.search
-        ? {
-            OR: [
-              { firstName: { contains: dto.search, mode: 'insensitive' } },
-              { lastName: { contains: dto.search, mode: 'insensitive' } },
-              { company: { contains: dto.search, mode: 'insensitive' } },
-              { email: { contains: dto.search, mode: 'insensitive' } },
-              { phone: { contains: dto.search, mode: 'insensitive' } },
-            ],
-          }
-        : {}),
+      ...(multiTermSearch(dto.search, [
+        'firstName',
+        'lastName',
+        'company',
+        'email',
+        'phone',
+      ]) ?? {}),
     };
 
     const orderBy = this.buildOrderBy(dto.sortBy, dir);

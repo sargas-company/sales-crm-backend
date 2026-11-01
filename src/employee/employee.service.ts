@@ -19,6 +19,7 @@ import {
   ListEmployeesDto,
 } from './dto/list-employees.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
+import { multiTermSearch } from '../common/utils/multi-term-search';
 
 /** Removes `compensationRates` from an employee row so callers
  *  without `employees:view_salary` never see the rate. Preserves
@@ -143,15 +144,11 @@ export class EmployeeService {
         : {}),
       ...(birthdayMonthIds !== null ? { id: { in: birthdayMonthIds } } : {}),
       ...(activeInMonthWhere ?? {}),
-      ...(dto.search
-        ? {
-            OR: [
-              { firstName: { contains: dto.search, mode: 'insensitive' } },
-              { lastName: { contains: dto.search, mode: 'insensitive' } },
-              { email: { contains: dto.search, mode: 'insensitive' } },
-            ],
-          }
-        : {}),
+      ...(multiTermSearch(dto.search, [
+        'firstName',
+        'lastName',
+        'email',
+      ]) ?? {}),
     };
 
     // Salary sort can't be expressed through Prisma orderBy because

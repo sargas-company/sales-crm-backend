@@ -17,6 +17,7 @@ import {
   ListLeadsDto,
 } from './dto/list-leads.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
+import { multiTermSearch } from '../common/utils/multi-term-search';
 
 const DOMAIN = 'leads';
 const TARGET_TYPE = 'Lead';
@@ -111,17 +112,13 @@ export class LeadService {
             },
           }
         : {}),
-      ...(dto.search
-        ? {
-            OR: [
-              { firstName: { contains: dto.search, mode: 'insensitive' } },
-              { lastName: { contains: dto.search, mode: 'insensitive' } },
-              { companyName: { contains: dto.search, mode: 'insensitive' } },
-              { email: { contains: dto.search, mode: 'insensitive' } },
-              { phone: { contains: dto.search, mode: 'insensitive' } },
-            ],
-          }
-        : {}),
+      ...(multiTermSearch(dto.search, [
+        'firstName',
+        'lastName',
+        'companyName',
+        'email',
+        'phone',
+      ]) ?? {}),
     };
 
     const orderBy = this.buildOrderBy(dto.sortBy, dir);
