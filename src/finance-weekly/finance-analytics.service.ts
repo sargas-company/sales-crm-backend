@@ -445,14 +445,11 @@ export class FinanceAnalyticsService {
      * accrual month (year + month on PayrollEntry) so a September
      * run that gets paid on Oct 2 lands in the September row where
      * the admin expects it, not in the fiscal October bucket its
-     * paidAt would fall into. We count every non-draft PayrollEntry
-     * for the year — DRAFT rows are still being edited and don't
-     * commit to the run yet. */
+     * paidAt would fall into. We count every PayrollEntry for the
+     * year regardless of status — matches the "Monthly run" summary
+     * total exactly (which also sums DRAFT + PAID + anything else). */
     const payroll = await this.prisma.payrollEntry.findMany({
-      where: {
-        year,
-        status: { not: 'DRAFT' },
-      },
+      where: { year },
       select: {
         id: true,
         employeeId: true,
