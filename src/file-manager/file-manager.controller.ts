@@ -118,6 +118,25 @@ export class FileManagerController {
     return this.svc.getStorageStats();
   }
 
+  @Get('search')
+  @RequirePermission('file_manager:view')
+  @ApiOperation({
+    summary:
+      'Global search by folder/file name across the entire tree. Admin-only — portal users receive 403.',
+  })
+  async search(
+    @Query('q') q: string,
+    @Query('limit') limit: string | undefined,
+    @Req() req: Request & { user: AuthUser },
+  ) {
+    const ctx = await this.context(req.user.id);
+    if (ctx.isPortal) {
+      throw new ForbiddenException('Search is admin-only');
+    }
+    const cap = limit ? Number.parseInt(limit, 10) : 50;
+    return this.svc.search(q ?? '', Number.isFinite(cap) ? cap : 50);
+  }
+
   @Get('folders/:id')
   @RequirePermission('file_manager:view')
   @ApiOperation({ summary: 'List a folder (child folders + files + breadcrumbs).' })

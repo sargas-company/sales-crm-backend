@@ -674,6 +674,94 @@ export class FileManagerService {
 
   /* ── Helpers ────────────────────────────────────────────────────── */
 
+  /* Admin-only global search across the entire file-manager tree.
+   * Returns top-N matches split into folders and files, each enriched
+   * with its breadcrumb path so the UI can show "where it lives". */
+  async search(rawQuery: string, limit = 50) {
+    const q = rawQuery.trim();
+    if (q.length < 2) {
+      return { folders: [], files: [] };
+    }
+    const cap = Math.min(Math.max(1, limit), 100);
+    const [folderRows, fileRows] = await Promise.all([
+      this.prisma.fileManagerFolder.findMany({
+        where: { name: { contains: q, mode: 'insensitive' } },
+        orderBy: [{ createdAt: 'desc' }],
+        take: cap,
+        select: { id: true, name: true, parentId: true, createdAt: true },
+      }),
+      this.prisma.fileManagerFile.findMany({
+        where: { originalName: { contains: q, mode: 'insensitive' } },
+        orderBy: [{ createdAt: 'desc' }],
+        take: cap,
+        select: {
+          id: true,
+          folderId: true,
+          originalName: true,
+          mimeType: true,
+          size: true,
+          createdAt: true,
+        },
+      }),
+    ]);
+
+    /* Build breadcrumbs in bulk: collect every ancestor id needed,
+     * fetch the full set in one query, resolve paths in memory. One
+     * round-trip no matter how many hits. */
+    const needed = new Set<string>();
+    for (const r of folderRows) {
+      if (r.parentId) needed.add(r.parentId);
+      // include self so we can show the folder's own breadcrumbs path.
+    }
+    for (const r of fileRows) if (r.folderId) needed.add(r.folderId);
+    const breadcrumbCache = new Map<
+      string,
+      Array<{ id: string; name: string }>
+    >();
+    if (needed.size > 0) {
+      const allAncestors = await this.prisma.fileManagerFolder.findMany({
+        select: { id: true, name: true, parentId: true },
+      });
+      const byId = new Map(allAncestors.map((r) => [r.id, r]));
+      const walk = (startId: string): Array<{ id: string; name: string }> => {
+        const cached = breadcrumbCache.get(startId);
+        if (cached) return cached;
+        const path: Array<{ id: string; name: string }> = [];
+        let current: string | null = startId;
+        const seen = new Set<string>();
+        while (current && !seen.has(current)) {
+          seen.add(current);
+          const row = byId.get(current);
+          if (!row) break;
+          path.unshift({ id: row.id, name: row.name });
+          current = row.parentId;
+        }
+        breadcrumbCache.set(startId, path);
+        return path;
+      };
+      for (const id of Array.from(needed)) walk(id);
+    }
+
+    return {
+      folders: folderRows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        parentId: r.parentId,
+        breadcrumbs: r.parentId ? breadcrumbCache.get(r.parentId) ?? [] : [],
+        createdAt: r.createdAt.toISOString(),
+      })),
+      files: fileRows.map((r) => ({
+        id: r.id,
+        folderId: r.folderId,
+        originalName: r.originalName,
+        mimeType: r.mimeType,
+        size: Number(r.size),
+        breadcrumbs: r.folderId ? breadcrumbCache.get(r.folderId) ?? [] : [],
+        createdAt: r.createdAt.toISOString(),
+      })),
+    };
+  }
+
   private async buildBreadcrumbs(folderId: string | null) {
     if (!folderId) return [];
     const chain: Array<{ id: string; name: string }> = [];
