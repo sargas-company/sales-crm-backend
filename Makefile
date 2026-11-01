@@ -31,6 +31,8 @@ help:
 	@echo "  make local-migrate        LOCAL ONLY — prisma migrate dev + assert-local-db."
 	@echo "  make local-seed           LOCAL ONLY — full seed (demo users, business data)."
 	@echo "  make local-seed-demo      LOCAL ONLY — Employees/Projects/Reports demo rows."
+	@echo "  make local-seed-finance-margin"
+	@echo "                            LOCAL ONLY — past-month PAID payroll (fills Monthly margin)."
 	@echo "  make local-reset          LOCAL ONLY — DESTRUCTIVE drop+rebuild, typed confirm."
 	@echo ""
 	@echo "Backups:"
@@ -174,6 +176,13 @@ local-seed-finance-top-up:
 	npx ts-node scripts/assert-local-db.ts
 	@echo "==> seed-finance-top-up-demo (current-month DRAFT payroll + NO_CHANGE reviews)"
 	npx ts-node scripts/seed-finance-top-up-demo.ts
+
+local-seed-finance-margin:
+	set -e
+	@echo "==> assert local db"
+	npx ts-node scripts/assert-local-db.ts
+	@echo "==> seed-finance-margin-demo (past-month PAID payroll — fills Monthly margin)"
+	npx ts-node scripts/seed-finance-margin-demo.ts
 
 local-reset:
 	set -e
