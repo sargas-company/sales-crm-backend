@@ -440,22 +440,26 @@ export class FinanceAnalyticsService {
       activeProjectsYear.add(e.project.id);
       if (e.project.clientId) activeClientsYear.add(e.project.clientId);
     }
-    /* Monthly P&L (cash-basis, fiscal month boundaries) ──────────
-     * Revenue = received payments bucketed by their fiscal week's
-     * fiscal month (same bucketing as "Monthly received" above).
-     * Salary = PayrollEntry.companyCost bucketed by the fiscal month
-     * containing paidAt. We only count entries that are actually
-     * paid (paidAt NOT NULL) so draft/scheduled rows don't inflate
-     * costs. Headcount = distinct employees paid in that fiscal
-     * month. Margin = revenue − salary. */
-    const fiscalYearStart = fiscalMonths[0]?.startDate ?? new Date(Date.UTC(year, 0, 1));
-    const fiscalYearEnd =
-      fiscalMonths[fiscalMonths.length - 1]?.endDate ?? new Date(Date.UTC(year, 11, 31));
-    const paidPayroll = await this.prisma.payrollEntry.findMany({
+    /* Monthly P&L — revenue uses received-cash fiscal bucketing (same
+     * as "Monthly received" above); salary uses the payroll run's
+     * accrual month (year + month on PayrollEntry) so a September
+     * run that gets paid on Oct 2 lands in the September row where
+     * the admin expects it, not in the fiscal October bucket its
+     * paidAt would fall into. We count every non-draft PayrollEntry
+     * for the year — DRAFT rows are still being edited and don't
+     * commit to the run yet. */
+    const payroll = await this.prisma.payrollEntry.findMany({
       where: {
-        paidAt: { not: null, gte: fiscalYearStart, lte: fiscalYearEnd },
+        year,
+        status: { not: 'DRAFT' },
       },
-      select: { id: true, employeeId: true, companyCost: true, paidAt: true },
+      select: {
+        id: true,
+        employeeId: true,
+        companyCost: true,
+        year: true,
+        month: true,
+      },
     });
     const pnlAgg = new Map<
       string,
@@ -463,10 +467,9 @@ export class FinanceAnalyticsService {
     >();
     for (const m of fiscalMonths)
       pnlAgg.set(m.id, { salaryCost: 0, employeeIds: new Set<string>() });
-    for (const p of paidPayroll) {
-      const paid = p.paidAt;
-      if (!paid) continue;
-      const fm = fiscalMonths.find((m) => paid >= m.startDate && paid <= m.endDate);
+    const fmBySeq = new Map(fiscalMonths.map((m) => [m.sequenceInYear, m]));
+    for (const p of payroll) {
+      const fm = fmBySeq.get(p.month);
       if (!fm) continue;
       const bucket = pnlAgg.get(fm.id);
       if (!bucket) continue;
@@ -497,7 +500,7 @@ export class FinanceAnalyticsService {
       pnlTotalsRevenue > 0 ? (pnlTotalsMargin / pnlTotalsRevenue) * 100 : null;
 
     const yearDistinctEmployeesPaid = new Set<string>();
-    for (const p of paidPayroll) yearDistinctEmployeesPaid.add(p.employeeId);
+    for (const p of payroll) yearDistinctEmployeesPaid.add(p.employeeId);
     const marginMonths = monthlyPnlRows.filter(
       (r) => r.revenueReceived > 0 || r.salaryCost > 0,
     );
