@@ -364,7 +364,21 @@ export const GATEKEEPER_TOOL: Anthropic.Tool = {
     'Return the gatekeeper decision for the current job post. Must be called exactly once with fit, confidence, and a short non-empty reason.',
   input_schema: {
     type: 'object',
+    /* Property order matters: the model fills tool arguments in schema
+     * order, so putting `reason` first makes it commit to its
+     * justification before writing the boolean fit. Previously the
+     * export surfaced posts whose reason text said "pass" but fit was
+     * false — the model picked `fit` by instinct, then wrote prose
+     * that contradicted it. Field names, types, required list and the
+     * processor's GATE_REJECT_THRESHOLD = 0.9 are unchanged. */
     properties: {
+      reason: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 200,
+        description:
+          'A short factual explanation (<= 200 chars) of the decision. Required for every call.',
+      },
       fit: {
         type: 'boolean',
         description:
@@ -376,13 +390,6 @@ export const GATEKEEPER_TOOL: Anthropic.Tool = {
         maximum: 1,
         description:
           'Confidence in the fit decision, 0.0–1.0. The processor rejects at the gate ONLY when fit=false AND confidence >= 0.9. Low-confidence false decisions still proceed to full evaluation.',
-      },
-      reason: {
-        type: 'string',
-        minLength: 1,
-        maxLength: 200,
-        description:
-          'A short factual explanation (<= 200 chars) of the decision. Required for every call.',
       },
     },
     required: ['fit', 'confidence', 'reason'],
