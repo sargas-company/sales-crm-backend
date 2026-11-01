@@ -79,6 +79,26 @@ export interface AnalyticsPipeline {
   totalPipeline: number;
 }
 
+export interface AnalyticsMonthlyPnl {
+  year: number;
+  months: Array<{
+    monthId: string;
+    label: string;
+    sequenceInYear: number;
+    revenueReceived: number;
+    salaryCost: number;
+    margin: number;
+    marginPercent: number | null;
+    headcount: number;
+  }>;
+  totals: {
+    revenueReceived: number;
+    salaryCost: number;
+    margin: number;
+    marginPercent: number | null;
+  };
+}
+
 export interface AnalyticsYear {
   year: number;
   totalReceived: number;
@@ -88,6 +108,23 @@ export interface AnalyticsYear {
   paymentsCount: number;
   activeProjects: number;
   activeClients: number;
+  /* Margin signals (year-to-date, cash-basis, fiscal boundaries). */
+  totalSalaryPaid: number;
+  marginYtd: number;
+  marginPercentYtd: number | null;
+  avgMonthlyMargin: number;
+  avgMonthlyMarginPercent: number | null;
+  bestMarginMonth: {
+    label: string;
+    margin: number;
+    marginPercent: number | null;
+  } | null;
+  worstMarginMonth: {
+    label: string;
+    margin: number;
+    marginPercent: number | null;
+  } | null;
+  distinctEmployeesPaid: number;
 }
 
 export interface AnalyticsConcentration {
@@ -107,6 +144,7 @@ export interface AnalyticsResponse {
   };
   snapshot: AnalyticsSnapshot;
   monthly: AnalyticsMonthly;
+  monthlyPnl: AnalyticsMonthlyPnl;
   byProject: AnalyticsBreakdown[];
   byClient: AnalyticsBreakdown[];
   concentration: AnalyticsConcentration;
@@ -402,6 +440,84 @@ export class FinanceAnalyticsService {
       activeProjectsYear.add(e.project.id);
       if (e.project.clientId) activeClientsYear.add(e.project.clientId);
     }
+    /* Monthly P&L (cash-basis, fiscal month boundaries) ──────────
+     * Revenue = received payments bucketed by their fiscal week's
+     * fiscal month (same bucketing as "Monthly received" above).
+     * Salary = PayrollEntry.companyCost bucketed by the fiscal month
+     * containing paidAt. We only count entries that are actually
+     * paid (paidAt NOT NULL) so draft/scheduled rows don't inflate
+     * costs. Headcount = distinct employees paid in that fiscal
+     * month. Margin = revenue − salary. */
+    const fiscalYearStart = fiscalMonths[0]?.startDate ?? new Date(Date.UTC(year, 0, 1));
+    const fiscalYearEnd =
+      fiscalMonths[fiscalMonths.length - 1]?.endDate ?? new Date(Date.UTC(year, 11, 31));
+    const paidPayroll = await this.prisma.payrollEntry.findMany({
+      where: {
+        paidAt: { not: null, gte: fiscalYearStart, lte: fiscalYearEnd },
+      },
+      select: { id: true, employeeId: true, companyCost: true, paidAt: true },
+    });
+    const pnlAgg = new Map<
+      string,
+      { salaryCost: number; employeeIds: Set<string> }
+    >();
+    for (const m of fiscalMonths)
+      pnlAgg.set(m.id, { salaryCost: 0, employeeIds: new Set<string>() });
+    for (const p of paidPayroll) {
+      const paid = p.paidAt;
+      if (!paid) continue;
+      const fm = fiscalMonths.find((m) => paid >= m.startDate && paid <= m.endDate);
+      if (!fm) continue;
+      const bucket = pnlAgg.get(fm.id);
+      if (!bucket) continue;
+      bucket.salaryCost += toNumber(p.companyCost);
+      bucket.employeeIds.add(p.employeeId);
+    }
+    const monthlyPnlRows = fiscalMonths.map((m) => {
+      const revenueReceived = monthAgg.get(m.id)?.received ?? 0;
+      const pnl = pnlAgg.get(m.id) ?? { salaryCost: 0, employeeIds: new Set<string>() };
+      const margin = revenueReceived - pnl.salaryCost;
+      const marginPercent =
+        revenueReceived > 0 ? (margin / revenueReceived) * 100 : null;
+      return {
+        monthId: m.id,
+        label: m.label,
+        sequenceInYear: m.sequenceInYear,
+        revenueReceived,
+        salaryCost: pnl.salaryCost,
+        margin,
+        marginPercent,
+        headcount: pnl.employeeIds.size,
+      };
+    });
+    const pnlTotalsRevenue = monthlyPnlRows.reduce((s, r) => s + r.revenueReceived, 0);
+    const pnlTotalsSalary = monthlyPnlRows.reduce((s, r) => s + r.salaryCost, 0);
+    const pnlTotalsMargin = pnlTotalsRevenue - pnlTotalsSalary;
+    const pnlTotalsMarginPct =
+      pnlTotalsRevenue > 0 ? (pnlTotalsMargin / pnlTotalsRevenue) * 100 : null;
+
+    const yearDistinctEmployeesPaid = new Set<string>();
+    for (const p of paidPayroll) yearDistinctEmployeesPaid.add(p.employeeId);
+    const marginMonths = monthlyPnlRows.filter(
+      (r) => r.revenueReceived > 0 || r.salaryCost > 0,
+    );
+    const avgMonthlyMargin = marginMonths.length
+      ? marginMonths.reduce((s, r) => s + r.margin, 0) / marginMonths.length
+      : 0;
+    const marginPctMonths = marginMonths.filter(
+      (r): r is typeof r & { marginPercent: number } => r.marginPercent !== null,
+    );
+    const avgMonthlyMarginPercent = marginPctMonths.length
+      ? marginPctMonths.reduce((s, r) => s + r.marginPercent, 0) /
+        marginPctMonths.length
+      : null;
+    const bestMarginMonth = marginMonths.length
+      ? marginMonths.reduce((a, b) => (b.margin > a.margin ? b : a))
+      : null;
+    const worstMarginMonth = marginMonths.length
+      ? marginMonths.reduce((a, b) => (b.margin < a.margin ? b : a))
+      : null;
+
     const monthTotalsForYear = monthlyRows
       .map((m) => ({ label: m.label, total: m.received }))
       .filter((m) => m.total > 0);
@@ -433,6 +549,16 @@ export class FinanceAnalyticsService {
         months: monthlyRows,
         average: avgMonthly,
       },
+      monthlyPnl: {
+        year,
+        months: monthlyPnlRows,
+        totals: {
+          revenueReceived: pnlTotalsRevenue,
+          salaryCost: pnlTotalsSalary,
+          margin: pnlTotalsMargin,
+          marginPercent: pnlTotalsMarginPct,
+        },
+      },
       byProject,
       byClient,
       concentration: {
@@ -450,6 +576,26 @@ export class FinanceAnalyticsService {
         paymentsCount,
         activeProjects: activeProjectsYear.size,
         activeClients: activeClientsYear.size,
+        totalSalaryPaid: pnlTotalsSalary,
+        marginYtd: pnlTotalsMargin,
+        marginPercentYtd: pnlTotalsMarginPct,
+        avgMonthlyMargin,
+        avgMonthlyMarginPercent,
+        bestMarginMonth: bestMarginMonth
+          ? {
+              label: bestMarginMonth.label,
+              margin: bestMarginMonth.margin,
+              marginPercent: bestMarginMonth.marginPercent,
+            }
+          : null,
+        worstMarginMonth: worstMarginMonth
+          ? {
+              label: worstMarginMonth.label,
+              margin: worstMarginMonth.margin,
+              marginPercent: worstMarginMonth.marginPercent,
+            }
+          : null,
+        distinctEmployeesPaid: yearDistinctEmployeesPaid.size,
       },
     };
   }
