@@ -483,6 +483,51 @@ export class AnalyticsService {
           GROUP BY day, weekday_pg, hour
         `,
       );
+
+      /* Per-(day, hour) country breakdown. The weekly `countriesByKey`
+       * aggregates every Monday-14:00 across the whole window, so
+       * attaching it to a specific day's cell inflates the tooltip's
+       * country counts past the cell's own `total` (e.g. "Mon Nov 2 ·
+       * 14:00" showed four weeks' worth of Germany posts next to a
+       * one-day total). Key by ISO date + hour to keep the two
+       * numbers consistent. */
+      const dailyCountryRows = await this.prisma.$queryRaw<
+        {
+          day: Date;
+          hour: number;
+          location: string | null;
+          count: bigint;
+        }[]
+      >(
+        Prisma.sql`
+          SELECT
+            DATE_TRUNC('day', "createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${timezone}) AS day,
+            EXTRACT(HOUR FROM ("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE ${timezone}))::int AS hour,
+            "location",
+            COUNT(*)::bigint AS count
+          FROM "JobPost"
+          WHERE ${this.buildWhereSql(filters, window)}
+          GROUP BY day, hour, "location"
+        `,
+      );
+      const dailyCountriesByKey = new Map<string, HeatmapCountryBreakdown[]>();
+      for (const r of dailyCountryRows) {
+        const iso =
+          typeof r.day === 'string'
+            ? String(r.day).slice(0, 10)
+            : r.day.toISOString().slice(0, 10);
+        const key = `${iso}-${r.hour}`;
+        const list = dailyCountriesByKey.get(key) ?? [];
+        list.push({
+          name: r.location?.trim() ? r.location : 'Unknown',
+          count: Number(r.count),
+        });
+        dailyCountriesByKey.set(key, list);
+      }
+      for (const list of Array.from(dailyCountriesByKey.values())) {
+        list.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+      }
+
       dailyCells = dailyRows.map((r) => {
         const total = Number(r.total);
         const qualified = Number(r.qualified);
@@ -490,11 +535,12 @@ export class AnalyticsService {
         const averageScore = r.avg_score != null ? Math.round(r.avg_score) : 0;
         const qualifiedRate =
           total > 0 ? Math.round((qualified / total) * 100) : 0;
+        const iso =
+          typeof r.day === 'string'
+            ? String(r.day).slice(0, 10)
+            : r.day.toISOString().slice(0, 10);
         return {
-          date:
-            typeof r.day === 'string'
-              ? String(r.day).slice(0, 10)
-              : r.day.toISOString().slice(0, 10),
+          date: iso,
           weekdayIndex: this.pgDowToMondayIdx(r.weekday_pg),
           hour: r.hour,
           total,
@@ -502,13 +548,7 @@ export class AnalyticsService {
           hot,
           averageScore,
           qualifiedRate,
-          /* Reuse the weekly (weekday, hour) country breakdown so the
-           * tooltip still shows a country list in daily view. Keyed by
-           * weekdayIndex-hour — same as the weekly matrix. */
-          countries:
-            countriesByKey.get(
-              `${this.pgDowToMondayIdx(r.weekday_pg)}-${r.hour}`,
-            ) ?? [],
+          countries: dailyCountriesByKey.get(`${iso}-${r.hour}`) ?? [],
         };
       });
       dailyMaxValue = Math.max(0, ...dailyCells.map((c) => cellValue(c, metric)));
