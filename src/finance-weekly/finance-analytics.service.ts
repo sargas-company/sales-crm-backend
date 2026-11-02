@@ -501,9 +501,17 @@ export class FinanceAnalyticsService {
         monthAgg.get(m.id) ??
         { received: 0, pipeline: 0, booked: 0, entriesReceived: 0 };
       const pnl = pnlAgg.get(m.id) ?? { salaryCost: 0, employeeIds: new Set<string>() };
-      const margin = revAgg.received - pnl.salaryCost;
+      /* Margin accounts for committed revenue, not just cash in
+       * hand: received + booked (in_transit + planned_invoice). A
+       * month with salary already paid but invoices still in transit
+       * no longer reads as a deep-red minus — the booked chip
+       * contributes to the margin basis. The Revenue column itself
+       * still shows cash-received only; only Margin and Margin% use
+       * the expanded basis. */
+      const marginRevenue = revAgg.received + revAgg.booked;
+      const margin = marginRevenue - pnl.salaryCost;
       const marginPercent =
-        revAgg.received > 0 ? (margin / revAgg.received) * 100 : null;
+        marginRevenue > 0 ? (margin / marginRevenue) * 100 : null;
       return {
         monthId: m.id,
         label: m.label,
@@ -519,15 +527,19 @@ export class FinanceAnalyticsService {
       };
     });
     const pnlTotalsRevenue = monthlyPnlRows.reduce((s, r) => s + r.revenueReceived, 0);
+    const pnlTotalsPipeline = monthlyPnlRows.reduce((s, r) => s + r.revenuePipeline, 0);
     const pnlTotalsSalary = monthlyPnlRows.reduce((s, r) => s + r.salaryCost, 0);
-    const pnlTotalsMargin = pnlTotalsRevenue - pnlTotalsSalary;
+    const pnlTotalsMarginBasis = pnlTotalsRevenue + pnlTotalsPipeline;
+    const pnlTotalsMargin = pnlTotalsMarginBasis - pnlTotalsSalary;
     const pnlTotalsMarginPct =
-      pnlTotalsRevenue > 0 ? (pnlTotalsMargin / pnlTotalsRevenue) * 100 : null;
+      pnlTotalsMarginBasis > 0
+        ? (pnlTotalsMargin / pnlTotalsMarginBasis) * 100
+        : null;
 
     const yearDistinctEmployeesPaid = new Set<string>();
     for (const p of payroll) yearDistinctEmployeesPaid.add(p.employeeId);
     const marginMonths = monthlyPnlRows.filter(
-      (r) => r.revenueReceived > 0 || r.salaryCost > 0,
+      (r) => r.revenueReceived > 0 || r.revenuePipeline > 0 || r.salaryCost > 0,
     );
     const avgMonthlyMargin = marginMonths.length
       ? marginMonths.reduce((s, r) => s + r.margin, 0) / marginMonths.length
