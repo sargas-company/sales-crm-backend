@@ -19,14 +19,20 @@ export interface UpworkReminderRule {
 }
 
 /* Primary: strict iteration cadence (vitrine profiles that drive
- *   leads — portfolio/skills/title get touched almost daily). */
+ *   leads — portfolio gets its own 2-day cadence; skills/title are
+ *   bundled since they're usually refreshed together). */
 const PRIMARY_RULES: UpworkReminderRule[] = [
   {
-    key: 'daily-update',
-    sections: ['portfolio', 'skills', 'title'],
+    key: 'portfolio-stale',
+    section: 'portfolio',
     days: 2,
-    label:
-      'Daily update: add a portfolio case, swap one skill or tweak the title',
+    label: 'Add a portfolio case',
+  },
+  {
+    key: 'skills-title-stale',
+    sections: ['skills', 'title'],
+    days: 2,
+    label: 'Swap one skill or tweak the title',
   },
   {
     key: 'project-catalog-stale',
@@ -52,6 +58,12 @@ const PRIMARY_RULES: UpworkReminderRule[] = [
     section: 'employment_history',
     days: 30,
     label: 'Add or refresh an employment history entry',
+  },
+  {
+    key: 'certificate-stale',
+    section: 'certificate',
+    days: 60,
+    label: 'Add a certificate or badge',
   },
   {
     key: 'snapshot-stale',
