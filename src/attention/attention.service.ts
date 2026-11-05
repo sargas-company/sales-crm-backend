@@ -169,38 +169,49 @@ export class AttentionService {
 			});
 		}
 
-		// ─── Business: Unpaid payroll for the previous calendar month
+		// ─── Business: Unpaid payroll for every closed calendar month
 		//   Owner-only (`salaries:view` is granted to Owner by preset).
-		//   Fires while any PayrollEntry for the previous (year, month)
-		//   is still in DRAFT. One aggregate row; clears automatically
-		//   when every entry flips to PAID.
+		//   One row per (year, month) that still has at least one
+		//   PayrollEntry in DRAFT, excluding the current running
+		//   month. Auto-clears per month as entries flip to PAID.
+		//   Capped at 12 to match the payments rule and keep a
+		//   historical tail from exploding the panel.
 		if (callerPerms.has('salaries:view')) {
-			const anchor = new Date();
-			anchor.setUTCDate(1);
-			anchor.setUTCMonth(anchor.getUTCMonth() - 1);
-			const prevYear = anchor.getUTCFullYear();
-			const prevMonth = anchor.getUTCMonth() + 1;
-			const unpaid = await this.prisma.payrollEntry.count({
+			const nowDate = new Date();
+			const currentYear = nowDate.getUTCFullYear();
+			const currentMonth = nowDate.getUTCMonth() + 1;
+			const unpaidGroups = await this.prisma.payrollEntry.groupBy({
+				by: ['year', 'month'],
 				where: {
-					year: prevYear,
-					month: prevMonth,
 					status: PayrollStatus.DRAFT,
+					OR: [
+						{ year: { lt: currentYear } },
+						{ year: currentYear, month: { lt: currentMonth } },
+					],
 				},
+				_count: { _all: true },
+				orderBy: [{ year: 'desc' }, { month: 'desc' }],
+				take: 12,
 			});
-			if (unpaid > 0) {
-				const monthLabel = `${MONTH_NAMES[prevMonth - 1]} ${prevYear}`;
+			for (const g of unpaidGroups) {
+				const count = g._count._all;
+				const monthLabel = `${MONTH_NAMES[g.month - 1]} ${g.year}`;
+				// Synthetic timestamp pinned to the first day of the
+				// month so newer backlogs sort above older ones in the
+				// bell's "same severity" tier.
+				const anchor = new Date(Date.UTC(g.year, g.month - 1, 1));
 				items.push({
-					id: 'payroll.unpaidPrevMonth',
-					severity: unpaid >= 3 ? 'critical' : 'warn',
+					id: `payroll.unpaid.${g.year}-${String(g.month).padStart(2, '0')}`,
+					severity: count >= 3 ? 'critical' : 'warn',
 					category: 'business',
-					title: `${unpaid} unpaid salar${unpaid === 1 ? 'y' : 'ies'} for ${monthLabel}`,
+					title: `${count} unpaid salar${count === 1 ? 'y' : 'ies'} for ${monthLabel}`,
 					description:
 						'Open Monthly Run and mark them paid once the wires have gone out.',
 					action: {
-						route: `/finances/salaries/run?year=${prevYear}&month=${prevMonth}`,
+						route: `/finances/salaries/run?year=${g.year}&month=${g.month}`,
 						label: 'Open Monthly Run',
 					},
-					createdAt: new Date().toISOString(),
+					createdAt: anchor.toISOString(),
 				});
 			}
 		}
