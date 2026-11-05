@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { PayrollStatus, PaymentStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { SK } from '../settings/settings-registry';
@@ -7,6 +8,11 @@ import {
 	AttentionItem,
 	AttentionResponse,
 } from './attention.types';
+
+const MONTH_NAMES = [
+	'January', 'February', 'March', 'April', 'May', 'June',
+	'July', 'August', 'September', 'October', 'November', 'December',
+] as const;
 
 /**
  * Builds the owner-facing "attention panel". Everything here is a
@@ -161,6 +167,87 @@ export class AttentionService {
 				},
 				createdAt: highScoreCutoff.toISOString(),
 			});
+		}
+
+		// ─── Business: Unpaid payroll for the previous calendar month
+		//   Owner-only (`salaries:view` is granted to Owner by preset).
+		//   Fires while any PayrollEntry for the previous (year, month)
+		//   is still in DRAFT. One aggregate row; clears automatically
+		//   when every entry flips to PAID.
+		if (callerPerms.has('salaries:view')) {
+			const anchor = new Date();
+			anchor.setUTCDate(1);
+			anchor.setUTCMonth(anchor.getUTCMonth() - 1);
+			const prevYear = anchor.getUTCFullYear();
+			const prevMonth = anchor.getUTCMonth() + 1;
+			const unpaid = await this.prisma.payrollEntry.count({
+				where: {
+					year: prevYear,
+					month: prevMonth,
+					status: PayrollStatus.DRAFT,
+				},
+			});
+			if (unpaid > 0) {
+				const monthLabel = `${MONTH_NAMES[prevMonth - 1]} ${prevYear}`;
+				items.push({
+					id: 'payroll.unpaidPrevMonth',
+					severity: unpaid >= 3 ? 'critical' : 'warn',
+					category: 'business',
+					title: `${unpaid} unpaid salar${unpaid === 1 ? 'y' : 'ies'} for ${monthLabel}`,
+					description:
+						'Open Monthly Run and mark them paid once the wires have gone out.',
+					action: {
+						route: `/finances/salaries/run?year=${prevYear}&month=${prevMonth}`,
+						label: 'Open Monthly Run',
+					},
+					createdAt: new Date().toISOString(),
+				});
+			}
+		}
+
+		// ─── Business: Unreceived payments in closed fiscal months
+		//   Owner-only (`finances_weekly:view` is Owner-only by preset).
+		//   For every FiscalMonth whose endDate has passed, count
+		//   WeeklyEntry rows still in `in_transit` or `planned_invoice`
+		//   (per the owner's rule: `received` / `no_work` /
+		//   `expected_later` / `expected_this_month` are silent). One
+		//   row per such month; auto-clears when the statuses flip to
+		//   `received`. Cap at 12 to avoid a historical tail exploding
+		//   the panel if something is left stuck way back.
+		if (callerPerms.has('finances_weekly:view')) {
+			const today = new Date();
+			today.setUTCHours(0, 0, 0, 0);
+			const closedMonths = await this.prisma.fiscalMonth.findMany({
+				where: { endDate: { lt: today } },
+				orderBy: { endDate: 'desc' },
+				take: 12,
+				select: { id: true, label: true, endDate: true },
+			});
+			for (const fm of closedMonths) {
+				const overdue = await this.prisma.weeklyEntry.count({
+					where: {
+						fiscalWeek: { fiscalMonthId: fm.id },
+						status: {
+							in: [PaymentStatus.in_transit, PaymentStatus.planned_invoice],
+						},
+					},
+				});
+				if (overdue > 0) {
+					items.push({
+						id: `payments.unreceived.${fm.id}`,
+						severity: overdue >= 3 ? 'critical' : 'warn',
+						category: 'business',
+						title: `${overdue} unreceived payment${overdue === 1 ? '' : 's'} in ${fm.label}`,
+						description:
+							'Flip each entry to Received once the money lands.',
+						action: {
+							route: `/finances/payments/month/${fm.id}`,
+							label: 'Open month',
+						},
+						createdAt: fm.endDate.toISOString(),
+					});
+				}
+			}
 		}
 
 		// ─── Business: Upwork reminders waiting ─────────────────────
