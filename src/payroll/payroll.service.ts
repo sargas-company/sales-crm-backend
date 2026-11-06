@@ -33,6 +33,10 @@ type D = Prisma.Decimal;
 const TAX_FIXED = new Decimal('42.5'); // fixed contribution
 const TAX_RATE = new Decimal('0.06'); // 5% + 1% flat
 const PAYONEER_RATE = new Decimal('0.03');
+/* Payoneer's hard minimum on any outgoing payment: 4 USD per wire.
+ * Owner-verified across both Payoneer-to-Payoneer and SWIFT/IBAN
+ * payouts (2026-11-06). Applied as max(minimum, gross-up%). */
+const PAYONEER_MIN_FEE = new Decimal('4');
 
 @Injectable()
 export class PayrollService {
@@ -639,13 +643,21 @@ export class PayrollService {
      * the recipient receives. To deliver `owed` net at a rate `r`, the
      * gross we debit is owed / (1 - r), so the fee is owed * r / (1 - r)
      * — not owed * r. The previous formula under-charged the fee by a
-     * small amount that compounded across the monthly run. */
+     * small amount that compounded across the monthly run.
+     *
+     * On top of that, Payoneer applies a flat minimum per outgoing
+     * payment (PAYONEER_MIN_FEE) regardless of %: anything below the
+     * minimum is rounded up. Kept out of the zero-owed branch so an
+     * empty row still shows zero fee. */
     const payoneerFee = owed.isZero()
       ? new Decimal(0)
-      : this.round2(
-          owed
-            .times(coeffs.payoneerRate)
-            .div(new Decimal(1).minus(coeffs.payoneerRate)),
+      : Decimal.max(
+          PAYONEER_MIN_FEE,
+          this.round2(
+            owed
+              .times(coeffs.payoneerRate)
+              .div(new Decimal(1).minus(coeffs.payoneerRate)),
+          ),
         );
     const remainingToPay = this.round2(owed.plus(payoneerFee));
     const companyCost = this.round2(totalAccrued.plus(payoneerFee));
