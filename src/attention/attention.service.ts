@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { PayrollStatus, PaymentStatus } from '@prisma/client';
+import { PayrollStatus, PaymentStatus, PhoneMaintenanceStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
 import { SK } from '../settings/settings-registry';
@@ -258,6 +258,44 @@ export class AttentionService {
 						createdAt: fm.endDate.toISOString(),
 					});
 				}
+			}
+		}
+
+		// ─── Business: Phone numbers awaiting maintenance ──────────
+		//   Granted to Owner and Admin Manager via `phone_numbers:
+		//   maintain` in both role presets. Mirrors the exact
+		//   predicate `PhoneMaintenanceService.listOpen` uses — DUE
+		//   or OVERDUE tasks whose phone is not DISABLED — so this
+		//   count is always in sync with the Maintenance page and
+		//   the daily Discord reminder. One aggregated row; the
+		//   dedicated page handles the per-number breakdown. Auto-
+		//   clears once all open tasks are completed.
+		if (callerPerms.has('phone_numbers:maintain')) {
+			const openMaintenance = await this.prisma.phoneMaintenance.count({
+				where: {
+					status: {
+						in: [
+							PhoneMaintenanceStatus.DUE,
+							PhoneMaintenanceStatus.OVERDUE,
+						],
+					},
+					phoneNumber: { status: { not: 'DISABLED' } },
+				},
+			});
+			if (openMaintenance > 0) {
+				items.push({
+					id: 'phones.maintenanceOpen',
+					severity: openMaintenance >= 3 ? 'critical' : 'warn',
+					category: 'business',
+					title: `${openMaintenance} phone number${openMaintenance === 1 ? '' : 's'} need${openMaintenance === 1 ? 's' : ''} maintenance`,
+					description:
+						'Register the SIMs in the network and top up balances.',
+					action: {
+						route: '/phone-numbers/maintenance',
+						label: 'Open maintenance',
+					},
+					createdAt: new Date().toISOString(),
+				});
 			}
 		}
 
