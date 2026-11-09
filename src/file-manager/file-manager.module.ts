@@ -6,6 +6,7 @@ import { FileManagerController } from './file-manager.controller';
 import { FileManagerService } from './file-manager.service';
 import { FileManagerShareController } from './file-manager-share.controller';
 import { FileManagerShareService } from './file-manager-share.service';
+import { FileManagerThumbnailService } from './file-manager-thumbnail.service';
 import { UploadSessionService } from './upload-session.service';
 import { UploadSessionCron } from './upload-session.cron';
 
@@ -24,7 +25,8 @@ import { UploadSessionCron } from './upload-session.cron';
     UploadSessionCron,
     FileManagerShareService,
     FileManagerAccessService,
+    FileManagerThumbnailService,
   ],
-  exports: [FileManagerAccessService],
+  exports: [FileManagerAccessService, FileManagerThumbnailService],
 })
 export class FileManagerModule {}

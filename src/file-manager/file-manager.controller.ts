@@ -542,6 +542,20 @@ export class FileManagerController {
     return this.svc.getDownloadUrl(id, req.user.id);
   }
 
+  @Get('files/:id/thumbnail-url')
+  @RequirePermission('file_manager:view')
+  @ApiOperation({
+    summary:
+      'Signed URL for the 256-px WebP preview. `url: null` when the file has no thumbnail (non-image, generation failed, or not backfilled yet) — the UI falls back to the file-type icon.',
+  })
+  async thumbnailUrl(
+    @Param('id') id: string,
+    @Req() req: Request & { user: AuthUser },
+  ) {
+    await this.ensurePortalCanAccessFile(req.user.id, id, 'download');
+    return this.svc.getThumbnailUrl(id);
+  }
+
   @Get('files/:id/content')
   @RequirePermission('file_manager:view')
   @ApiOperation({

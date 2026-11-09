@@ -2114,6 +2114,12 @@ model FileManagerFile {
   storageKey   String   @unique
   mimeType     String
   size         BigInt
+  // B2 object key of the 256×256 WebP preview for image files.
+  // NULL = no preview (non-image, generation failed, or pre-backfill
+  // legacy row). Thumbnails live in the same bucket under
+  // `thumbs/<fileId>.webp`; delete flow removes them alongside the
+  // source object.
+  thumbnailKey String?
   uploadedById String?
   uploadedBy   User?    @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
   createdAt    DateTime @default(now())

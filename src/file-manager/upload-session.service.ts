@@ -17,6 +17,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { StorageBucket } from '../storage/storage.types';
 import { AuditEventService } from '../audit-event/audit-event.service';
+import { FileManagerThumbnailService } from './file-manager-thumbnail.service';
 
 import { InitUploadDto } from './dto/init-upload.dto';
 
@@ -44,6 +45,7 @@ export class UploadSessionService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly audit: AuditEventService,
+    private readonly thumbnails: FileManagerThumbnailService,
   ) {}
 
   /* ── Init ─────────────────────────────────────────────────────── */
@@ -252,6 +254,14 @@ export class UploadSessionService {
         data: { status: FileManagerUploadStatus.FINALIZED },
       });
       return row;
+    });
+
+    /* Preview thumbnail: no in-memory buffer on this path (bytes went
+     * straight from browser chunks to B2), so the service downloads
+     * from B2 to generate. Safe to await — on any failure the row's
+     * thumbnailKey stays NULL and the UI falls back to the icon. */
+    await this.thumbnails.generate(file.id, file.mimeType, {
+      storageKey: file.storageKey,
     });
 
     await this.audit.record({

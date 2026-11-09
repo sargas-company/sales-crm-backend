@@ -12,6 +12,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { StorageBucket } from '../storage/storage.types';
 import { AuditEventService } from '../audit-event/audit-event.service';
+import { FileManagerThumbnailService } from './file-manager-thumbnail.service';
 
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
@@ -44,6 +45,7 @@ export class FileManagerService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly audit: AuditEventService,
+    private readonly thumbnails: FileManagerThumbnailService,
   ) {}
 
   /* ── Reads ──────────────────────────────────────────────────────── */
@@ -377,6 +379,7 @@ export class FileManagerService {
           );
         }
       }
+      await this.thumbnails.deleteObject(f.thumbnailKey);
     }
     const fileIds = files.map((f) => f.id);
     await this.prisma.$transaction([
@@ -443,6 +446,13 @@ export class FileManagerService {
           select: { id: true, firstName: true, lastName: true, email: true },
         },
       },
+    });
+    /* Preview thumbnail: generate synchronously so the first list
+     * render after upload already has it. Safe to await — the service
+     * never throws; on skip/failure the row's thumbnailKey stays NULL
+     * and UI falls back to the icon. */
+    await this.thumbnails.generate(row.id, row.mimeType, {
+      buffer: input.file.buffer,
     });
     await this.audit.record({
       actorUserId: input.actorUserId,
@@ -511,6 +521,7 @@ export class FileManagerService {
         );
       }
     }
+    await this.thumbnails.deleteObject(row.thumbnailKey);
     /* App-cascade: polymorphic resourceId on FileManagerShare has no
      * DB-level cascade, so sweep the file's shares in the same tx
      * as the file delete. */
@@ -699,6 +710,21 @@ export class FileManagerService {
       metadata: { folderId: row.folderId },
     });
     return { url, mimeType: row.mimeType };
+  }
+
+  /** Resolve a short-lived signed URL for the file's thumbnail
+   *  preview, or return `{ url: null }` when the file has none
+   *  (non-image, generation failed, or not backfilled yet). Audit
+   *  intentionally omitted — thumbnails are a passive UI render, we
+   *  don't want every list page refresh to spam the audit log. */
+  async getThumbnailUrl(id: string): Promise<{ url: string | null }> {
+    const row = await this.loadFileOr404(id);
+    if (!row.thumbnailKey) return { url: null };
+    const url = await this.storage.getDownloadUrl(
+      StorageBucket.FILE_MANAGER,
+      row.thumbnailKey,
+    );
+    return { url };
   }
 
   /* ── Helpers ────────────────────────────────────────────────────── */
@@ -907,7 +933,11 @@ export class FileManagerService {
    *  shares ourselves. */
   private async collectSubtreeIds(folderId: string) {
     const folderIds: string[] = [folderId];
-    const files: Array<{ id: string; storageKey: string }> = [];
+    const files: Array<{
+      id: string;
+      storageKey: string;
+      thumbnailKey: string | null;
+    }> = [];
     const stack = [folderId];
     const seen = new Set<string>();
     while (stack.length) {
@@ -921,7 +951,7 @@ export class FileManagerService {
         }),
         this.prisma.fileManagerFile.findMany({
           where: { folderId: current },
-          select: { id: true, storageKey: true },
+          select: { id: true, storageKey: true, thumbnailKey: true },
         }),
       ]);
       for (const f of childFiles) files.push(f);
