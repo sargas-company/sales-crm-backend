@@ -1,5 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
-import sharp from 'sharp';
+/* `import sharp from 'sharp'` compiles to `sharp_1.default(…)` under
+ * this project's tsconfig (no esModuleInterop); sharp's package is
+ * exported as `module.exports = fn`, so `.default` is undefined and
+ * every call throws "sharp_1.default is not a function" at runtime.
+ * The TS `import = require` form compiles to a plain `const sharp =
+ * require('sharp')`, which calls the function directly. */
+import sharp = require('sharp');
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { StorageBucket } from '../storage/storage.types';
