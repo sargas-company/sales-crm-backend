@@ -102,16 +102,17 @@ async function main() {
     );
   }
 
-  /* Tear down the Nest context. BullMQ + ioredis workers can emit
-   * "Connection is closed" noise during shutdown even though the
-   * backfill work (B2 upload + DB write) is already persisted —
-   * swallow those so a successful run returns exit 0. */
-  await app.close().catch(() => undefined);
+  /* All work (B2 uploads + DB updates) is already persisted at this
+   * point. We deliberately skip `app.close()` and hard-exit instead:
+   * BullMQ workers inside AppModule keep ioredis connections open
+   * and, on graceful teardown, synchronously throw "Connection is
+   * closed" from an event-emitter handler — bypasses promise .catch
+   * and crashes the process with exit 1. Postgres and B2 don't care
+   * about abruptly-closed sockets; the OS reaps the handles. */
+  process.exit(0);
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((err) => {
-    console.error('[thumb-backfill] fatal', err);
-    process.exit(1);
-  });
+main().catch((err) => {
+  console.error('[thumb-backfill] fatal', err);
+  process.exit(1);
+});
