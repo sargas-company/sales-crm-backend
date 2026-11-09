@@ -49,51 +49,47 @@ async function main() {
   let failed = 0;
   let cursor: string | undefined;
 
-  try {
-    for (;;) {
-      const rows = await prisma.fileManagerFile.findMany({
-        where: {
-          mimeType: { startsWith: 'image/' },
-          thumbnailKey: null,
-          ...(cursor ? { id: { gt: cursor } } : {}),
-        },
-        orderBy: { id: 'asc' },
-        take: BATCH,
-        select: {
-          id: true,
-          mimeType: true,
-          storageKey: true,
-          originalName: true,
-        },
-      });
-      if (rows.length === 0) break;
-      cursor = rows[rows.length - 1].id;
+  for (;;) {
+    const rows = await prisma.fileManagerFile.findMany({
+      where: {
+        mimeType: { startsWith: 'image/' },
+        thumbnailKey: null,
+        ...(cursor ? { id: { gt: cursor } } : {}),
+      },
+      orderBy: { id: 'asc' },
+      take: BATCH,
+      select: {
+        id: true,
+        mimeType: true,
+        storageKey: true,
+        originalName: true,
+      },
+    });
+    if (rows.length === 0) break;
+    cursor = rows[rows.length - 1].id;
 
-      for (const row of rows) {
-        examined++;
-        if (!thumbnails.isEligible(row.mimeType)) {
-          skippedIneligible++;
-          continue;
-        }
-        if (!apply) continue;
-        const key = await thumbnails.generate(row.id, row.mimeType, {
-          storageKey: row.storageKey,
-        });
-        if (key) {
-          generated++;
-        } else {
-          failed++;
-          console.warn(
-            `${tag} failed id=${row.id} name=${row.originalName}`,
-          );
-        }
+    for (const row of rows) {
+      examined++;
+      if (!thumbnails.isEligible(row.mimeType)) {
+        skippedIneligible++;
+        continue;
       }
-      console.log(
-        `${tag} examined=${examined} generated=${generated} skippedIneligible=${skippedIneligible} failed=${failed}`,
-      );
+      if (!apply) continue;
+      const key = await thumbnails.generate(row.id, row.mimeType, {
+        storageKey: row.storageKey,
+      });
+      if (key) {
+        generated++;
+      } else {
+        failed++;
+        console.warn(
+          `${tag} failed id=${row.id} name=${row.originalName}`,
+        );
+      }
     }
-  } finally {
-    await app.close();
+    console.log(
+      `${tag} examined=${examined} generated=${generated} skippedIneligible=${skippedIneligible} failed=${failed}`,
+    );
   }
 
   console.log(
@@ -105,9 +101,17 @@ async function main() {
       `${tag} ${eligible} row(s) would be processed. Re-run with --apply.`,
     );
   }
+
+  /* Tear down the Nest context. BullMQ + ioredis workers can emit
+   * "Connection is closed" noise during shutdown even though the
+   * backfill work (B2 upload + DB write) is already persisted —
+   * swallow those so a successful run returns exit 0. */
+  await app.close().catch(() => undefined);
 }
 
-main().catch((err) => {
-  console.error('[thumb-backfill] fatal', err);
-  process.exit(1);
-});
+main()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error('[thumb-backfill] fatal', err);
+    process.exit(1);
+  });
