@@ -37,8 +37,12 @@ const THUMB_MAX_SOURCE_BYTES = 25 * 1024 * 1024;
 
 /* MIME types we attempt. HEIC covers iPhone photos; sharp supports it
  * when libvips is built with it, which is the case for the sharp
- * prebuilt binaries. If not supported at runtime, sharp throws, we
- * catch, UI falls back. */
+ * prebuilt binaries. SVG goes through resvg (bundled with sharp
+ * 0.33+) — a pure-Rust rasteriser that does not execute scripts and
+ * does not fetch external resources, so there is no XSS surface on
+ * the output WebP. SVGs with features resvg cannot render (CSS
+ * animations' live frames, <foreignObject> HTML) fall through the
+ * catch and the UI shows the standard icon. */
 const THUMB_MIME_TYPES = new Set<string>([
   'image/jpeg',
   'image/png',
@@ -47,6 +51,7 @@ const THUMB_MIME_TYPES = new Set<string>([
   'image/tiff',
   'image/avif',
   'image/heic',
+  'image/svg+xml',
 ]);
 
 @Injectable()
