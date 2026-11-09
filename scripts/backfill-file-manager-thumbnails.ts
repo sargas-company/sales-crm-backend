@@ -35,7 +35,16 @@ const BATCH = 100;
 
 async function main() {
   const apply = process.argv.includes('--apply');
-  const tag = apply ? '[thumb-backfill]' : '[thumb-backfill DRY-RUN]';
+  /* `--force` walks every image row (including those that already
+   * carry a thumbnailKey) and regenerates — needed when the
+   * thumbnail size or quality knob in FileManagerThumbnailService
+   * has changed and the existing thumbs should be replaced. Thumbs
+   * use a deterministic key (`thumbs/<fileId>.webp`), so B2 simply
+   * overwrites — no orphans. */
+  const force = process.argv.includes('--force');
+  const tag = apply
+    ? `[thumb-backfill${force ? ' FORCE' : ''}]`
+    : `[thumb-backfill DRY-RUN${force ? ' FORCE' : ''}]`;
 
   const app = await NestFactory.createApplicationContext(AppModule, {
     logger: ['warn', 'error'],
@@ -53,7 +62,7 @@ async function main() {
     const rows = await prisma.fileManagerFile.findMany({
       where: {
         mimeType: { startsWith: 'image/' },
-        thumbnailKey: null,
+        ...(force ? {} : { thumbnailKey: null }),
         ...(cursor ? { id: { gt: cursor } } : {}),
       },
       orderBy: { id: 'asc' },

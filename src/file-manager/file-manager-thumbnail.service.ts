@@ -22,11 +22,12 @@ import { StorageBucket } from '../storage/storage.types';
  * pre-backfill legacy row.
  */
 
-/* 256×256 is the sweet spot for the list grid tile: large enough to
- * stay crisp on 2× displays, small enough to land in the 10-30 KB
- * range at quality 75 WebP. */
-const THUMB_EDGE_PX = 256;
-const THUMB_QUALITY = 75;
+/* 512×512 keeps text and UI detail crisp when the browser downscales
+ * to the list tile — 256@q75 was legible for photos but the chain of
+ * two lossy resamples smeared screenshots. 512@q85 lands around
+ * 30-50 KB per thumb, still trivial for B2 egress. */
+const THUMB_EDGE_PX = 512;
+const THUMB_QUALITY = 85;
 
 /* Skip sources larger than 25 MB: sharp decodes the whole frame into
  * memory before resizing, and a RAW/panorama JPEG beyond that is not
