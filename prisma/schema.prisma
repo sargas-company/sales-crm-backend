@@ -2265,9 +2265,36 @@ model UpworkProfile {
 
   changeLogEntries UpworkChangeLog[]
   snapshots        UpworkMetricsSnapshot[]
+  keywords         UpworkKeyword[]
 
   @@index([active])
   @@index([tier])
+}
+
+/* Keyword / title phrase a profile tracks rank for across snapshots.
+ * Replaces the earlier free-text `phrase` on SnapshotPosition so that
+ * a typo doesn't fork continuity and so one phrase can be marked as
+ * the profile's primary (surfaced on the snapshots list as the
+ * tracked Rank trend). `text` is stored already-normalized (lower +
+ * trim + collapsed whitespace) — see `normalizeUpworkPhrase`. The
+ * primary flag has a partial unique index so at most one keyword per
+ * profile can be primary. `isActive=false` archives a keyword: it
+ * stays joinable from historical snapshots but disappears from the
+ * picker in the snapshot form. */
+model UpworkKeyword {
+  id        String   @id @default(uuid())
+  profileId String
+  profile   UpworkProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  text      String
+  isPrimary Boolean  @default(false)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  positions UpworkMetricsSnapshotPosition[]
+
+  @@unique([profileId, text])
+  @@index([profileId, isActive])
 }
 
 /* Change log entry — a single edit to the profile. Just a date,
@@ -2312,9 +2339,10 @@ model UpworkMetricsSnapshotPosition {
   id         String                @id @default(uuid())
   snapshotId String
   snapshot   UpworkMetricsSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
-  phrase     String
+  keywordId  String
+  keyword    UpworkKeyword         @relation(fields: [keywordId], references: [id], onDelete: Restrict)
   position   Int
 
-  @@unique([snapshotId, phrase])
-  @@index([phrase])
+  @@unique([snapshotId, keywordId])
+  @@index([keywordId])
 }

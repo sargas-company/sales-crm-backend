@@ -14,17 +14,27 @@ import {
   SnapshotPositionDto,
   UpdateUpworkSnapshotDto,
 } from './dto/upwork-metrics.dto';
-import { normalizeUpworkPhrase } from './upwork.constants';
 
 const INCLUDE = {
   positions: {
-    select: { id: true, phrase: true, position: true },
+    select: {
+      id: true,
+      position: true,
+      keyword: {
+        select: {
+          id: true,
+          text: true,
+          isPrimary: true,
+          isActive: true,
+        },
+      },
+    },
     orderBy: { position: 'asc' } as const,
   },
 } as const;
 
 interface NormalizedPosition {
-  phrase: string;
+  keywordId: string;
   position: number;
 }
 
@@ -62,7 +72,10 @@ export class UpworkMetricsService {
 
   async create(dto: CreateUpworkSnapshotDto, actorUserId: string) {
     await this.ensureProfile(dto.profileId);
-    const positions = this.normalizePositions(dto.positions ?? []);
+    const positions = await this.validatePositions(
+      dto.profileId,
+      dto.positions ?? [],
+    );
     const date = new Date(dto.date);
     try {
       const row = await this.prisma.upworkMetricsSnapshot.create({
@@ -72,9 +85,7 @@ export class UpworkMetricsService {
           views: dto.views,
           invites: dto.invites,
           directMessages: dto.directMessages,
-          positions: positions.length
-            ? { create: positions }
-            : undefined,
+          positions: positions.length ? { create: positions } : undefined,
         },
         include: INCLUDE,
       });
@@ -103,11 +114,12 @@ export class UpworkMetricsService {
 
   async update(id: string, dto: UpdateUpworkSnapshotDto, actorUserId: string) {
     const existing = await this.findOne(id);
+    const profileId = dto.profileId ?? existing.profileId;
     if (dto.profileId && dto.profileId !== existing.profileId) {
       await this.ensureProfile(dto.profileId);
     }
     const positions = dto.positions
-      ? this.normalizePositions(dto.positions)
+      ? await this.validatePositions(profileId, dto.positions)
       : undefined;
     const row = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.upworkMetricsSnapshot.update({
@@ -130,7 +142,7 @@ export class UpworkMetricsService {
           await tx.upworkMetricsSnapshotPosition.createMany({
             data: positions.map((p) => ({
               snapshotId: id,
-              phrase: p.phrase,
+              keywordId: p.keywordId,
               position: p.position,
             })),
           });
@@ -171,26 +183,36 @@ export class UpworkMetricsService {
     if (!p) throw new NotFoundException(`profile ${id} not found`);
   }
 
-  /** Normalize phrases (lower + collapse ws + trim) and reject
-   *  duplicates within the same payload. */
-  private normalizePositions(
+  /** Reject duplicate keywordIds in the payload and verify every id
+   *  belongs to the snapshot's profile. */
+  private async validatePositions(
+    profileId: string,
     positions: SnapshotPositionDto[],
-  ): NormalizedPosition[] {
+  ): Promise<NormalizedPosition[]> {
+    if (positions.length === 0) return [];
     const seen = new Set<string>();
-    const out: NormalizedPosition[] = [];
     for (const p of positions) {
-      const phrase = normalizeUpworkPhrase(p.phrase);
-      if (!phrase) {
-        throw new BadRequestException('position phrase cannot be empty');
-      }
-      if (seen.has(phrase)) {
+      if (seen.has(p.keywordId)) {
         throw new BadRequestException(
-          `duplicate phrase in payload: "${phrase}"`,
+          `duplicate keyword in payload: ${p.keywordId}`,
         );
       }
-      seen.add(phrase);
-      out.push({ phrase, position: p.position });
+      seen.add(p.keywordId);
     }
-    return out;
+    const found = await this.prisma.upworkKeyword.findMany({
+      where: { id: { in: Array.from(seen) }, profileId },
+      select: { id: true },
+    });
+    if (found.length !== seen.size) {
+      const okIds = new Set(found.map((k) => k.id));
+      const bad = Array.from(seen).filter((k) => !okIds.has(k));
+      throw new BadRequestException(
+        `keywords not in profile ${profileId}: ${bad.join(', ')}`,
+      );
+    }
+    return positions.map((p) => ({
+      keywordId: p.keywordId,
+      position: p.position,
+    }));
   }
 }

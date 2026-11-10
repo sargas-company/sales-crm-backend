@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 .PHONY: help status health preflight build test \
         setup local-up local-down local-logs \
-        local-migrate local-seed local-seed-demo local-reset \
+        local-migrate local-seed local-seed-demo local-seed-upwork local-reset \
         backup backup-status backup-verify \
         restore-verify restore-scratch \
         prod-bootstrap-preflight prod-preflight prod-migrate prod-build prod-seed-system \
@@ -31,6 +31,7 @@ help:
 	@echo "  make local-migrate        LOCAL ONLY — prisma migrate dev + assert-local-db."
 	@echo "  make local-seed           LOCAL ONLY — full seed (demo users, business data)."
 	@echo "  make local-seed-demo      LOCAL ONLY — Employees/Projects/Reports demo rows."
+	@echo "  make local-seed-upwork    LOCAL ONLY — Upwork profiles + keywords + snapshots."
 	@echo "  make local-seed-finance-margin"
 	@echo "                            LOCAL ONLY — past-month PAID payroll (fills Monthly margin)."
 	@echo "  make local-reset          LOCAL ONLY — DESTRUCTIVE drop+rebuild, typed confirm."
@@ -169,6 +170,13 @@ local-seed-demo-crm:
 	npx ts-node scripts/assert-local-db.ts
 	@echo "==> seed-demo (Leads / Clients / Calls)"
 	npx ts-node -r tsconfig-paths/register scripts/seed-demo.ts
+
+local-seed-upwork:
+	set -e
+	@echo "==> assert local db"
+	npx ts-node scripts/assert-local-db.ts
+	@echo "==> seed-upwork-demo (profiles + keywords + snapshots)"
+	APP_ENV=local npx ts-node scripts/seed-upwork-demo.ts
 
 local-seed-finance-top-up:
 	set -e

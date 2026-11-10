@@ -70,7 +70,10 @@ export class UpworkAnalyticsService {
       orderBy: { date: 'asc' },
       include: {
         positions: {
-          select: { phrase: true, position: true },
+          select: {
+            position: true,
+            keyword: { select: { text: true } },
+          },
         },
       },
     });
@@ -105,9 +108,10 @@ export class UpworkAnalyticsService {
         posWeeklyMap.set(wk, posW);
       }
       for (const p of s.positions) {
-        const prev = posW.get(p.phrase);
+        const text = p.keyword.text;
+        const prev = posW.get(text);
         if (!prev || prev.date < s.date) {
-          posW.set(p.phrase, { date: s.date, position: p.position });
+          posW.set(text, { date: s.date, position: p.position });
         }
       }
     }
@@ -132,7 +136,7 @@ export class UpworkAnalyticsService {
      * used to label chart series. Sort alphabetically for stable
      * rendering. */
     const titlePhrases = Array.from(
-      new Set(snapshots.flatMap((s) => s.positions.map((p) => p.phrase))),
+      new Set(snapshots.flatMap((s) => s.positions.map((p) => p.keyword.text))),
     ).sort();
 
     const markerRows = await this.prisma.upworkChangeLog.findMany({

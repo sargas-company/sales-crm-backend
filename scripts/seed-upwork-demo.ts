@@ -1,9 +1,9 @@
 /**
- * Upwork module demo seed — profiles, change-log entries and metrics
- * snapshots (with inline phrases). Identity is `firstName + lastName`
- * (profile.title was dropped). Idempotent: re-running updates the
- * matched profile in place and prunes same-name duplicates created
- * by earlier seed revisions.
+ * Upwork module demo seed — profiles, change-log entries, keywords
+ * (per-profile tracked-phrase catalogue) and metrics snapshots.
+ * Identity is `firstName + lastName` (profile.title was dropped).
+ * Idempotent: re-running updates the matched profile in place and
+ * prunes same-name duplicates created by earlier seed revisions.
  *
  * Local-only. Run via:
  *   APP_ENV=local npx tsx scripts/seed-upwork-demo.ts
@@ -18,7 +18,7 @@ const prisma = new PrismaClient();
 /* ─── Fixtures ────────────────────────────────────────────────── */
 
 interface ProfileSpec {
-  key: string; // not persisted; used only to link other seed fixtures
+  key: string;
   firstName: string;
   lastName: string | null;
   tier: 'primary' | 'secondary';
@@ -70,7 +70,7 @@ const profileFullName = (p: Pick<ProfileSpec, 'firstName' | 'lastName'>) =>
   `${p.firstName} ${p.lastName ?? ''}`.trim();
 
 interface ChangeLogSpec {
-  profile: string; // "FirstName LastName"
+  profile: string;
   daysAgo: number;
   section: UpworkChangeLogSection;
   note: string;
@@ -147,10 +147,16 @@ const CHANGE_LOG: ChangeLogSpec[] = [
   },
 ];
 
-/* ─── Snapshot generator ─────────────────────────────────────── */
+/* ─── Snapshot + keyword generator ───────────────────────────── */
+
+interface KeywordSpec {
+  text: string;
+  base: number;
+  var: number;
+}
 
 interface SnapshotProfileSpec {
-  profile: string; // "FirstName LastName"
+  profile: string;
   days: number;
   viewsBase: number;
   viewsVar: number;
@@ -158,7 +164,8 @@ interface SnapshotProfileSpec {
   invitesVar: number;
   directMsgsBase: number;
   directMsgsVar: number;
-  positionsByPhrase: Array<{ phrase: string; base: number; var: number }>;
+  /** First keyword in the list is marked primary. */
+  keywords: KeywordSpec[];
 }
 
 const SNAPSHOT_SPECS: SnapshotProfileSpec[] = [
@@ -171,11 +178,11 @@ const SNAPSHOT_SPECS: SnapshotProfileSpec[] = [
     invitesVar: 6,
     directMsgsBase: 4,
     directMsgsVar: 5,
-    positionsByPhrase: [
-      { phrase: 'senior react developer', base: 18, var: 8 },
-      { phrase: 'full stack typescript engineer', base: 24, var: 10 },
-      { phrase: 'nestjs postgres backend', base: 12, var: 6 },
-      { phrase: 'react native specialist', base: 42, var: 15 },
+    keywords: [
+      { text: 'senior react developer', base: 18, var: 8 },
+      { text: 'full stack typescript engineer', base: 24, var: 10 },
+      { text: 'nestjs postgres backend', base: 12, var: 6 },
+      { text: 'react native specialist', base: 42, var: 15 },
     ],
   },
   {
@@ -187,10 +194,10 @@ const SNAPSHOT_SPECS: SnapshotProfileSpec[] = [
     invitesVar: 5,
     directMsgsBase: 3,
     directMsgsVar: 4,
-    positionsByPhrase: [
-      { phrase: 'llm applications engineer', base: 10, var: 5 },
-      { phrase: 'rag pipeline builder', base: 20, var: 8 },
-      { phrase: 'ai agents developer', base: 15, var: 7 },
+    keywords: [
+      { text: 'llm applications engineer', base: 10, var: 5 },
+      { text: 'rag pipeline builder', base: 20, var: 8 },
+      { text: 'ai agents developer', base: 15, var: 7 },
     ],
   },
   {
@@ -202,9 +209,7 @@ const SNAPSHOT_SPECS: SnapshotProfileSpec[] = [
     invitesVar: 3,
     directMsgsBase: 2,
     directMsgsVar: 3,
-    positionsByPhrase: [
-      { phrase: 'react native mobile engineer', base: 35, var: 12 },
-    ],
+    keywords: [{ text: 'react native mobile engineer', base: 35, var: 12 }],
   },
 ];
 
@@ -234,8 +239,7 @@ async function main() {
   }
   console.log('🌱 Upwork demo seed starting…');
 
-  /* 1. Profiles — upsert by (firstName, lastName). Prunes same-name
-   * duplicates left by earlier revisions. */
+  /* 1. Profiles — upsert by (firstName, lastName). */
   const profileByName = new Map<string, string>();
   for (const spec of PROFILES) {
     const existing = await prisma.upworkProfile.findMany({
@@ -280,8 +284,7 @@ async function main() {
   }
   console.log(`✓ Profiles: ${profileByName.size}`);
 
-  /* 2. Change-log — remove this seed's demo entries first so re-
-   * running stays idempotent. */
+  /* 2. Change-log — remove this seed's demo entries first. */
   const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
   const seedNotes = CHANGE_LOG.map((c) => c.note);
@@ -305,14 +308,31 @@ async function main() {
   }
   console.log(`✓ Change-log entries: ${changeLogN}`);
 
-  /* 3. Metrics snapshots — wipe + regenerate deterministically.
-   *    Positions carry the phrase inline (no reference-data join). */
+  /* 3. Snapshots + keywords — wipe snapshots, upsert keyword catalogue
+   *    per profile (first in the list is primary), regenerate
+   *    snapshots deterministically with FK-shaped positions. */
   let snapN = 0;
+  let kwN = 0;
   for (const spec of SNAPSHOT_SPECS) {
     const profileId = profileByName.get(spec.profile);
     if (!profileId) continue;
 
+    /* Snapshot rows have ON DELETE CASCADE to positions, but keywords
+     * are FK-restricted from positions — so wipe snapshots first. */
     await prisma.upworkMetricsSnapshot.deleteMany({ where: { profileId } });
+
+    const kwIds: string[] = [];
+    for (let i = 0; i < spec.keywords.length; i++) {
+      const { text } = spec.keywords[i];
+      const isPrimary = i === 0;
+      const kw = await prisma.upworkKeyword.upsert({
+        where: { profileId_text: { profileId, text } },
+        create: { profileId, text, isPrimary, isActive: true },
+        update: { isPrimary, isActive: true },
+      });
+      kwIds.push(kw.id);
+      kwN++;
+    }
 
     const rand = seededRand(spec.profile);
     for (let d = spec.days - 1; d >= 0; d--) {
@@ -347,13 +367,13 @@ async function main() {
 
       const positions =
         d % 3 === 0
-          ? spec.positionsByPhrase.map((p) => {
+          ? spec.keywords.map((k, i) => {
               const rankDecay = 1 - ((spec.days - d) / spec.days) * 0.4;
               const pos = Math.max(
                 1,
-                Math.round((p.base + (rand() - 0.5) * p.var) * rankDecay),
+                Math.round((k.base + (rand() - 0.5) * k.var) * rankDecay),
               );
-              return { phrase: p.phrase, position: pos };
+              return { keywordId: kwIds[i], position: pos };
             })
           : [];
 
@@ -364,14 +384,13 @@ async function main() {
           views,
           invites,
           directMessages,
-          positions: positions.length
-            ? { create: positions }
-            : undefined,
+          positions: positions.length ? { create: positions } : undefined,
         },
       });
       snapN++;
     }
   }
+  console.log(`✓ Keywords: ${kwN}`);
   console.log(`✓ Snapshots: ${snapN}`);
   console.log('🌱 done.');
 }

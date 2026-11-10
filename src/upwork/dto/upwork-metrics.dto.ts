@@ -7,20 +7,18 @@ import {
   IsDateString,
   IsInt,
   IsOptional,
-  IsString,
   IsUUID,
-  MaxLength,
-  MinLength,
   Min,
   ValidateNested,
 } from 'class-validator';
 
 export class SnapshotPositionDto {
-  @ApiProperty({ description: 'Title phrase (free text; normalized server-side).' })
-  @IsString()
-  @MinLength(1)
-  @MaxLength(200)
-  phrase!: string;
+  @ApiProperty({
+    description:
+      'Keyword id — must belong to the snapshot profile. Create a keyword first via the keyword endpoint.',
+  })
+  @IsUUID()
+  keywordId!: string;
 
   @ApiProperty()
   @IsInt()

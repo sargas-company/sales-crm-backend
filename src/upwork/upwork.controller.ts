@@ -32,10 +32,15 @@ import {
   ListUpworkSnapshotsDto,
   UpdateUpworkSnapshotDto,
 } from './dto/upwork-metrics.dto';
+import {
+  CreateUpworkKeywordDto,
+  UpdateUpworkKeywordDto,
+} from './dto/upwork-keyword.dto';
 
 import { UpworkProfileService } from './upwork-profile.service';
 import { UpworkChangeLogService } from './upwork-change-log.service';
 import { UpworkMetricsService } from './upwork-metrics.service';
+import { UpworkKeywordService } from './upwork-keyword.service';
 import { UpworkRemindersService } from './upwork-reminders.service';
 import { UpworkAnalyticsService } from './upwork-analytics.service';
 
@@ -50,6 +55,7 @@ export class UpworkController {
     private readonly profiles: UpworkProfileService,
     private readonly changeLog: UpworkChangeLogService,
     private readonly metrics: UpworkMetricsService,
+    private readonly keywords: UpworkKeywordService,
     private readonly reminders: UpworkRemindersService,
     private readonly analytics: UpworkAnalyticsService,
   ) {}
@@ -172,6 +178,41 @@ export class UpworkController {
   @HttpCode(HttpStatus.NO_CONTENT)
   removeSnapshot(@Param('id') id: string, @Req() req: ReqWithUser) {
     return this.metrics.remove(id, req.user.id);
+  }
+
+  /* ── Keywords (per-profile phrase catalogue) ──────────────────── */
+
+  @Get('profiles/:profileId/keywords')
+  @RequirePermission('upwork:view')
+  listKeywords(@Param('profileId') profileId: string) {
+    return this.keywords.listByProfile(profileId);
+  }
+
+  @Post('profiles/:profileId/keywords')
+  @RequirePermission('upwork:create')
+  @HttpCode(HttpStatus.CREATED)
+  createKeyword(
+    @Param('profileId') profileId: string,
+    @Body() dto: CreateUpworkKeywordDto,
+    @Req() req: ReqWithUser,
+  ) {
+    return this.keywords.create(profileId, dto, req.user.id);
+  }
+
+  @Patch('keywords/:id')
+  @RequirePermission('upwork:update')
+  updateKeyword(
+    @Param('id') id: string,
+    @Body() dto: UpdateUpworkKeywordDto,
+    @Req() req: ReqWithUser,
+  ) {
+    return this.keywords.update(id, dto, req.user.id);
+  }
+
+  @Delete('keywords/:id')
+  @RequirePermission('upwork:delete')
+  removeKeyword(@Param('id') id: string, @Req() req: ReqWithUser) {
+    return this.keywords.remove(id, req.user.id);
   }
 
   /* ── Reminders ────────────────────────────────────────────────── */
