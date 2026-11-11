@@ -4,7 +4,13 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, Setting } from '@prisma/client';
+import {
+  NotificationChannel,
+  NotificationDeliveryStatus,
+  NotificationType,
+  Prisma,
+  Setting,
+} from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { SettingKey } from './setting-keys';
@@ -290,9 +296,69 @@ export class SettingsService {
       // Only include changes that actually changed (not a no-op).
       if (JSON.stringify(before) !== JSON.stringify(coerced)) {
         changes[key] = { before, after: coerced };
+        // Backlog cutoff: when job-post Discord alerts transition from
+        // off to on, stamp every JOB_POST_MATCH event that still has
+        // no delivery row as SKIPPED. Without this, orphan recovery
+        // (every 5 min) would sweep the whole historical backlog into
+        // BullMQ at once and drown the Discord channel. Owner rule:
+        // "ON = only fresh events from this moment onward."
+        if (
+          key === 'scanner.discordAlertsEnabled' &&
+          before === false &&
+          coerced === true
+        ) {
+          await this.cutoffDiscordJobPostBacklog();
+        }
       }
     }
     return { changes };
+  }
+
+  /**
+   * Mark every JOB_POST_MATCH NotificationEvent with no delivery row
+   * as SKIPPED(reason=backlog-cutoff). Called when the operator flips
+   * `scanner.discordAlertsEnabled` back on. Returns the row count for
+   * logs — the caller does not surface it to the API response.
+   */
+  private async cutoffDiscordJobPostBacklog(): Promise<void> {
+    const orphans = await this.prisma.notificationEvent.findMany({
+      where: {
+        type: NotificationType.JOB_POST_MATCH,
+        deliveries: { none: {} },
+      },
+      select: { id: true },
+    });
+    if (!orphans.length) {
+      this.logger.log(
+        'discordAlertsEnabled OFF→ON: no job-post backlog to cut off',
+      );
+      return;
+    }
+    const now = new Date();
+    try {
+      const result = await this.prisma.notificationDelivery.createMany({
+        data: orphans.map(({ id }) => ({
+          eventId: id,
+          channel: NotificationChannel.DISCORD,
+          status: NotificationDeliveryStatus.SKIPPED,
+          error: 'backlog-cutoff',
+          failedAttempts: 0,
+          createdAt: now,
+          updatedAt: now,
+        })),
+        skipDuplicates: true,
+      });
+      this.logger.log(
+        `discordAlertsEnabled OFF→ON: cut off ${result.count} job-post event(s)`,
+      );
+    } catch (err) {
+      this.logger.error(
+        `discordAlertsEnabled backlog cutoff failed: ${(err as Error).message}`,
+      );
+      // Non-fatal — the toggle itself has already been written. The
+      // operator will see spam but can rerun the cutoff via the
+      // manual SQL path in the task card.
+    }
   }
 
   // ─── Legacy fallback writer (kept so old /settings/:key keeps working) ──────

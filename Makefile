@@ -9,6 +9,7 @@ SHELL := /bin/bash
         prod-bootstrap-preflight prod-preflight prod-migrate prod-build prod-seed-system \
         data-dry-run data-apply \
         discord-status discord-disable discord-disable-apply \
+        discord-cutoff discord-cutoff-apply \
         b2-inventory b2-cutover-dry-run b2-cutover-apply b2-cutover-verify \
         init deploy
 
@@ -65,6 +66,11 @@ help:
 	@echo "  make discord-status       Print DiscordProfile table state (no secrets)."
 	@echo "  make discord-disable      Dry-run: set every profile active=false + toggles=false."
 	@echo "  make discord-disable-apply Apply the above (post-cutover safety reset)."
+	@echo "  make discord-cutoff       Dry-run: count orphan JOB_POST_MATCH events + queued"
+	@echo "                            BullMQ notification_send keys that would be dropped."
+	@echo "  make discord-cutoff-apply Apply the above — stamp SKIPPED on orphans, DEL Redis keys."
+	@echo "                            Run this BEFORE pointing a fresh Discord channel at the"
+	@echo "                            profile, so history is not replayed into it."
 	@echo ""
 	@echo "B2 cutover:"
 	@echo "  make b2-inventory         DB-only report of expected B2 keys per bucket."
@@ -343,6 +349,18 @@ discord-disable-apply:
 	IFS= read -r CONFIRM < /dev/tty
 	if [ "$$CONFIRM" != "DISABLE" ]; then echo "Aborted."; exit 1; fi
 	npx ts-node scripts/discord-safe-disable.ts --apply
+
+discord-cutoff:
+	npx ts-node scripts/discord-cutoff-backlog.ts
+
+discord-cutoff-apply:
+	@echo "This will mark every JOB_POST_MATCH NotificationEvent without a delivery as"
+	@echo "SKIPPED(backlog-cutoff-manual) AND delete all BullMQ notification_send job keys"
+	@echo "in Redis. Nothing is sent to Discord. Idempotent, safe to re-run."
+	@echo "Type CUTOFF to confirm:"
+	IFS= read -r CONFIRM < /dev/tty
+	if [ "$$CONFIRM" != "CUTOFF" ]; then echo "Aborted."; exit 1; fi
+	npx ts-node scripts/discord-cutoff-backlog.ts --apply
 
 # ─── B2 cutover inventory + guarded copy ────────────────────────────────────
 b2-inventory:

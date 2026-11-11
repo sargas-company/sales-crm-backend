@@ -36,6 +36,22 @@ import { NotificationProcessorService } from './notification.processor';
 import type { DiscordBotClient } from '../discord-integration/discord-bot.client';
 import type { JobPostDiscordNotifierService } from './job-post-discord-notifier.service';
 import type { PrismaService } from '../prisma/prisma.service';
+import type { SettingsService } from '../settings/settings.service';
+
+/**
+ * Minimal SettingsService stub for the processor. Defaults alerts to
+ * `true` so pre-existing happy-path tests keep working. Tests that
+ * exercise the drain-safety-net path override alertsEnabled=false.
+ */
+function makeSettings(opts: { alertsEnabled?: boolean } = {}): SettingsService {
+  const alertsEnabled = opts.alertsEnabled ?? true;
+  return {
+    getBooleanForKey: async (key: string, def: boolean) => {
+      if (key === 'scanner.discordAlertsEnabled') return alertsEnabled;
+      return def;
+    },
+  } as unknown as SettingsService;
+}
 
 const prisma = new PrismaClient();
 const TAG = `np-${randomUUID().slice(0, 8)}`;
@@ -214,6 +230,7 @@ describe('NotificationProcessorService — bot-based routing', () => {
       bot,
       jobPost,
       { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
+      makeSettings(),
     );
 
     await invokeJob(svc, eventId);
@@ -248,6 +265,7 @@ describe('NotificationProcessorService — bot-based routing', () => {
       bot,
       jobPost,
       { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
+      makeSettings(),
     );
 
     await invokeJob(svc, eventId);
@@ -286,6 +304,7 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeJobPostNotifier(async () => undefined),
     
       { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
+      makeSettings(),
     );
 
     await invokeJob(svc, eventId);
@@ -315,6 +334,7 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeJobPostNotifier(async () => undefined),
     
       { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
+      makeSettings(),
     );
 
     await invokeJob(svc, eventId);
@@ -352,6 +372,7 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeJobPostNotifier(async () => undefined),
 
       { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
+      makeSettings(),
     );
 
     await invokeJob(svc, eventId);
@@ -373,6 +394,7 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeJobPostNotifier(async () => undefined),
     
       { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
+      makeSettings(),
     );
 
     activateProfile('TEST', { pmsChannelId: '111111111111111111' });
@@ -416,6 +438,7 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeJobPostNotifier(async () => undefined),
     
       { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
+      makeSettings(),
     );
 
     await expect(invokeJob(svc, eventId)).rejects.toThrow(
@@ -447,6 +470,7 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeJobPostNotifier(async () => undefined),
     
       { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
+      makeSettings(),
     );
 
     await expect(invokeJob(svc, eventId)).rejects.toThrow(/no pmsChannelId/);
@@ -474,6 +498,7 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeJobPostNotifier(async () => undefined),
     
       { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
+      makeSettings(),
     );
 
     await invokeJob(svc, eventId);
@@ -507,6 +532,7 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeJobPostNotifier(async () => undefined),
     
       { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
+      makeSettings(),
     );
 
     await expect(invokeJob(svc, eventId)).rejects.toThrow('Missing Access');
@@ -535,6 +561,7 @@ describe('NotificationProcessorService — bot-based routing', () => {
       makeBot(async () => ({ ok: true, messageId: 'never' })),
       jobPost,
       { emitWebhookReceived: () => undefined, emitJobPostChanged: () => undefined, emitSettingsScanner: () => undefined, emitDiscordDelivered: () => undefined, stream$: () => ({}) } as never,
+      makeSettings(),
     );
 
     await expect(invokeJob(svc, eventId)).rejects.toThrow();

@@ -5,7 +5,13 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { NotificationEvent, NotificationType, Prisma } from '@prisma/client';
+import {
+  NotificationChannel,
+  NotificationDeliveryStatus,
+  NotificationEvent,
+  NotificationType,
+  Prisma,
+} from '@prisma/client';
 import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
 
@@ -173,6 +179,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(
         `Event ${event.id} skipped: Discord alerts disabled by settings`,
       );
+      await this.markSkipped(event.id, 'alerts-disabled');
       return;
     }
 
@@ -180,6 +187,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(
         `Event ${event.id} filtered: score ${payload.score} < minScore ${minScore}`,
       );
+      await this.markSkipped(event.id, 'below-threshold');
       return;
     }
 
@@ -258,6 +266,47 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
     );
 
     this.logger.log(`Event ${event.id} enqueued for notification`);
+  }
+
+  /**
+   * Write a terminal SKIPPED delivery row so an event gated by
+   * `scanner.discordAlertsEnabled` or `scanner.discordScoreThreshold`
+   * is never picked up again by orphan recovery or a stray BullMQ
+   * job. Idempotent: an existing SENT/FAILED/SKIPPED row is left
+   * alone, so a late worker tick cannot clobber a real delivery.
+   */
+  private async markSkipped(eventId: string, reason: string): Promise<void> {
+    try {
+      const existing = await this.prisma.notificationDelivery.findFirst({
+        where: { eventId, channel: NotificationChannel.DISCORD },
+      });
+      if (existing) {
+        if (existing.status === NotificationDeliveryStatus.PENDING) {
+          await this.prisma.notificationDelivery.update({
+            where: { id: existing.id },
+            data: {
+              status: NotificationDeliveryStatus.SKIPPED,
+              error: reason,
+            },
+          });
+        }
+        return;
+      }
+      await this.prisma.notificationDelivery.create({
+        data: {
+          eventId,
+          channel: NotificationChannel.DISCORD,
+          status: NotificationDeliveryStatus.SKIPPED,
+          error: reason,
+          failedAttempts: 0,
+        },
+      });
+    } catch (err) {
+      if ((err as { code?: string }).code === 'P2002') return;
+      this.logger.warn(
+        `markSkipped(${eventId}, ${reason}) failed: ${(err as Error).message}`,
+      );
+    }
   }
 
   private async recoverOrphans(): Promise<void> {

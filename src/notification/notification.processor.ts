@@ -17,6 +17,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { DiscordBotClient } from '../discord-integration/discord-bot.client';
 import { JobPostDiscordNotifierService } from './job-post-discord-notifier.service';
 import { LiveEventsService } from '../live-events/live-events.service';
+import { SettingsService } from '../settings/settings.service';
 import {
   NOTIFICATION_QUEUE,
   NOTIFICATION_SEND,
@@ -38,6 +39,7 @@ export class NotificationProcessorService
     private readonly bot: DiscordBotClient,
     private readonly jobPostNotifier: JobPostDiscordNotifierService,
     private readonly liveEvents: LiveEventsService,
+    private readonly settings: SettingsService,
   ) {}
 
   onModuleInit() {
@@ -97,7 +99,70 @@ export class NotificationProcessorService
 
     this.logger.log(`Event loaded: ${eventId} [${event.type}]`);
 
+    // Second-chance gate for JOB_POST_MATCH: alerts may have been
+    // disabled AFTER this job was enqueued (BullMQ persists jobs in
+    // Redis across restarts, so a toggle during draining leaves live
+    // jobs behind). If so, close the delivery as SKIPPED and do not
+    // post to Discord. The dispatcher-time gate in NotificationService
+    // still runs for fresh events; this is the drain-safety net.
+    if (event.type === 'JOB_POST_MATCH') {
+      const alertsEnabled = await this.settings.getBooleanForKey(
+        'scanner.discordAlertsEnabled',
+        true,
+      );
+      if (!alertsEnabled) {
+        await this.recordSkipped(eventId, 'alerts-disabled-at-dispatch');
+        this.logger.log(
+          `Event ${eventId} dropped at dispatch: Discord alerts are disabled`,
+        );
+        return;
+      }
+    }
+
     await this.deliverDiscord(event.type, event.payload, eventId);
+  }
+
+  /**
+   * Terminal SKIPPED bookkeeping for the drain-safety-net path. Does
+   * not re-send if a prior SENT/FAILED/SKIPPED row already settled
+   * the event — those are authoritative and a late disable must not
+   * rewrite history.
+   */
+  private async recordSkipped(
+    eventId: string,
+    reason: string,
+  ): Promise<void> {
+    try {
+      const existing = await this.prisma.notificationDelivery.findFirst({
+        where: { eventId, channel: NotificationChannel.DISCORD },
+      });
+      if (existing) {
+        if (existing.status === NotificationDeliveryStatus.PENDING) {
+          await this.prisma.notificationDelivery.update({
+            where: { id: existing.id },
+            data: {
+              status: NotificationDeliveryStatus.SKIPPED,
+              error: reason,
+            },
+          });
+        }
+        return;
+      }
+      await this.prisma.notificationDelivery.create({
+        data: {
+          eventId,
+          channel: NotificationChannel.DISCORD,
+          status: NotificationDeliveryStatus.SKIPPED,
+          error: reason,
+          failedAttempts: 0,
+        },
+      });
+    } catch (err) {
+      if ((err as { code?: string }).code === 'P2002') return;
+      this.logger.warn(
+        `recordSkipped(${eventId}, ${reason}) failed: ${(err as Error).message}`,
+      );
+    }
   }
 
   /**
@@ -409,6 +474,17 @@ export class NotificationProcessorService
     if (existing?.status === NotificationDeliveryStatus.SENT) {
       this.logger.log(
         `Duplicate skipped: delivery already SENT for event ${eventId}`,
+      );
+      return;
+    }
+
+    // SKIPPED is terminal: the event was gated off by settings (alerts
+    // disabled, below threshold, backlog cutoff). Do NOT reset to
+    // PENDING — that would replay the gate every retry and eventually
+    // leak a send when the toggle flips back on.
+    if (existing?.status === NotificationDeliveryStatus.SKIPPED) {
+      this.logger.log(
+        `Delivery already SKIPPED for event ${eventId} (${existing.error ?? 'no reason'}), not re-sending`,
       );
       return;
     }

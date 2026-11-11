@@ -37,10 +37,26 @@ function makeSettings(flags: {
 function makePrisma(event: NotificationEvent) {
   const create = jest.fn(async () => event);
   const findUnique = jest.fn(async () => event);
+  const deliveryFindFirst = jest.fn(async () => null);
+  const deliveryCreate = jest.fn(async (args: { data: unknown }) => args.data);
+  const deliveryUpdate = jest.fn(async (args: { data: unknown }) => args.data);
+  const deliveryCreateMany = jest.fn(async () => ({ count: 0 }));
   return {
-    notificationEvent: { create, findUnique },
+    notificationEvent: { create, findUnique, findMany: jest.fn(async () => []) },
+    notificationDelivery: {
+      findFirst: deliveryFindFirst,
+      create: deliveryCreate,
+      update: deliveryUpdate,
+      createMany: deliveryCreateMany,
+    },
   } as unknown as PrismaService & {
     notificationEvent: { create: jest.Mock; findUnique: jest.Mock };
+    notificationDelivery: {
+      findFirst: jest.Mock;
+      create: jest.Mock;
+      update: jest.Mock;
+      createMany: jest.Mock;
+    };
   };
 }
 
@@ -64,7 +80,7 @@ async function buildService(
   // Stub the private queue the service builds in onModuleInit.
   const queue = makeQueue();
   (svc as unknown as { queue: unknown }).queue = queue;
-  return { svc, queue };
+  return { svc, queue, prisma };
 }
 
 function makeEvent(payload: object): NotificationEvent {
@@ -101,9 +117,9 @@ describe('NotificationService.handleJobPostMatch — rule filter', () => {
     expect(queue.add).toHaveBeenCalledTimes(1);
   });
 
-  it('does NOT enqueue when alerts are disabled', async () => {
+  it('does NOT enqueue when alerts are disabled; writes SKIPPED delivery row', async () => {
     const event = makeEvent(basePayload);
-    const { svc, queue } = await buildService(
+    const { svc, queue, prisma } = await buildService(
       { alertsEnabled: false, minScore: 50 },
       event,
     );
@@ -113,11 +129,19 @@ describe('NotificationService.handleJobPostMatch — rule filter', () => {
       }
     ).handleJobPostMatch(event);
     expect(queue.add).not.toHaveBeenCalled();
+    expect(prisma.notificationDelivery.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        eventId: event.id,
+        channel: 'DISCORD',
+        status: 'SKIPPED',
+        error: 'alerts-disabled',
+      }),
+    });
   });
 
-  it('does NOT enqueue when score is below threshold', async () => {
+  it('does NOT enqueue when score is below threshold; writes SKIPPED delivery row', async () => {
     const event = makeEvent({ ...basePayload, score: 40 });
-    const { svc, queue } = await buildService(
+    const { svc, queue, prisma } = await buildService(
       { alertsEnabled: true, minScore: 50 },
       event,
     );
@@ -127,5 +151,13 @@ describe('NotificationService.handleJobPostMatch — rule filter', () => {
       }
     ).handleJobPostMatch(event);
     expect(queue.add).not.toHaveBeenCalled();
+    expect(prisma.notificationDelivery.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        eventId: event.id,
+        channel: 'DISCORD',
+        status: 'SKIPPED',
+        error: 'below-threshold',
+      }),
+    });
   });
 });
