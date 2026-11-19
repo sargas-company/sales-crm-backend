@@ -174,6 +174,20 @@ export class DiscordEmbedBuilderService {
     return `${prefix}please fill the daily reports.${suffix}`;
   }
 
+  /**
+   * Saturday 18:00 reminder content — "log your Upwork hours for
+   * this week". Tracker URL is the Upwork product link; no reports
+   * page of ours is involved.
+   */
+  hoursReminderContent(managerRoleId: string | null): string {
+    const prefix = managerRoleId ? `<@&${managerRoleId}>, ` : '';
+    return (
+      `${prefix}please log your Upwork hours for this week.\n` +
+      `Must be done before Monday 03:00 — after that the window closes.\n` +
+      `https://www.upwork.com/nx/work/time-tracker/`
+    );
+  }
+
   absencesEmbeds(
     rows: Array<{ type: string; firstName: string; lastName: string; endDate: Date }>,
   ): DiscordEmbed[] {

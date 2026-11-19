@@ -2013,6 +2013,10 @@ model DiscordProfile {
   birthdaysEnabled Boolean @default(true)
   absencesEnabled Boolean @default(true)
   weeklyEnabled   Boolean @default(true)
+  // Standalone weekly reminder: "log your Upwork hours for this
+  // week". Posted to pmsChannelId with managerRoleId. Off by
+  // default — operator flips it on once the row exists.
+  hoursReminderEnabled Boolean @default(false)
 
   // 0..23. Below this hour a `/report` without an explicit date is
   // credited to the previous calendar day.
@@ -2024,6 +2028,9 @@ model DiscordProfile {
   weeklyDigestAt  String  @default("09:00")
   birthdayAt      String  @default("09:00")
   absencesAt      String  @default("09:00")
+  // Hours reminder knobs; 0=Sun … 6=Sat. Default: Saturday 18:00.
+  hoursReminderDow Int    @default(6)
+  hoursReminderAt  String @default("18:00")
   timezone        String  @default("Europe/Kyiv")
 
   lastVerifiedAt       DateTime?
@@ -2073,6 +2080,7 @@ enum DiscordJobType {
   BIRTHDAY
   ABSENCES
   LATE_REPORT
+  HOURS_WEEKLY_REMINDER
   TEST
 }
 

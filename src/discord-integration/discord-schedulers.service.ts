@@ -120,6 +120,17 @@ export class DiscordSchedulersService {
         }
       }
     }
+    if (profile.hoursReminderEnabled) {
+      const dow = this.currentDow(profile.timezone);
+      if (dow === profile.hoursReminderDow && this.timeReached(nowHM, profile.hoursReminderAt)) {
+        await this.runOnce(
+          profile,
+          DiscordJobType.HOURS_WEEKLY_REMINDER,
+          todayKey,
+          () => this.runHoursReminder(profile),
+        );
+      }
+    }
 
     // Durable retry for late-report deliveries (independent of HH:MM).
     await this.lateReports.tick();
@@ -290,6 +301,19 @@ export class DiscordSchedulersService {
     // allowedMentions.roles. parse:[] blocks @everyone, @here, any
     // user mention and any other role id that might sneak into the
     // body (none here, but defensive).
+    const resp = await this.bot.postMessage({
+      channelId: profile.pmsChannelId,
+      content,
+      allowedMentions: profile.managerRoleId
+        ? { parse: [], roles: [profile.managerRoleId] }
+        : { parse: [] },
+    });
+    if (!resp.ok) throw new Error(`${resp.status}: ${resp.message}`);
+  }
+
+  private async runHoursReminder(profile: DiscordProfile): Promise<void> {
+    if (!profile.pmsChannelId) throw new Error('pmsChannelId missing');
+    const content = this.embeds.hoursReminderContent(profile.managerRoleId);
     const resp = await this.bot.postMessage({
       channelId: profile.pmsChannelId,
       content,
