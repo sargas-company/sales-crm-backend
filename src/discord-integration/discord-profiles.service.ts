@@ -35,6 +35,7 @@ export interface UpdateProfileDto {
   birthdaysEnabled?: boolean;
   absencesEnabled?: boolean;
   weeklyEnabled?: boolean;
+  hoursReminderEnabled?: boolean;
   cutoffHour?: number;
   reminderAt?: string;
   dailyDigestAt?: string;
@@ -42,6 +43,8 @@ export interface UpdateProfileDto {
   weeklyDigestAt?: string;
   birthdayAt?: string;
   absencesAt?: string;
+  hoursReminderDow?: number;
+  hoursReminderAt?: string;
   timezone?: string;
 }
 
@@ -122,6 +125,7 @@ export class DiscordProfilesService {
       ['weeklyDigestAt', 'weeklyDigestAt'],
       ['birthdayAt', 'birthdayAt'],
       ['absencesAt', 'absencesAt'],
+      ['hoursReminderAt', 'hoursReminderAt'],
     ];
     for (const [field, label] of timeFields) {
       const v = dto[field];
@@ -142,6 +146,14 @@ export class DiscordProfilesService {
         dto.weeklyDigestDay > 6)
     ) {
       throw new BadRequestException('weeklyDigestDay must be 0..6 (0=Sun)');
+    }
+    if (
+      dto.hoursReminderDow !== undefined &&
+      (!Number.isInteger(dto.hoursReminderDow) ||
+        dto.hoursReminderDow < 0 ||
+        dto.hoursReminderDow > 6)
+    ) {
+      throw new BadRequestException('hoursReminderDow must be 0..6 (0=Sun)');
     }
     if (dto.timezone !== undefined) {
       try {

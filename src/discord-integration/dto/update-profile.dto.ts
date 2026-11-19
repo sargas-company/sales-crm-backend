@@ -24,6 +24,7 @@ export class UpdateDiscordProfileDto {
   @ApiPropertyOptional() @IsOptional() @IsBoolean() birthdaysEnabled?: boolean;
   @ApiPropertyOptional() @IsOptional() @IsBoolean() absencesEnabled?: boolean;
   @ApiPropertyOptional() @IsOptional() @IsBoolean() weeklyEnabled?: boolean;
+  @ApiPropertyOptional() @IsOptional() @IsBoolean() hoursReminderEnabled?: boolean;
 
   @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) @Max(23) cutoffHour?: number;
   @ApiPropertyOptional() @IsOptional() @IsString() @Matches(HHMM) reminderAt?: string;
@@ -32,5 +33,7 @@ export class UpdateDiscordProfileDto {
   @ApiPropertyOptional() @IsOptional() @IsString() @Matches(HHMM) weeklyDigestAt?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() @Matches(HHMM) birthdayAt?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() @Matches(HHMM) absencesAt?: string;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) @Max(6) hoursReminderDow?: number;
+  @ApiPropertyOptional() @IsOptional() @IsString() @Matches(HHMM) hoursReminderAt?: string;
   @ApiPropertyOptional() @IsOptional() @IsString() timezone?: string;
 }
